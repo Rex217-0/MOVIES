@@ -31,7 +31,11 @@ import { PIPELINE, STAGE_SKILL } from './src/direk/pipeline.ts';
 import { GENRE_MAP } from './src/direk/genres.ts';
 import { SKILLS } from './src/direk/skills.ts';
 import { planLora } from './src/direk/loraPlan.ts';
-import { buildLoraArtifacts, buildLoraZip, isValidTrigger, toSlug } from './src/direk/lora.ts';
+import {
+  buildLoraArtifacts, buildLoraZip, isValidTrigger, toSlug,
+  numberedName, MAX_LORA_IMAGES,
+} from './src/direk/lora.ts';
+import { comfyAvailable, generateWithComfy, comfyUrl } from './src/direk/comfyui.ts';
 
 dotenv.config();
 
@@ -535,9 +539,41 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
 
   broadcastThought(`[IMAGE PIPELINE] Image request: "${prompt.slice(0, 45)}..."`);
 
-  // Honest behaviour: no image model on the Gemini free tier, so report the
-  // feature as unavailable instead of returning a generated-looking SVG.
-  if (!process.env.GEMINI_API_KEY || !IMAGE_MODEL_FREE) {
+  // ComfyUI (local, free) is preferred. Without it, the paid Gemini image
+  // model is used; without either, the feature is honestly unavailable.
+  const backend = await resolveImageBackend();
+  if (backend === 'comfyui') {
+    try {
+      const png = await generateWithComfy(prompt, { width: 1024, height: 1024 });
+      const elapsedMs = Date.now() - startTime;
+      const dataUrl = `data:image/png;base64,${png.toString('base64')}`;
+      broadcastThought(`[IMAGE COMPLETE] ComfyUI image generated (${elapsedMs}ms).`);
+      const mediaRecord: MediaItem = {
+        id: `IMG-${Date.now()}`,
+        type: 'image',
+        url: dataUrl,
+        prompt: cleanPrompt(prompt),
+        aspect_ratio: validAspect,
+        timestamp: new Date().toLocaleTimeString(),
+        model: 'comfyui',
+        details: 'ComfyUI local generation',
+      };
+      mediaGallery.unshift(mediaRecord);
+      if (mediaGallery.length > 40) mediaGallery.pop();
+      res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
+      return;
+    } catch (error: any) {
+      const reason = error?.message || 'Unknown error';
+      console.error(`[IMAGE ERROR] ComfyUI generation failed:`, reason);
+      broadcastThought(`[IMAGE ERROR] ComfyUI failed: ${reason}`);
+      res.status(503).json(
+        aiUnavailable('comfyui', 'Check that ComfyUI is running and reachable.', reason)
+      );
+      return;
+    }
+  }
+
+  if (backend === 'none') {
     broadcastThought(`[IMAGE UNAVAILABLE] ${NO_FREE_IMAGE_MODEL}`);
     res.status(503).json(
       aiUnavailable(IMAGE_MODEL, NO_FREE_IMAGE_MODEL, 'Image generation is unavailable')
@@ -739,7 +775,8 @@ const direkService = new DirekService(
   () => marketIntel.brief(),
 );
 
-app.get('/api/direk/status', (_req: Request, res: Response) => {
+app.get('/api/direk/status', async (_req: Request, res: Response) => {
+  const backend = await resolveImageBackend();
   res.json({
     ok: Boolean(process.env.GEMINI_API_KEY),
     model: TEXT_MODEL,
@@ -749,6 +786,8 @@ app.get('/api/direk/status', (_req: Request, res: Response) => {
     skills: Object.entries(SKILLS).map(([id, spec]) => ({ id, ...spec })),
     reference_sources: referenceCatalog.sources(),
     market_available: marketIntel.available,
+    image_backend: backend,
+    comfyui_url: comfyUrl(),
     ...direkService.health(),
   });
 });
@@ -873,14 +912,61 @@ function parseLoraBody(body: LoraRequestBody) {
   return { plan } as const;
 }
 
+// ---------------------------------------------------------------------------
+// Image backends
+// ComfyUI (local, free) is preferred; the paid Gemini image model is a
+// fallback. With neither, image features are honestly reported as unavailable.
+// ---------------------------------------------------------------------------
+type ImageBackend = 'comfyui' | 'gemini' | 'none';
+
+let comfyOk: { ok: boolean; at: number } | null = null;
+
+async function resolveImageBackend(): Promise<ImageBackend> {
+  if (process.env.COMFYUI_DISABLE !== '1') {
+    // Re-probe at most every 15s so a ComfyUI that starts later is picked up.
+    if (!comfyOk || Date.now() - comfyOk.at > 15000) {
+      comfyOk = { ok: await comfyAvailable(), at: Date.now() };
+    }
+    if (comfyOk.ok) return 'comfyui';
+  }
+  if (process.env.GEMINI_API_KEY && IMAGE_MODEL_FREE) return 'gemini';
+  return 'none';
+}
+
+/** Generate one image with the paid Gemini image model. */
+async function generateGeminiImage(prompt: string): Promise<Buffer | null> {
+  const interaction = await ai.interactions.create({
+    model: IMAGE_MODEL,
+    input: prompt,
+    response_modalities: ['image', 'text'],
+    generation_config: { image_config: { aspect_ratio: '1:1', image_size: '1K' } },
+  });
+  const dataUrl = extractImageFromInteraction(interaction);
+  if (!dataUrl) return null;
+  const comma = dataUrl.indexOf(',');
+  return Buffer.from(dataUrl.slice(comma + 1), 'base64');
+}
+
+function generateLoraImage(prompt: string, backend: ImageBackend): Promise<Buffer | null> {
+  return backend === 'comfyui' ? generateWithComfy(prompt) : generateGeminiImage(prompt);
+}
+
+function noImageNote(): string {
+  return (
+    `Walang larawan: walang image backend. Magpatakbo ng ComfyUI (COMFYUI_URL=${comfyUrl()}) ` +
+    `para sa libreng generation, o mag-enable ng billing para sa Gemini image model.`
+  );
+}
+
 // Preview the plan and the generated artifacts (no zip).
-app.post('/api/direk/lora/plan', (req: Request, res: Response) => {
+app.post('/api/direk/lora/plan', async (req: Request, res: Response) => {
   const parsed = parseLoraBody(req.body as LoraRequestBody);
   if ('error' in parsed) {
     res.status(400).json({ error: parsed.error });
     return;
   }
   const { plan } = parsed;
+  const backend = await resolveImageBackend();
   res.json({
     trigger: plan.brief.trigger,
     genre: plan.brief.genre,
@@ -891,20 +977,83 @@ app.post('/api/direk/lora/plan', (req: Request, res: Response) => {
     references: plan.references,
     notes: plan.notes,
     artifacts: buildLoraArtifacts(plan.brief).map(a => a.filename),
+    images_available: backend !== 'none',
+    image_backend: backend,
+    max_images: MAX_LORA_IMAGES,
   });
 });
 
-// Download the whole LoRA training set as a zip.
-app.post('/api/direk/lora/dataset', (req: Request, res: Response) => {
-  const parsed = parseLoraBody(req.body as LoraRequestBody);
+/** Run `worker` over `items` with a small concurrency limit. */
+async function mapLimited<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function run() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+  return results;
+}
+
+// Download the whole LoRA training set as a zip. When an image model is
+// available, the sample images are generated and bundled too; otherwise the
+// zip still contains the text half and an IMAGES.md explaining the gap.
+app.post('/api/direk/lora/dataset', async (req: Request, res: Response) => {
+  const body = req.body as LoraRequestBody & { images?: boolean };
+  const parsed = parseLoraBody(body);
   if ('error' in parsed) {
     res.status(400).json({ error: parsed.error });
     return;
   }
   const { plan } = parsed;
-  const zip = buildLoraZip(plan.brief);
+  const wantImages = body.images !== false;
+  const images = new Map<string, Buffer>();
+  const skipped: string[] = [];
+  let imageNote: string | undefined;
+
+  const backend = wantImages ? await resolveImageBackend() : 'none';
+  if (!wantImages) {
+    imageNote = 'Hindi hiningi ang larawan para sa set na ito (images: false).';
+  } else if (backend === 'none') {
+    imageNote = noImageNote();
+    broadcastThought('[DIREK] LoRA set: text-only (no image backend)');
+  } else {
+    const targets = plan.brief.samples.slice(0, MAX_LORA_IMAGES);
+    broadcastThought(`[DIREK] LoRA set: ${targets.length} images via ${backend}...`);
+    const names = targets.map((_s, i) => numberedName(plan.brief.trigger, i));
+    // ComfyUI serialises on one GPU, so keep it to one job at a time.
+    const limit = backend === 'comfyui' ? 1 : 3;
+    await mapLimited(targets, limit, async (sample, i) => {
+      const name = names[i];
+      try {
+        const png = await generateLoraImage(sample.prompt, backend);
+        if (png) images.set(name, png);
+        else skipped.push(name);
+      } catch (error: any) {
+        skipped.push(name);
+        console.error(`[DIREK] image ${name} failed:`, error?.message || error);
+      }
+      return null;
+    });
+    if (plan.brief.samples.length > MAX_LORA_IMAGES) {
+      imageNote = `Larawan lang para sa unang ${MAX_LORA_IMAGES} samples (cap).`;
+    }
+    if (skipped.length) {
+      imageNote = `${imageNote ? imageNote + ' ' : ''}${skipped.length} sample(s) na bigo.`;
+    }
+  }
+
+  const zip = buildLoraZip(plan.brief, { images, skipped, imageNote });
   const name = `${toSlug(plan.brief.title)}_${plan.brief.trigger}_lora.zip`;
-  broadcastThought(`[DIREK] LoRA set: ${plan.brief.samples.length} samples · ${plan.brief.trigger}`);
+  broadcastThought(
+    `[DIREK] LoRA set ready: ${plan.brief.samples.length} samples · ${images.size} images (${backend})`,
+  );
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
   res.send(zip);

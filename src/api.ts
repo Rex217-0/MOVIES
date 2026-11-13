@@ -102,6 +102,9 @@ export interface DirekStatus {
   reference_rows: number;
   reference_sources: Record<string, number>;
   persona: string;
+  market_available?: boolean;
+  image_backend?: 'comfyui' | 'gemini' | 'none';
+  comfyui_url?: string;
 }
 
 /** A structured failure from an AI endpoint (HTTP 503 AI_UNAVAILABLE). */
@@ -172,6 +175,8 @@ export interface LoraBriefInput {
   trigger?: string;
   character?: { name?: string; look?: string; wardrobe?: string; voice?: string };
   baseModel?: string;
+  /** Ask the server to generate sample images too (default: true). */
+  images?: boolean;
 }
 
 export interface LoraPlanResult {
@@ -184,6 +189,9 @@ export interface LoraPlanResult {
   references: CatalogTitle[];
   notes: string[];
   artifacts: string[];
+  images_available: boolean;
+  image_backend: 'comfyui' | 'gemini' | 'none';
+  max_images: number;
 }
 
 export async function direkLoraPlan(input: LoraBriefInput): Promise<LoraPlanResult> {

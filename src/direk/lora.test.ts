@@ -88,9 +88,41 @@ test('buildLoraZip packages every artifact', () => {
     character: { name: 'Bida' },
     samples: [{ slug: 'shot_001', stage: 'VISUAL', prompt: 'x' }],
   };
-  const names = listZipEntries(buildLoraZip(brief, new Date('2026-01-01T00:00:00Z')));
+  const names = listZipEntries(buildLoraZip(brief, { when: new Date('2026-01-01T00:00:00Z') }));
   assert.ok(names.includes('kohya_config.toml'));
   assert.ok(names.includes('dataset/direk_t_001.txt'));
+});
+
+test('buildLoraZip bundles generated PNGs and an IMAGES.md manifest', () => {
+  const brief: LoraBrief = {
+    title: 'Ang Huling Tala', genre: 'horror', mood: 'madilim',
+    trigger: 'direk_ang_huling_tala',
+    character: { name: 'Bida' },
+    samples: [
+      { slug: 'shot_001', stage: 'KARAKTER', prompt: 'portrait' },
+      { slug: 'shot_002', stage: 'SHOT_LIST', prompt: 'wide' },
+    ],
+  };
+  // A tiny stand-in for a PNG; the builder never inspects the bytes.
+  const fakePng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const images = new Map([['direk_ang_huling_tala_001', fakePng]]);
+  const names = listZipEntries(
+    buildLoraZip(brief, { images, skipped: ['direk_ang_huling_tala_002'] }),
+  );
+  assert.ok(names.includes('dataset/direk_ang_huling_tala_001.png'));
+  assert.ok(!names.includes('dataset/direk_ang_huling_tala_002.png'));
+  assert.ok(names.includes('dataset/IMAGES.md'));
+  assert.ok(names.includes('dataset/direk_ang_huling_tala_001.txt'));
+});
+
+test('buildLoraZip records a note when no images are produced', () => {
+  const brief: LoraBrief = {
+    title: 'T', genre: 'drama', mood: 'mabigat', trigger: 'direk_t',
+    character: { name: 'Bida' },
+    samples: [{ slug: 'shot_001', stage: 'VISUAL', prompt: 'x' }],
+  };
+  const zip = buildLoraZip(brief, { imageNote: 'Text-only: no image model.' });
+  assert.ok(listZipEntries(zip).includes('dataset/IMAGES.md'));
 });
 
 test('shotsForDuration scales with runtime and stays in a trainable range', () => {

@@ -22,6 +22,7 @@ export const LoraStudio: React.FC = () => {
   const [charName, setCharName] = useState('Bida');
   const [charLook, setCharLook] = useState('sariwang mukha, konsistent');
   const [charWardrobe, setCharWardrobe] = useState('');
+  const [includeImages, setIncludeImages] = useState(true);
 
   const [plan, setPlan] = useState<LoraPlanResult | null>(null);
   const [isPlanning, setIsPlanning] = useState(false);
@@ -40,6 +41,7 @@ export const LoraStudio: React.FC = () => {
       look: charLook,
       wardrobe: charWardrobe || undefined,
     },
+    images: includeImages,
   });
 
   const preview = async () => {
@@ -147,6 +149,30 @@ export const LoraStudio: React.FC = () => {
               />
             </Field>
           </div>
+
+          <label className="flex items-center gap-2 text-[10px] font-mono text-gray-400 pt-1 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={includeImages}
+              onChange={e => setIncludeImages(e.target.checked)}
+              className="accent-[#F6E076]"
+            />
+            Isama ang sample images (ComfyUI: libre · Gemini: paid)
+          </label>
+
+          {plan && (
+            <div
+              className={`text-[10px] font-mono rounded p-2 border ${
+                plan.images_available
+                  ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
+                  : 'text-amber-300 bg-amber-500/10 border-amber-500/30'
+              }`}
+            >
+              {plan.images_available
+                ? `Gagawa ng hanggang ${plan.max_images} sample images via ${plan.image_backend === 'comfyui' ? 'ComfyUI (libre)' : 'Gemini'}.`
+                : 'Text-only: walang image backend. Magpatakbo ng ComfyUI para sa libreng images, o mag-enable ng billing. Ang zip ay may captions, config, at IMAGES.md.'}
+            </div>
+          )}
 
           <div className="flex gap-2 pt-1">
             <button

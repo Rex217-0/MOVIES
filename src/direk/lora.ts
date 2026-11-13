@@ -71,7 +71,7 @@ export function isValidTrigger(trigger: string): boolean {
   return /^[a-z][a-z0-9_]{2,39}$/.test(trigger || '');
 }
 
-function numberedName(trigger: string, index: number): string {
+export function numberedName(trigger: string, index: number): string {
   return `${trigger}_${String(index + 1).padStart(3, '0')}`;
 }
 
@@ -127,13 +127,83 @@ export function buildLoraArtifacts(brief: LoraBrief): LoraArtifact[] {
   return artifacts;
 }
 
-/** Package the whole set as a store-only ZIP for download. */
-export function buildLoraZip(brief: LoraBrief, when?: Date): Buffer {
+/** Cap on images generated per set, to bound time and cost. */
+export const MAX_LORA_IMAGES = 20;
+
+export interface LoraZipOptions {
+  /** Generated PNGs, keyed by sample name (e.g. `direk_x_001`). */
+  images?: Map<string, Buffer>;
+  /** Sample names whose image generation failed. */
+  skipped?: string[];
+  /** Why no images were produced, when that is the case. */
+  imageNote?: string;
+  when?: Date;
+}
+
+/**
+ * Package the whole set as a store-only ZIP for download.
+ *
+ * Text artifacts are always included. When `options.images` is given, the
+ * matching PNGs are added under `dataset/<name>.png` and an `IMAGES.md`
+ * manifest records what was generated and what was skipped.
+ */
+export function buildLoraZip(brief: LoraBrief, options: LoraZipOptions = {}): Buffer {
   const entries: ZipEntry[] = buildLoraArtifacts(brief).map(a => ({
     name: a.filename,
     data: Buffer.from(a.content, 'utf8'),
   }));
-  return createZip(entries, when);
+
+  const images = options.images;
+  if (images && images.size > 0) {
+    brief.samples.forEach((_sample, i) => {
+      const name = numberedName(brief.trigger, i);
+      const png = images.get(name);
+      if (png) entries.push({ name: `dataset/${name}.png`, data: png });
+    });
+    entries.push({
+      name: 'dataset/IMAGES.md',
+      data: Buffer.from(imageManifest(brief, images, options.skipped ?? [], options.imageNote), 'utf8'),
+    });
+  } else if (options.imageNote) {
+    entries.push({
+      name: 'dataset/IMAGES.md',
+      data: Buffer.from(imageManifest(brief, new Map(), [], options.imageNote), 'utf8'),
+    });
+  }
+
+  return createZip(entries, options.when ?? new Date());
+}
+
+function imageManifest(
+  brief: LoraBrief,
+  images: Map<string, Buffer>,
+  skipped: string[],
+  note?: string,
+): string {
+  const lines = [
+    `# Images — ${brief.title}`,
+    '',
+    `Trigger: \`${brief.trigger}\``,
+    '',
+  ];
+  if (images.size) {
+    lines.push(`Generated: **${images.size}** of ${brief.samples.length} samples.`, '');
+    for (const [name, buf] of images) {
+      lines.push(`- \`dataset/${name}.png\` (${Math.round(buf.length / 1024)} KB)`);
+    }
+  } else {
+    lines.push('Walang larawan sa set na ito.');
+  }
+  if (skipped.length) {
+    lines.push('', `Hindi nagawa: ${skipped.map(s => `\`${s}\``).join(', ')}.`);
+  }
+  if (note) lines.push('', `**Tandaan:** ${note}`);
+  lines.push(
+    '',
+    `Ang mga larawan ay dapat pangalanan katulad ng caption: \`${brief.trigger}_001.png\` +`,
+    `\`${brief.trigger}_001.txt\`, para mahanap ng trainer.`,
+  );
+  return lines.join('\n') + '\n';
 }
 
 function kohyaConfig(brief: LoraBrief, base: string): string {

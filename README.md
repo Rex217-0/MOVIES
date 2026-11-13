@@ -37,8 +37,25 @@ no hardcoded fallbacks that pretend to be AI results.
 | Feature | Model | Free tier? | Notes |
 | --- | --- | --- | --- |
 | Text directives (`/api/pilot/command`) | `gemini-2.5-flash` | Yes | Real Gemini output |
-| Image generation / editing | `gemini-2.5-flash-image` | No | Returns `503 AI_UNAVAILABLE` unless billing is enabled |
+| Image generation | **ComfyUI (local)** | **Yes** | Free on your own GPU — the preferred backend |
+| Image generation / editing | `gemini-2.5-flash-image` | No | Paid fallback; `503 AI_UNAVAILABLE` without billing |
 | Video generation | `gemini-omni-1.2-flash` | No | Returns `503 AI_UNAVAILABLE` unless billing is enabled |
+
+### ComfyUI (free local image generation)
+
+If a ComfyUI server is running, it becomes the image backend, so image
+generation and LoRA sample images cost nothing. Point the app at it:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `COMFYUI_URL` | `http://127.0.0.1:8188` | Where ComfyUI listens |
+| `COMFYUI_CHECKPOINT` | `sd_xl_base_1.0.safetensors` | Checkpoint for the built-in workflow |
+| `COMFYUI_WORKFLOW` | (built-in SDXL graph) | Path to your own workflow JSON (API format) with `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`, `__HEIGHT__`, `__CHECKPOINT__` placeholders |
+| `COMFYUI_TIMEOUT_MS` | `180000` | Per-image timeout |
+| `COMFYUI_DISABLE` | (unset) | Set to `1` to ignore ComfyUI and use Gemini |
+
+The backend order is ComfyUI → Gemini (if billed) → unavailable. `GET
+/api/direk/status` reports the active `image_backend`.
 
 When the Gemini key is missing or a call fails, AI endpoints answer with HTTP
 `503` and a body like:
