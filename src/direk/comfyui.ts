@@ -223,6 +223,77 @@ export async function generateWithComfy(
   return Buffer.from(await view.arrayBuffer());
 }
 
+/**
+ * Build the video workflow. Unlike images there is no built-in default: video
+ * needs an AnimateDiff/SVD graph that only the user's ComfyUI has, so we require
+ * COMFYUI_VIDEO_WORKFLOW and fail with a clear message when it is missing.
+ */
+export function buildVideoWorkflow(
+  prompt: string,
+  opts: { negative?: string; seed?: number; width?: number; height?: number; frames?: number } = {},
+): Record<string, unknown> {
+  const templatePath = process.env.COMFYUI_VIDEO_WORKFLOW;
+  if (!templatePath || !fs.existsSync(templatePath)) {
+    throw new Error(
+      'No video workflow configured. Point COMFYUI_VIDEO_WORKFLOW at an AnimateDiff/SVD ' +
+      'workflow exported in API format (placeholders __PROMPT__, __NEGATIVE__, __SEED__, ' +
+      '__WIDTH__, __HEIGHT__, __FRAMES__).',
+    );
+  }
+  const negative = opts.negative ?? DEFAULT_NEGATIVE;
+  const seed = opts.seed ?? Math.floor(Math.random() * 1_000_000_000);
+  const width = opts.width ?? 832;
+  const height = opts.height ?? 480;
+  const frames = opts.frames ?? 49;
+  const raw = fs.readFileSync(templatePath, 'utf8')
+    .replaceAll('__PROMPT__', escapeJson(prompt))
+    .replaceAll('__NEGATIVE__', escapeJson(negative))
+    .replaceAll('__SEED__', String(seed))
+    .replaceAll('__WIDTH__', String(width))
+    .replaceAll('__HEIGHT__', String(height))
+    .replaceAll('__FRAMES__', String(frames))
+    .replaceAll('__CHECKPOINT__', escapeJson(process.env.COMFYUI_CHECKPOINT || 'sd_xl_base_1.0.safetensors'));
+  return JSON.parse(raw);
+}
+
+/** True when a ComfyUI video workflow has been configured. */
+export function comfyVideoConfigured(): boolean {
+  const p = process.env.COMFYUI_VIDEO_WORKFLOW;
+  return Boolean(p && fs.existsSync(p));
+}
+
+/**
+ * Generate one video locally. Queues the AnimateDiff/SVD workflow, waits for it
+ * to finish, then downloads the produced file. Free, on the local GPU.
+ */
+export async function generateVideoWithComfy(
+  prompt: string,
+  opts: { negative?: string; width?: number; height?: number; frames?: number } = {},
+): Promise<{ data: Buffer; filename: string }> {
+  const base = comfyUrl();
+  const workflow = buildVideoWorkflow(prompt, opts);
+
+  const queued = await fetch(`${base}/prompt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: workflow, client_id: `direk-vid-${Date.now()}` }),
+  });
+  if (!queued.ok) throw new Error(`ComfyUI /prompt returned ${queued.status}`);
+  const { prompt_id: promptId } = (await queued.json()) as { prompt_id?: string };
+  if (!promptId) throw new Error('ComfyUI did not return a prompt_id');
+
+  // Video takes longer than a still, so allow a generous ceiling.
+  const image = await waitForImage(base, promptId, Math.max(timeoutMs(), 600000));
+  const params = new URLSearchParams({
+    filename: image.filename,
+    subfolder: image.subfolder,
+    type: image.type,
+  });
+  const view = await fetch(`${base}/view?${params}`);
+  if (!view.ok) throw new Error(`ComfyUI /view returned ${view.status}`);
+  return { data: Buffer.from(await view.arrayBuffer()), filename: image.filename };
+}
+
 /** Poll `/history/<id>` until the prompt finishes, then return its first image. */
 async function waitForImage(base: string, promptId: string, limitMs: number): Promise<ComfyImageRef> {
   const deadline = Date.now() + limitMs;
@@ -234,7 +305,9 @@ async function waitForImage(base: string, promptId: string, limitMs: number): Pr
       const outputs = entry?.outputs;
       if (outputs) {
         for (const node of Object.values<any>(outputs)) {
-          const first = node?.images?.[0];
+          // Image nodes report `images`; video nodes (VHS_VideoCombine and
+          // friends) report `gifs`, with the same shape.
+          const first = node?.images?.[0] ?? node?.gifs?.[0];
           if (first?.filename) {
             return {
               filename: first.filename,

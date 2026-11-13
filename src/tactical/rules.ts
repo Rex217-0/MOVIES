@@ -127,15 +127,45 @@ export function validateImageEditInput(imageBase64?: string, prompt?: string): {
   return { valid: true };
 }
 
+// Veo-style prompt scaffolding. Google's Veo guide builds a prompt from
+// subject, action, camera, lighting and style; we only add the parts the user
+// left out, so their own wording always wins.
+const HAS_CAMERA = /\b(shot|close[- ]?up|wide|aerial|drone|pan|tilt|zoom|dolly|tracking|orbit|angle|pov|crane|handheld|macro|b-?roll)\b/i;
+const HAS_LIGHT = /\b(light|lighting|lit|neon|sunset|sunrise|golden hour|shadow|backlit|glow|moody|dusk|dawn|fluorescent|volumetric)\b/i;
+const HAS_STYLE = /\b(cinematic|film|35mm|anamorphic|photoreal|hyperreal|4k|8k|shot on|style|aesthetic)\b/i;
+
+function tidy(raw: string): string {
+  return (raw || '').trim().replace(/\s+/g, ' ').replace(/[.\s]+$/, '');
+}
+
+/**
+ * Enhances an image prompt toward Veo-grade output: adds a cinematic camera,
+ * dramatic lighting and a film look only when the prompt lacks them.
+ */
+export function buildVeoStylePrompt(rawPrompt: string): string {
+  const clean = tidy(rawPrompt);
+  if (!clean) return clean;
+  const parts = [clean];
+  if (!HAS_CAMERA.test(clean)) parts.push('cinematic camera movement, slow dolly-in');
+  if (!HAS_LIGHT.test(clean)) parts.push('dramatic volumetric lighting, shallow depth of field');
+  if (!HAS_STYLE.test(clean)) parts.push('photoreal, 35mm film look, highly detailed');
+  return parts.join(', ');
+}
+
+/** The negative prompt paired with buildVeoStylePrompt. */
+export function buildVeoStyleNegative(): string {
+  return 'blurry, low quality, distorted, watermark, text, extra limbs, flicker, jitter';
+}
+
 /**
  * Formats a tactical prompt for reconnaissance video generation.
  */
 export function buildTacticalVideoPrompt(rawPrompt: string, styleModifier = 'cinematic tactical HUD'): string {
-  const clean = rawPrompt.trim();
-  if (clean.toLowerCase().includes('tactical') || clean.toLowerCase().includes('cinematic')) {
-    return clean;
-  }
-  return `${clean}, ${styleModifier}, high-fidelity sci-fi reconnaissance simulation`;
+  const clean = (rawPrompt || '').trim();
+  if (!clean) return clean;
+  const lower = clean.toLowerCase();
+  if (lower.includes('tactical') || lower.includes('cinematic')) return clean;
+  return `${buildVeoStylePrompt(clean)}, ${styleModifier}, high-fidelity sci-fi reconnaissance simulation`;
 }
 
 export interface VideoAsset {
