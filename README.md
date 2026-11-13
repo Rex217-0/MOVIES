@@ -1,8 +1,33 @@
-# Pilot's VIP Battle Room
+# MOVIE CREATOR
 
-A tactical neural-link cockpit: a React + TypeScript front end with an Express
-backend that streams "pilot thoughts" over Server-Sent Events (SSE) and answers
-commander directives with Gemini.
+One app, two suites. A React + TypeScript front end with an Express backend:
+
+- **Director's Chair (Direk)** — a Filipino AI movie director. It grounds genre
+  advice in a bundled catalog, gates on missing essentials (haba at mood), and
+  walks a film from IDEYA → SCRIPT → KARAKTER → SHOT LIST → VISUAL → EDIT → PUBLISH.
+- **VIP Battle Room (Pilot)** — the tactical cockpit that streams "pilot
+  thoughts" over Server-Sent Events (SSE) and answers commander directives.
+
+Both share the same server, the same honest-availability rules, and the same
+`GEMINI_API_KEY`.
+
+## Datasets
+
+Grounding data lives in `data/` and is read at startup — nothing is fetched from
+the network:
+
+| File | Rows | Used by |
+| --- | --- | --- |
+| `netflix_titles.csv` | 8,809 | reference catalog |
+| `imdb_movies.csv` | 1,000 | reference catalog |
+| `filipino_movies.csv` | 469 | reference catalog |
+| `movie_statistics.csv` | 4,380 | reference catalog + ratings/budgets |
+| `tmdb_movies.csv` + `tmdb_directors.csv` | 1,465 | per-title benchmarks |
+| `boxoffice/*.csv` | 9 files | market intel (genres, distributors, methods, ratings) |
+
+The reference catalog searches **14,658 titles** across four sources. Matches
+are drawn round-robin across sources, so the large Netflix set cannot crowd out
+the smaller ones (and the statistics rows with ratings and budgets do surface).
 
 ## What actually works
 
@@ -12,8 +37,25 @@ no hardcoded fallbacks that pretend to be AI results.
 | Feature | Model | Free tier? | Notes |
 | --- | --- | --- | --- |
 | Text directives (`/api/pilot/command`) | `gemini-2.5-flash` | Yes | Real Gemini output |
-| Image generation / editing | `gemini-2.5-flash-image` | No | Returns `503 AI_UNAVAILABLE` unless billing is enabled |
+| Image generation | **ComfyUI (local)** | **Yes** | Free on your own GPU — the preferred backend |
+| Image generation / editing | `gemini-2.5-flash-image` | No | Paid fallback; `503 AI_UNAVAILABLE` without billing |
 | Video generation | `gemini-omni-1.2-flash` | No | Returns `503 AI_UNAVAILABLE` unless billing is enabled |
+
+### ComfyUI (free local image generation)
+
+If a ComfyUI server is running, it becomes the image backend, so image
+generation and LoRA sample images cost nothing. Point the app at it:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `COMFYUI_URL` | `http://127.0.0.1:8188` | Where ComfyUI listens |
+| `COMFYUI_CHECKPOINT` | `sd_xl_base_1.0.safetensors` | Checkpoint for the built-in workflow |
+| `COMFYUI_WORKFLOW` | (built-in SDXL graph) | Path to your own workflow JSON (API format) with `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`, `__HEIGHT__`, `__CHECKPOINT__` placeholders |
+| `COMFYUI_TIMEOUT_MS` | `180000` | Per-image timeout |
+| `COMFYUI_DISABLE` | (unset) | Set to `1` to ignore ComfyUI and use Gemini |
+
+The backend order is ComfyUI → Gemini (if billed) → unavailable. `GET
+/api/direk/status` reports the active `image_backend`.
 
 When the Gemini key is missing or a call fails, AI endpoints answer with HTTP
 `503` and a body like:
@@ -87,15 +129,125 @@ The SSE stream (`/api/pilot/thought-stream`) also accepts `?token=` because
 - The gallery never invents a `url` for placeholder items. Preset items keep an
   empty `url` and `model: "placeholder"`, so the UI shows them as unavailable.
 
-## Earlier work: the "Direk" movie-director app
+## The Direk endpoints
 
-Before this cockpit, the repository held a different app: **Direk**, a Filipino
-AI movie-director assistant (Python, OpenAI-compatible `POST /v1/chat/completions`,
-with a genre gate and a Netflix-style reference catalog). It was built from
-`notebooks/direk_kaggle_prototype.ipynb` and lives in git history at commit
-`e4acafb`.
+| Endpoint | Model? | Purpose |
+| --- | --- | --- |
+| `GET /api/direk/status` | No | Model, pipeline, genres, sources, row counts |
+| `GET /api/direk/reference?genre=&n=` | No | Catalog titles for a genre |
+| `GET /api/direk/market` | No | Real box-office stats |
+| `GET /api/direk/benchmark?title=` | No | Per-title budget/revenue/votes (TMDB) |
+| `POST /api/direk/chat` | Yes | The director. Gated before the model runs |
 
-That Python service and this Node/React cockpit are two different apps. This
-branch does not restore Direk, because that is an architecture decision, not a
-bug fix. If the movie-director assistant is the real goal, say so and it can be
-restored or merged as a separate service.
+The gate is deterministic: with no key, an incomplete request (missing haba or
+mood) still gets a real question back, and a complete request returns
+`503 AI_UNAVAILABLE` rather than fabricated output.
+
+## LoRA training sets
+
+Direk turns a brief into a LoRA training set for image or video models. The
+**LoRA Studio** tab (or the API) produces the text half that is usually wrong:
+one caption per sample, a kohya_ss config, and dataset metadata.
+
+```
+POST /api/direk/lora/plan      preview the plan + file list (no model needed)
+POST /api/direk/lora/dataset   download the whole set as a .zip
+```
+
+The plan is deterministic and grounded: it draws visual references from the
+catalog, sizes the shot count from the runtime, and folds the character bible
+into every caption so the look stays consistent.
+
+```
+dataset/direk_ang_huling_tala_001.txt   direk_ang_huling_tala, sariwang mukha, ...
+dataset/README.md
+kohya_config.toml
+dataset_info.json
+```
+
+Each caption leads with the trigger token, then the character's fixed look, then
+the shot description — the order LoRA trainers expect. The trigger must match
+`^[a-z][a-z0-9_]{2,39}$`; the API rejects anything else.
+
+## First run: the SETUP panel
+
+The app needs to know where ComfyUI and kohya are. Open **SETUP** in the header,
+type the paths, press SAVE. The app writes `direk.config.json` and uses it from
+then on — no environment variables to edit, and the paths survive a restart.
+
+The panel also shows a live check: whether ComfyUI is reachable, which
+checkpoints and LoRAs it can see, and whether training is ready. Environment
+variables still work and always win over the file.
+
+| Setting | Meaning |
+| --- | --- |
+| ComfyUI URL | Where ComfyUI listens (`http://127.0.0.1:8188`, or a LAN IP) |
+| Checkpoint | Model for the built-in workflow |
+| LoRAs folder | ComfyUI's `models/loras`; trained LoRAs are copied here |
+| kohya folder | kohya_ss / sd-scripts checkout (has `train_network.py`) |
+| Base model | Base model path or HuggingFace id for training |
+| Python | Interpreter for training |
+| Output folder | Where runs and checkpoints are written |
+
+## Using a trained LoRA
+
+After a training run finishes, its `.safetensors` is copied into the LoRAs
+folder automatically. From then on it appears in the **LoRA Studio** and
+**Image Matrix** pickers; choose it (and a strength) and the next images are
+generated in that style. The workflow gains a `LoraLoader` node wired between
+the checkpoint and the sampler.
+
+## The AI text model (free)
+
+Direk chat and the Battle Room directives need a text model. There are two free
+ways, and the app picks one automatically:
+
+- **Gemini** — set `GEMINI_API_KEY` (the free tier is enough). Get a key at
+  https://aistudio.google.com/apikey. This is the preferred path.
+- **Ollama** — fully local and offline, no account and no key. Install Ollama
+  from https://ollama.com, then `ollama pull qwen2.5:7b`. Used automatically
+  when no Gemini key is set.
+
+With neither, the AI endpoints return an honest `503 AI_UNAVAILABLE` — nothing
+is fabricated. `GET /api/health` reports which backend is live. Both paths and
+their settings are shown in the app's SETUP panel.
+
+Image and video generation are not on the Gemini free tier (they need billing),
+so the app leaves them unavailable and points image work at ComfyUI instead.
+
+## LoRA auto-training (kohya_ss)
+
+Direk can train the set it just generated, without leaving the app. The
+**LoRA Studio** tab has a TRAIN button; the API is:
+
+```
+GET  /api/direk/train/status    is a trainer installed? what is the current job?
+POST /api/direk/train/start     generate images, write the dataset, start training
+POST /api/direk/train/cancel    stop the running job
+GET  /api/direk/train/stream    live training log (SSE)
+```
+
+Training runs locally, so it needs kohya_ss / sd-scripts on the machine that
+runs the app. Nothing is faked: with no trainer installed the status endpoint
+says so and TRAIN stays disabled.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `KOHYA_DIR` | (unset) | Path to kohya_ss / sd-scripts (must contain `train_network.py`). Enables training |
+| `KOHYA_BASE_MODEL` | (unset) | Base model path or HuggingFace id. Required |
+| `KOHYA_PYTHON` | `python3` | Interpreter |
+| `KOHYA_ACCELERATE` | (unset) | `1` to launch via `accelerate launch` |
+| `KOHYA_OUTPUT_DIR` | `<cwd>/lora_runs` | Where runs and checkpoints are written |
+| `KOHYA_RUNS_ROOT` | `<cwd>/lora_runs` | Where each run's dataset + config are written |
+| `KOHYA_TIMEOUT_MS` | `21600000` (6 h) | Hard cap on a run |
+
+Each run writes a self-contained folder: `dataset/` (images + captions side by
+side), `kohya_config.toml` with absolute paths, the live log, and the trained
+`.safetensors` when it finishes.
+
+## History
+
+Direk started as a Python/Kaggle prototype (`notebooks/direk_kaggle_prototype.ipynb`,
+built into a service at commit `e4acafb`). It has since been ported to TypeScript
+under `src/direk/` and merged into this app, so the director and the cockpit ship
+together.

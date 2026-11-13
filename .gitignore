@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+lora_runs/
+direk.config.json
+comfy_loras/

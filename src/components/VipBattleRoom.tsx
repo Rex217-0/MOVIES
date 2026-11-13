@@ -28,6 +28,7 @@ export const VipBattleRoom: React.FC<{
 }> = ({ onInspectThinking, onOpenVideoRecon, onOpenImageMatrix }) => {
   const [inputCommand, setInputCommand] = useState('');
   const [vitals, setVitals] = useState({ latency_ms: 0, tokens_per_sec: 0 });
+  const [modelName, setModelName] = useState<string>('');
   const [protocols, setProtocols] = useState<ProtocolItem[]>([
     { id: 'A24_CINEMATOGRAPHY', name: 'A24_CINEMATOGRAPHY', active: true },
     { id: 'MOCCASIN_CONSISTENCY', name: 'MOCCASIN_CONSISTENCY', active: true },
@@ -94,6 +95,7 @@ export const VipBattleRoom: React.FC<{
             latency_ms: data.latency_ms || 0,
             tokens_per_sec: data.tokens_per_sec || 0,
           });
+          if (data.model) setModelName(data.model);
         }
       } catch {
         // Backend might not be ready yet
@@ -245,7 +247,7 @@ export const VipBattleRoom: React.FC<{
               </span>
             </div>
             <p className="text-[10px] text-[#00E5FF] font-mono flex items-center gap-1.5">
-              <span>Neural Link: GEMINI 2.5 FLASH</span>
+              <span>Neural Link: {modelName ? modelName.toUpperCase() : 'CHECKING…'}</span>
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span>
             </p>
           </div>

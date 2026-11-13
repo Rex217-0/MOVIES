@@ -1,9 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TEXT_MODEL, IMAGE_MODEL, VIDEO_MODEL, IMAGE_MODEL_FREE, VIDEO_MODEL_FREE, aiUnavailable } from './config';
+import {
+  TEXT_MODEL, TEXT_MODELS, IMAGE_MODEL, VIDEO_MODEL, IMAGE_MODEL_FREE, VIDEO_MODEL_FREE,
+  aiUnavailable, isRetryableModelError,
+} from './config';
 
-test('text model is a free-tier model', () => {
-  assert.equal(TEXT_MODEL, 'gemini-2.5-flash');
+test('the text models are a non-empty, ordered fallback list', () => {
+  assert.ok(TEXT_MODELS.length >= 2, 'needs a fallback');
+  assert.equal(TEXT_MODEL, TEXT_MODELS[0]);
+  for (const m of TEXT_MODELS) assert.match(m, /^gemini-/);
+});
+
+test('retired and rate-limited models are retried, real errors are not', () => {
+  assert.equal(isRetryableModelError('models/gemini-2.5-flash is no longer available to new users'), true);
+  assert.equal(isRetryableModelError('This model is currently experiencing high demand'), true);
+  assert.equal(isRetryableModelError('RESOURCE_EXHAUSTED: 429 rate limit'), true);
+  assert.equal(isRetryableModelError('API key not valid. Please pass a valid API key.'), false);
 });
 
 test('image and video generation are marked unavailable on the free tier', () => {

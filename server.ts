@@ -2,6 +2,7 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import { 
@@ -18,14 +19,45 @@ import {
   IMAGE_MODEL,
   IMAGE_MODEL_FREE,
   TEXT_MODEL,
+  TEXT_MODELS,
+  isRetryableModelError,
   VIDEO_MODEL,
   VIDEO_MODEL_FREE,
   aiUnavailable,
   NO_FREE_IMAGE_MODEL,
   NO_FREE_VIDEO_MODEL,
 } from './src/config.ts';
+import { ReferenceCatalog } from './src/direk/reference.ts';
+import { MarketIntel } from './src/direk/market.ts';
+import { DirekService, type ChatMessage } from './src/direk/service.ts';
+import { PIPELINE, STAGE_SKILL } from './src/direk/pipeline.ts';
+import { GENRE_MAP } from './src/direk/genres.ts';
+import { SKILLS } from './src/direk/skills.ts';
+import { planLora } from './src/direk/loraPlan.ts';
+import {
+  buildLoraArtifacts, buildLoraZip, buildCaption, isValidTrigger, toSlug,
+  numberedName, MAX_LORA_IMAGES,
+} from './src/direk/lora.ts';
+import {
+  comfyAvailable, generateWithComfy, comfyUrl,
+  publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
+} from './src/direk/comfyui.ts';
+import {
+  LoRATrainer, trainerStatus, trainingConfig, buildTrainCommand,
+} from './src/direk/trainer.ts';
+import {
+  readSettings, writeSettings, applySettings, effectiveSettings,
+  configPath, comfyModelOptions, type DirekSettings,
+} from './src/direk/settings.ts';
+import {
+  ollamaStatus, ollamaChat, preferredTextBackend, ollamaUrl, ollamaModel,
+} from './src/direk/llm.ts';
 
 dotenv.config();
+
+// Load the saved runtime settings (ComfyUI / kohya paths) so the backends work
+// without hand-editing environment variables. Real env vars still win.
+applySettings(readSettings());
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -75,8 +107,12 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
 app.use('/api', requireAuth);
 
 // Initialize GoogleGenAI server-side with telemetry header
+// The SDK defaults to the stable v1 endpoint, but the current flash models are
+// only served on v1beta; without this the calls 404 with "not found for API
+// version v1".
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
+  apiVersion: 'v1beta',
   httpOptions: {
     headers: {
       'User-Agent': 'aistudio-build',
@@ -88,7 +124,7 @@ const ai = new GoogleGenAI({
 let currentVitals = {
   latency_ms: 0,
   tokens_per_sec: 0,
-  model: TEXT_MODEL,
+  model: TEXT_MODEL as string,
   status: 'IDLE',
   memory_load_pct: 28,
   shield_pct: 94,
@@ -247,12 +283,36 @@ app.get('/api/pilot/status', (_req: Request, res: Response) => {
 
 // 1b. Health / capability report. States plainly which features are real and
 // which are unavailable, so the UI never has to guess.
-app.get('/api/health', (_req: Request, res: Response) => {
+app.get('/api/health', async (_req: Request, res: Response) => {
   const keyConfigured = Boolean(process.env.GEMINI_API_KEY);
+  const ollama = await ollamaStatus();
+  const textAvailable = keyConfigured || (ollama.reachable && ollama.model_present);
+  const backend = keyConfigured ? 'gemini' : (ollama.reachable && ollama.model_present ? 'ollama' : 'none');
   res.json({
-    ok: keyConfigured,
+    ok: textAvailable,
     gemini_key_configured: keyConfigured,
-    text: { model: TEXT_MODEL, available: keyConfigured, free_tier: true },
+    text: {
+      model: backend === 'ollama' ? ollama.model : TEXT_MODEL,
+      backend,
+      available: textAvailable,
+      free_tier: true,
+    },
+    ollama: {
+      url: ollama.url,
+      model: ollama.model,
+      reachable: ollama.reachable,
+      model_present: ollama.model_present,
+      models: ollama.models,
+      error: ollama.error,
+    },
+    direk: {
+      available: textAvailable,
+      free_tier: true,
+      model: backend === 'ollama' ? ollama.model : TEXT_MODEL,
+      backend,
+      reference_available: referenceCatalog.available,
+      reference_rows: referenceCatalog.size,
+    },
     image: {
       model: IMAGE_MODEL,
       available: keyConfigured && IMAGE_MODEL_FREE,
@@ -313,24 +373,7 @@ app.post('/api/pilot/command', async (req: Request, res: Response) => {
 
   // Honest behaviour: if no usable model is available, say so. We never
   // fabricate a tactical "analysis" and present it as a model response.
-  if (!process.env.GEMINI_API_KEY) {
-    broadcastThought('[SYS] No GEMINI_API_KEY configured - directive not executed.');
-    res.status(503).json(
-      aiUnavailable(
-        TEXT_MODEL,
-        'Set GEMINI_API_KEY (free tier) to enable directive execution.',
-        'The Gemini API key is not configured'
-      )
-    );
-    return;
-  }
-
-  broadcastThought(`[TEXT REASONING] Calling ${TEXT_MODEL}...`);
-
-  try {
-    const response = await ai.models.generateContent({
-      model: TEXT_MODEL,
-      contents: `Commander Directive: "${cleanDirective}"
+  const directivePrompt = `Commander Directive: "${cleanDirective}"
 Analyze and execute this tactical command for the VIP Battle Room.
 Respond in strict JSON with:
 {
@@ -338,14 +381,25 @@ Respond in strict JSON with:
   "action": "Specific tactical action executed",
   "analysis": "Tactical assessment and reasoning (2-3 sentences)",
   "readiness": "OPTIMAL"
-}`,
-      config: {
-        systemInstruction: "You are the elite AI Pilot Tactical Core in a military sci-fi battle room. Execute directives with analytical rigor.",
-        responseMimeType: "application/json",
-      },
-    });
+}`;
+  const directiveSystem = 'You are the elite AI Pilot Tactical Core in a military sci-fi battle room. Execute directives with analytical rigor.';
 
-    const rawText = response.text || '';
+  if (!textBackendAvailable) {
+    broadcastThought('[SYS] No text model configured - directive not executed.');
+    res.status(503).json(
+      aiUnavailable(
+        TEXT_MODEL,
+        'Set GEMINI_API_KEY (free tier), or run a local Ollama model for free.',
+        'No text model backend is configured'
+      )
+    );
+    return;
+  }
+
+  broadcastThought(`[TEXT REASONING] Calling ${textModelName}...`);
+
+  try {
+    const rawText = await generateText(directiveSystem, directivePrompt, { json: true });
     const parsed = parsePilotResponse(rawText, 'TACTICAL_SYNTHESIS');
     const resultIntent = parsed.intent;
     const resultAction = parsed.action;
@@ -359,7 +413,7 @@ Respond in strict JSON with:
       latency_ms: calculated.latency_ms,
       tokens_per_sec: calculated.tokens_per_sec,
       status: 'ONLINE',
-      model: TEXT_MODEL,
+      model: textModelName,
     };
 
     broadcastThought(`[SYNTHESIS COMPLETE] Intent: ${resultIntent} | ${resultAnalysis}`);
@@ -378,7 +432,7 @@ Respond in strict JSON with:
 
     res.json({
       status: 'success',
-      model: TEXT_MODEL,
+      model: textModelName,
       intent: resultIntent,
       action: resultAction,
       analysis: resultAnalysis,
@@ -508,7 +562,7 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
 // FEATURE: Create & Edit Images
 // ==========================================
 app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
-  const { prompt, aspect_ratio, image_size } = req.body;
+  const { prompt, aspect_ratio, image_size, lora, loraStrength } = req.body;
 
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     res.status(400).json({ error: 'Image prompt is required.' });
@@ -520,9 +574,43 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
 
   broadcastThought(`[IMAGE PIPELINE] Image request: "${prompt.slice(0, 45)}..."`);
 
-  // Honest behaviour: no image model on the Gemini free tier, so report the
-  // feature as unavailable instead of returning a generated-looking SVG.
-  if (!process.env.GEMINI_API_KEY || !IMAGE_MODEL_FREE) {
+  // ComfyUI (local, free) is preferred. Without it, the paid Gemini image
+  // model is used; without either, the feature is honestly unavailable.
+  const backend = await resolveImageBackend();
+  if (backend === 'comfyui') {
+    try {
+      const png = await generateWithComfy(prompt, {
+        width: 1024, height: 1024, lora: parseLoraChoice({ lora, loraStrength }),
+      });
+      const elapsedMs = Date.now() - startTime;
+      const dataUrl = `data:image/png;base64,${png.toString('base64')}`;
+      broadcastThought(`[IMAGE COMPLETE] ComfyUI image generated (${elapsedMs}ms).`);
+      const mediaRecord: MediaItem = {
+        id: `IMG-${Date.now()}`,
+        type: 'image',
+        url: dataUrl,
+        prompt: cleanPrompt(prompt),
+        aspect_ratio: validAspect,
+        timestamp: new Date().toLocaleTimeString(),
+        model: 'comfyui',
+        details: 'ComfyUI local generation',
+      };
+      mediaGallery.unshift(mediaRecord);
+      if (mediaGallery.length > 40) mediaGallery.pop();
+      res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
+      return;
+    } catch (error: any) {
+      const reason = error?.message || 'Unknown error';
+      console.error(`[IMAGE ERROR] ComfyUI generation failed:`, reason);
+      broadcastThought(`[IMAGE ERROR] ComfyUI failed: ${reason}`);
+      res.status(503).json(
+        aiUnavailable('comfyui', 'Check that ComfyUI is running and reachable.', reason)
+      );
+      return;
+    }
+  }
+
+  if (backend === 'none') {
     broadcastThought(`[IMAGE UNAVAILABLE] ${NO_FREE_IMAGE_MODEL}`);
     res.status(503).json(
       aiUnavailable(IMAGE_MODEL, NO_FREE_IMAGE_MODEL, 'Image generation is unavailable')
@@ -689,6 +777,627 @@ app.post('/api/assets/review', (req: Request, res: Response) => {
   const updated = renderVaultAssets.find(a => a.id === assetId);
   broadcastThought(`[RENDER VAULT] Asset ${assetId} review status updated: ${action.toUpperCase()}`);
   res.json({ success: true, asset: updated });
+});
+
+// ==========================================
+// FEATURE: Direk - AI Movie Director
+// The movie-director assistant, merged into the cockpit. It grounds genre
+// advice in the bundled Netflix-style catalog and gates on missing essentials.
+// ==========================================
+const referenceCatalog = new ReferenceCatalog(path.join(__dirname, 'data'), 5);
+const marketIntel = new MarketIntel(path.join(__dirname, 'data'));
+
+// ---------------------------------------------------------------------------
+// Text backends: Gemini when a key is set, otherwise a local Ollama model.
+// Both are free; Ollama needs no account at all.
+// ---------------------------------------------------------------------------
+let textBackendCache: { backend: 'gemini' | 'ollama' | 'none'; at: number } | null = null;
+
+async function resolveTextBackend(): Promise<'gemini' | 'ollama' | 'none'> {
+  const preferred = preferredTextBackend();
+  if (preferred === 'gemini') return 'gemini';
+  if (preferred === 'none') return 'none';
+  // Cache the Ollama probe briefly so a server started later is picked up.
+  if (!textBackendCache || Date.now() - textBackendCache.at > 15000) {
+    const status = await ollamaStatus();
+    const usable = status.reachable && status.model_present;
+    textBackendCache = { backend: usable ? 'ollama' : 'none', at: Date.now() };
+  }
+  return textBackendCache.backend;
+}
+
+let textBackend: 'gemini' | 'ollama' | 'none' = preferredTextBackend();
+let textBackendAvailable = textBackend !== 'none';
+// Which Gemini model last answered; the list is tried in order.
+let geminiModelInUse: string = TEXT_MODEL;
+let textModelName = textBackend === 'gemini' ? TEXT_MODEL : ollamaModel();
+
+async function refreshTextBackend(): Promise<void> {
+  textBackend = await resolveTextBackend();
+  textBackendAvailable = textBackend !== 'none';
+  textModelName = textBackend === 'gemini' ? geminiModelInUse : ollamaModel();
+}
+
+/**
+ * One text completion, from whichever backend is available. `messages` are the
+ * plain conversation turns; the system prompt is passed separately.
+ */
+async function generateText(
+  system: string,
+  messages: ChatMessage[] | string,
+  opts: { json?: boolean; temperature?: number } = {},
+): Promise<string> {
+  await refreshTextBackend();
+  if (!textBackendAvailable) {
+    throw new Error('No text model is configured (set GEMINI_API_KEY, or run Ollama)');
+  }
+  if (textBackend === 'ollama') {
+    const turns: { role: 'user' | 'assistant'; content: string }[] =
+      typeof messages === 'string'
+        ? [{ role: 'user', content: messages }]
+        : messages
+            .filter(m => m.role !== 'system')
+            .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
+    return ollamaChat({
+      system,
+      messages: turns,
+      json: opts.json,
+      temperature: opts.temperature ?? 0.7,
+    });
+  }
+  // Gemini
+  const contents = typeof messages === 'string'
+    ? messages
+    : messages.map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
+  let lastError: any = null;
+  for (const model of TEXT_MODELS) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents,
+        config: {
+          systemInstruction: system,
+          temperature: opts.temperature ?? 0.7,
+          topP: 0.9,
+          maxOutputTokens: 1024,
+          ...(opts.json ? { responseMimeType: 'application/json' } : {}),
+        },
+      });
+      geminiModelInUse = model;
+      return response.text || '';
+    } catch (error: any) {
+      lastError = error;
+      // Retire/rate-limit errors: try the next model. Anything else is real.
+      if (!isRetryableModelError(error?.message || '')) throw error;
+    }
+  }
+  throw lastError || new Error('No Gemini text model was usable');
+}
+
+const direkService = new DirekService(
+  referenceCatalog,
+  async (systemPrompt, messages) => {
+    return generateText(systemPrompt, messages, { temperature: 0.5 });
+  },
+  () => marketIntel.brief(),
+);
+
+app.get('/api/direk/status', async (_req: Request, res: Response) => {
+  const backend = await resolveImageBackend();
+  await refreshTextBackend();
+  res.json({
+    ok: textBackendAvailable,
+    model: textModelName,
+    text_backend: textBackend,
+    gemini_key_configured: Boolean(process.env.GEMINI_API_KEY),
+    pipeline: PIPELINE,
+    genres: Object.keys(GENRE_MAP),
+    skills: Object.entries(SKILLS).map(([id, spec]) => ({ id, ...spec })),
+    reference_sources: referenceCatalog.sources(),
+    market_available: marketIntel.available,
+    image_backend: backend,
+    comfyui_url: comfyUrl(),
+    ...direkService.health(),
+  });
+});
+
+app.post('/api/direk/chat', async (req: Request, res: Response) => {
+  const { messages } = req.body as { messages?: ChatMessage[] };
+  if (!Array.isArray(messages) || messages.length === 0) {
+    res.status(400).json({ error: 'messages array is required.' });
+    return;
+  }
+
+  try {
+    const result = await direkService.chat(messages);
+    broadcastThought(`[DIREK] Genre: ${result.genre ?? 'n/a'} · ${result.reply.slice(0, 60)}...`);
+    res.json({
+      status: 'success',
+      model: textModelName,
+      reply: result.reply,
+      reference_genre: result.genre,
+      references: result.references,
+      gate: result.gate,
+      action: result.action,
+      action_error: result.action_error,
+      market_brief: result.market_brief,
+    });
+  } catch (error: any) {
+    const reason = error?.message || 'Unknown error';
+    console.error(`[DIREK ERROR] ${TEXT_MODEL} chat failed:`, reason);
+    broadcastThought(`[DIREK ERROR] ${reason}`);
+    res.status(503).json(
+      aiUnavailable(TEXT_MODEL, 'Check the server logs and the Gemini API key.', reason)
+    );
+  }
+});
+
+// Box-office market intelligence (real stats, no model needed).
+app.get('/api/direk/market', (_req: Request, res: Response) => {
+  res.json({
+    available: marketIntel.available,
+    brief: marketIntel.brief(),
+    top_genres: marketIntel.topGenres(),
+    top_distributors: marketIntel.topDistributors(),
+    production_methods: marketIntel.productionMethods(),
+    ratings: marketIntel.ratings(),
+  });
+});
+
+// Commercial benchmark for a single title, from the TMDB dataset.
+app.get('/api/direk/benchmark', (req: Request, res: Response) => {
+  const title = typeof req.query.title === 'string' ? req.query.title : '';
+  if (!title) {
+    res.status(400).json({ error: 'title query parameter is required.' });
+    return;
+  }
+  const benchmark = marketIntel.lookupBenchmark(title);
+  if (!benchmark) {
+    res.status(404).json({ error: `Walang benchmark para sa '${title}'.` });
+    return;
+  }
+  res.json(benchmark);
+});
+
+// Look up catalog titles directly (no model needed).
+app.get('/api/direk/reference', (req: Request, res: Response) => {
+  const genre = typeof req.query.genre === 'string' ? req.query.genre : null;
+  const kind = typeof req.query.kind === 'string' ? req.query.kind : 'Movie';
+  const n = typeof req.query.n === 'string' ? parseInt(req.query.n, 10) : undefined;
+  if (!genre) {
+    res.status(400).json({ error: 'genre query parameter is required.' });
+    return;
+  }
+  res.json({
+    genre,
+    available: referenceCatalog.available,
+    rows: referenceCatalog.size,
+    items: referenceCatalog.search(genre, kind, n),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LoRA training sets
+// Direk turns a brief into a LoRA training set, reusing the catalog, the
+// box-office presets and the character bible. Deterministic: no model needed.
+// ---------------------------------------------------------------------------
+
+interface LoraRequestBody {
+  title?: string;
+  genre?: string;
+  mood?: string;
+  durationMinutes?: number;
+  trigger?: string;
+  character?: { name?: string; look?: string; wardrobe?: string; voice?: string };
+  baseModel?: string;
+}
+
+function parseLoraBody(body: LoraRequestBody) {
+  const title = (body.title || '').trim();
+  const genre = (body.genre || '').trim();
+  const mood = (body.mood || '').trim();
+  if (!title || !genre || !mood) {
+    return { error: 'title, genre, and mood are required.' as const };
+  }
+  if (body.trigger && !isValidTrigger(body.trigger)) {
+    return {
+      error:
+        'Invalid trigger token. Use lowercase letters, digits and underscores (3-40 chars).',
+    } as const;
+  }
+  const plan = planLora(
+    {
+      title,
+      genre,
+      mood,
+      durationMinutes: Number(body.durationMinutes) || undefined,
+      trigger: body.trigger?.trim() || undefined,
+      character: body.character,
+      baseModel: body.baseModel?.trim() || undefined,
+    },
+    referenceCatalog,
+    marketIntel,
+  );
+  return { plan } as const;
+}
+
+// ---------------------------------------------------------------------------
+// Image backends
+// ComfyUI (local, free) is preferred; the paid Gemini image model is a
+// fallback. With neither, image features are honestly reported as unavailable.
+// ---------------------------------------------------------------------------
+type ImageBackend = 'comfyui' | 'gemini' | 'none';
+
+let comfyOk: { ok: boolean; at: number } | null = null;
+
+async function resolveImageBackend(): Promise<ImageBackend> {
+  if (process.env.COMFYUI_DISABLE !== '1') {
+    // Re-probe at most every 15s so a ComfyUI that starts later is picked up.
+    if (!comfyOk || Date.now() - comfyOk.at > 15000) {
+      comfyOk = { ok: await comfyAvailable(), at: Date.now() };
+    }
+    if (comfyOk.ok) return 'comfyui';
+  }
+  if (process.env.GEMINI_API_KEY && IMAGE_MODEL_FREE) return 'gemini';
+  return 'none';
+}
+
+/** Generate one image with the paid Gemini image model. */
+async function generateGeminiImage(prompt: string): Promise<Buffer | null> {
+  const interaction = await ai.interactions.create({
+    model: IMAGE_MODEL,
+    input: prompt,
+    response_modalities: ['image', 'text'],
+    generation_config: { image_config: { aspect_ratio: '1:1', image_size: '1K' } },
+  });
+  const dataUrl = extractImageFromInteraction(interaction);
+  if (!dataUrl) return null;
+  const comma = dataUrl.indexOf(',');
+  return Buffer.from(dataUrl.slice(comma + 1), 'base64');
+}
+
+function generateLoraImage(
+  prompt: string,
+  backend: ImageBackend,
+  lora?: LoraChoice,
+): Promise<Buffer | null> {
+  // The LoRA only applies to ComfyUI; the Gemini path has no LoRA concept.
+  return backend === 'comfyui'
+    ? generateWithComfy(prompt, { lora })
+    : generateGeminiImage(prompt);
+}
+
+function noImageNote(): string {
+  return (
+    `Walang larawan: walang image backend. Magpatakbo ng ComfyUI (COMFYUI_URL=${comfyUrl()}) ` +
+    `para sa libreng generation, o mag-enable ng billing para sa Gemini image model.`
+  );
+}
+
+// Preview the plan and the generated artifacts (no zip).
+app.post('/api/direk/lora/plan', async (req: Request, res: Response) => {
+  const parsed = parseLoraBody(req.body as LoraRequestBody);
+  if ('error' in parsed) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const { plan } = parsed;
+  const backend = await resolveImageBackend();
+  res.json({
+    trigger: plan.brief.trigger,
+    genre: plan.brief.genre,
+    mood: plan.brief.mood,
+    samples: plan.brief.samples.length,
+    character: plan.brief.character,
+    base_model: plan.brief.baseModel || 'stabilityai/stable-diffusion-xl-base-1.0',
+    references: plan.references,
+    notes: plan.notes,
+    artifacts: buildLoraArtifacts(plan.brief).map(a => a.filename),
+    images_available: backend !== 'none',
+    image_backend: backend,
+    max_images: MAX_LORA_IMAGES,
+  });
+});
+
+/** Run `worker` over `items` with a small concurrency limit. */
+async function mapLimited<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function run() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+  return results;
+}
+
+/** Read a LoRA selection out of a request body, or undefined for none. */
+function parseLoraChoice(body: { lora?: string; loraStrength?: number }): LoraChoice | undefined {
+  const name = (body.lora || '').trim();
+  if (!name) return undefined;
+  return { name, strength: clampStrength(body.loraStrength) };
+}
+
+/**
+ * Generate the sample images for a plan. Shared by the zip download and the
+ * trainer, so both produce the same set.
+ */
+async function generateLoraImages(
+  plan: ReturnType<typeof planLora>,
+  wantImages: boolean,
+  lora?: LoraChoice,
+): Promise<{ images: Map<string, Buffer>; skipped: string[]; imageNote?: string }> {
+  const images = new Map<string, Buffer>();
+  const skipped: string[] = [];
+  let imageNote: string | undefined;
+
+  const backend = wantImages ? await resolveImageBackend() : 'none';
+  if (!wantImages) {
+    imageNote = 'Hindi hiningi ang larawan para sa set na ito (images: false).';
+  } else if (backend === 'none') {
+    imageNote = noImageNote();
+    broadcastThought('[DIREK] LoRA set: text-only (no image backend)');
+  } else {
+    const targets = plan.brief.samples.slice(0, MAX_LORA_IMAGES);
+    broadcastThought(`[DIREK] LoRA set: ${targets.length} images via ${backend}...`);
+    const names = targets.map((_s, i) => numberedName(plan.brief.trigger, i));
+    // ComfyUI serialises on one GPU, so keep it to one job at a time.
+    const limit = backend === 'comfyui' ? 1 : 3;
+    await mapLimited(targets, limit, async (sample, i) => {
+      const name = names[i];
+      try {
+        const png = await generateLoraImage(sample.prompt, backend, lora);
+        if (png) images.set(name, png);
+        else skipped.push(name);
+      } catch (error: any) {
+        skipped.push(name);
+        console.error(`[DIREK] image ${name} failed:`, error?.message || error);
+      }
+      return null;
+    });
+    if (plan.brief.samples.length > MAX_LORA_IMAGES) {
+      imageNote = `Larawan lang para sa unang ${MAX_LORA_IMAGES} samples (cap).`;
+    }
+    if (skipped.length) {
+      imageNote = `${imageNote ? imageNote + ' ' : ''}${skipped.length} sample(s) na bigo.`;
+    }
+  }
+  return { images, skipped, imageNote };
+}
+
+// Download the whole LoRA training set as a zip. When an image model is
+// available, the sample images are generated and bundled too; otherwise the
+// zip still contains the text half and an IMAGES.md explaining the gap.
+app.post('/api/direk/lora/dataset', async (req: Request, res: Response) => {
+  const body = req.body as LoraRequestBody & { images?: boolean; lora?: string; loraStrength?: number };
+  const parsed = parseLoraBody(body);
+  if ('error' in parsed) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const { plan } = parsed;
+  const lora = parseLoraChoice(body);
+  const { images, skipped, imageNote } = await generateLoraImages(plan, body.images !== false, lora);
+
+  const zip = buildLoraZip(plan.brief, { images, skipped, imageNote });
+  const name = `${toSlug(plan.brief.title)}_${plan.brief.trigger}_lora.zip`;
+  broadcastThought(
+    `[DIREK] LoRA set ready: ${plan.brief.samples.length} samples · ${images.size} images`,
+  );
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+  res.send(zip);
+});
+
+// ---------------------------------------------------------------------------
+// LoRA training
+// Runs kohya_ss / sd-scripts locally. Nothing is faked: with no trainer
+// installed the endpoints report it as unavailable.
+// ---------------------------------------------------------------------------
+const loraTrainer = new LoRATrainer();
+const RUNS_ROOT = process.env.KOHYA_RUNS_ROOT || path.join(process.cwd(), 'lora_runs');
+// Default the trained output next to each run's dataset, so a run is self-contained.
+if (!process.env.KOHYA_OUTPUT_DIR) process.env.KOHYA_OUTPUT_DIR = RUNS_ROOT;
+
+function jobSummary() {
+  const job = loraTrainer.current();
+  if (!job) return null;
+  return {
+    id: job.id,
+    title: job.title,
+    trigger: job.trigger,
+    status: job.status,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    outputDir: job.outputDir,
+    artifact: job.artifact,
+    error: job.error,
+    log: job.log,
+  };
+}
+
+app.get('/api/direk/train/status', (_req: Request, res: Response) => {
+  const status = trainerStatus();
+  res.json({ ...status, job: jobSummary() });
+});
+
+// The LoRAs available to ComfyUI: trained ones Direk published, plus any the
+// user dropped into the same folder.
+app.get('/api/direk/lora/list', (_req: Request, res: Response) => {
+  res.json({ dir: lorasDir(), loras: listLoras() });
+});
+
+// ---------------------------------------------------------------------------
+// Setup: the local backend paths, editable from the UI so a fresh install
+// needs no hand-editing of environment variables.
+// ---------------------------------------------------------------------------
+app.get('/api/direk/settings', (_req: Request, res: Response) => {
+  const { settings, source } = effectiveSettings();
+  res.json({ config_path: configPath(), settings, source });
+});
+
+app.put('/api/direk/settings', (req: Request, res: Response) => {
+  const body = (req.body || {}) as DirekSettings;
+  const allowed: (keyof DirekSettings)[] = [
+    'comfyui_url', 'comfyui_checkpoint', 'comfyui_workflow', 'comfyui_loras_dir',
+    'kohya_dir', 'kohya_base_model', 'kohya_python', 'kohya_accelerate', 'kohya_output_dir',
+    'ollama_url', 'ollama_model',
+  ];
+  const clean: DirekSettings = {};
+  for (const key of allowed) {
+    if (body[key] !== undefined) (clean as any)[key] = body[key];
+  }
+  writeSettings(clean);
+  // Apply live so the next request already uses the new paths.
+  applySettings(clean, true);
+  comfyOk = null;
+  textBackendCache = null;
+  res.json({ saved: true, config_path: configPath(), settings: clean });
+});
+
+// One call the UI makes on load: is everything wired up and working?
+app.get('/api/direk/setup', async (_req: Request, res: Response) => {
+  const comfy = await comfyModelOptions();
+  const trainer = trainerStatus();
+  const ollama = await ollamaStatus();
+  const gemini = Boolean(process.env.GEMINI_API_KEY);
+  const textReady = gemini || (ollama.reachable && ollama.model_present);
+  res.json({
+    config_path: configPath(),
+    text: {
+      backend: gemini ? 'gemini' : (textReady ? 'ollama' : 'none'),
+      gemini_key: gemini,
+      model: gemini ? TEXT_MODEL : ollama.model,
+      ready: textReady,
+      ollama: {
+        url: ollama.url,
+        model: ollama.model,
+        reachable: ollama.reachable,
+        model_present: ollama.model_present,
+        models: ollama.models,
+        error: ollama.error,
+      },
+    },
+    comfyui: {
+      url: comfyUrl(),
+      reachable: comfy.reachable,
+      checkpoints: comfy.checkpoints,
+      loras: comfy.loras,
+      error: comfy.error,
+    },
+    trainer: { available: trainer.available, reason: trainer.reason, base_model: trainer.base_model },
+    loras_dir: lorasDir(),
+    published_loras: listLoras(),
+    ready: textReady && comfy.reachable && trainer.available,
+  });
+});
+
+// Start training. Generates the images first (so there is something to train
+// on), writes the dataset to disk, then launches the trainer.
+app.post('/api/direk/train/start', async (req: Request, res: Response) => {
+  const body = req.body as LoraRequestBody & {
+    images?: boolean;
+    epochs?: number;
+    resolution?: number;
+    networkDim?: number;
+    numRepeats?: number;
+    lora?: string;
+    loraStrength?: number;
+  };
+  const parsed = parseLoraBody(body);
+  if ('error' in parsed) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const status = trainerStatus();
+  if (!status.available) {
+    res.status(503).json({ error: status.reason, code: 'TRAINER_UNAVAILABLE' });
+    return;
+  }
+  const { plan } = parsed;
+  const lora = parseLoraChoice(body);
+  const { images } = await generateLoraImages(plan, body.images !== false, lora);
+  if (images.size === 0) {
+    res.status(400).json({
+      error: 'Walang larawan na na-generate. Magpatakbo ng ComfyUI o mag-enable ng image model bago mag-train.',
+    });
+    return;
+  }
+
+  const id = `${Date.now()}_${plan.brief.trigger}`;
+  const runRoot = path.join(RUNS_ROOT, id);
+  fs.mkdirSync(runRoot, { recursive: true });
+  const outputDir = path.join(status.output_dir, id);
+
+  const config = trainingConfig({
+    datasetDir: path.join(runRoot, 'dataset'),
+    outputDir,
+    outputName: `${toSlug(plan.brief.title)}_${plan.brief.trigger}`,
+    baseModel: status.base_model as string,
+    resolution: Number(body.resolution) || 1024,
+    numRepeats: Number(body.numRepeats) || 10,
+    maxEpochs: Number(body.epochs) || 10,
+    networkDim: Number(body.networkDim) || 32,
+    networkAlpha: Math.round((Number(body.networkDim) || 32) / 2),
+    seed: 42,
+  });
+
+  const captions = plan.brief.samples.map((s, i) => ({
+    name: numberedName(plan.brief.trigger, i),
+    text: buildCaption(plan.brief, s),
+  }));
+
+  try {
+    const job = loraTrainer.start({
+      id,
+      title: plan.brief.title,
+      trigger: plan.brief.trigger,
+      root: runRoot,
+      captions,
+      images,
+      config,
+      // Make the trained LoRA immediately usable by ComfyUI.
+      onArtifact: file => {
+        const published = publishLora(file);
+        broadcastThought(`[DIREK] LoRA published: ${published.name}`);
+      },
+    });
+    broadcastThought(`[DIREK] Training started: ${job.trigger} (${images.size} images).`);
+    res.json({ status: 'started', job: jobSummary() });
+  } catch (error: any) {
+    res.status(409).json({ error: error?.message || 'Hindi ma-start ang training.' });
+  }
+});
+
+app.post('/api/direk/train/cancel', (_req: Request, res: Response) => {
+  const cancelled = loraTrainer.cancel();
+  broadcastThought(cancelled ? '[DIREK] Training cancelled.' : '[DIREK] Walang tumatakbong training.');
+  res.json({ cancelled });
+});
+
+// Live training log (SSE). EventSource cannot set headers, so the token is
+// also accepted as a query parameter by the auth middleware.
+app.get('/api/direk/train/stream', (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const job = loraTrainer.current();
+  if (job) {
+    for (const line of job.log.slice(-100)) res.write(`data: ${line}\n\n`);
+  }
+  const off = loraTrainer.onLine(line => res.write(`data: ${line}\n\n`));
+  req.on('close', off);
 });
 
 function cleanPrompt(p: string): string {

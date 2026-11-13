@@ -48,3 +48,314 @@ export function thoughtStreamUrl(): string {
     ? `/api/pilot/thought-stream?token=${encodeURIComponent(token)}`
     : '/api/pilot/thought-stream';
 }
+
+// ---------------------------------------------------------------------------
+// Direk (AI Movie Director) endpoints
+// ---------------------------------------------------------------------------
+
+export interface DirekChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface CatalogTitle {
+  title: string;
+  type: string;
+  listed_in: string;
+  release_year: string;
+  duration: string;
+  director?: string;
+  cast?: string;
+  source: string;
+  rating?: number;
+  budget?: number;
+  worldwide_gross?: number;
+}
+
+export interface SkillAction {
+  skill: string;
+  connector: string;
+  args: Record<string, unknown>;
+  needs_confirm: boolean;
+  status: 'needs_confirm' | 'not_connected';
+}
+
+export interface DirekChatResult {
+  status: 'success';
+  model: string;
+  reply: string;
+  reference_genre: string | null;
+  references: CatalogTitle[];
+  gate: string | null;
+  action: SkillAction | null;
+  action_error: string | null;
+}
+
+export interface DirekStatus {
+  ok: boolean;
+  model: string;
+  gemini_key_configured: boolean;
+  pipeline: { id: string; name: string; description: string }[];
+  genres: string[];
+  skills: { id: string; kind: 'local' | 'api'; connector?: string; confirm?: boolean }[];
+  reference_available: boolean;
+  reference_rows: number;
+  reference_sources: Record<string, number>;
+  persona: string;
+  market_available?: boolean;
+  image_backend?: 'comfyui' | 'gemini' | 'none';
+  comfyui_url?: string;
+}
+
+/** A structured failure from an AI endpoint (HTTP 503 AI_UNAVAILABLE). */
+export class AiUnavailableError extends Error {
+  code: string;
+  model: string;
+  constructor(body: { error?: string; code?: string; model?: string; detail?: string }) {
+    super(body.error || 'The AI service is unavailable.');
+    this.code = body.code || 'AI_UNAVAILABLE';
+    this.model = body.model || '';
+  }
+}
+
+export async function direkStatus(): Promise<DirekStatus> {
+  const res = await apiFetch('/api/direk/status');
+  if (!res.ok) throw new Error(`Status request failed (${res.status})`);
+  return res.json();
+}
+
+export async function direkChat(messages: DirekChatMessage[]): Promise<DirekChatResult> {
+  const res = await apiFetch('/api/direk/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages }),
+  });
+  if (res.status === 503) throw new AiUnavailableError(await res.json());
+  if (!res.ok) throw new Error(`Direk request failed (${res.status})`);
+  return res.json();
+}
+
+export async function direkReference(genre: string, n = 5): Promise<CatalogTitle[]> {
+  const res = await apiFetch(`/api/direk/reference?genre=${encodeURIComponent(genre)}&n=${n}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.items ?? [];
+}
+
+export interface ShareStat {
+  name: string;
+  movies: string;
+  marketShare: string;
+}
+
+export interface MarketIntel {
+  available: boolean;
+  brief: string;
+  top_genres: ShareStat[];
+  top_distributors: ShareStat[];
+  production_methods: ShareStat[];
+  ratings: ShareStat[];
+}
+
+export async function direkMarket(): Promise<MarketIntel | null> {
+  const res = await apiFetch('/api/direk/market');
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// LoRA training sets
+// ---------------------------------------------------------------------------
+
+export interface LoraBriefInput {
+  title: string;
+  genre: string;
+  mood: string;
+  durationMinutes?: number;
+  trigger?: string;
+  character?: { name?: string; look?: string; wardrobe?: string; voice?: string };
+  baseModel?: string;
+  /** Ask the server to generate sample images too (default: true). */
+  images?: boolean;
+  /** Name of a published LoRA to apply while generating images. */
+  lora?: string;
+  /** LoRA blend strength, default 1. */
+  loraStrength?: number;
+}
+
+export interface LoraPlanResult {
+  trigger: string;
+  genre: string;
+  mood: string;
+  samples: number;
+  character: { name: string; look?: string; wardrobe?: string; voice?: string };
+  base_model: string;
+  references: CatalogTitle[];
+  notes: string[];
+  artifacts: string[];
+  images_available: boolean;
+  image_backend: 'comfyui' | 'gemini' | 'none';
+  max_images: number;
+}
+
+export async function direkLoraPlan(input: LoraBriefInput): Promise<LoraPlanResult> {
+  const res = await apiFetch('/api/direk/lora/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `LoRA plan failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export interface TrainJob {
+  id: string;
+  title: string;
+  trigger: string;
+  status: 'running' | 'done' | 'failed' | 'cancelled';
+  startedAt: string;
+  finishedAt?: string;
+  outputDir: string;
+  artifact?: string;
+  error?: string;
+  log: string[];
+}
+
+export interface TrainStatus {
+  available: boolean;
+  dir: string;
+  script: string | null;
+  python: string;
+  base_model: string | null;
+  output_dir: string;
+  reason?: string;
+  job: TrainJob | null;
+}
+
+export async function direkTrainStatus(): Promise<TrainStatus> {
+  const res = await apiFetch('/api/direk/train/status');
+  if (!res.ok) throw new Error(`Train status failed (${res.status})`);
+  return res.json();
+}
+
+export async function direkTrainStart(
+  input: LoraBriefInput & { epochs?: number; resolution?: number; networkDim?: number; numRepeats?: number },
+): Promise<{ status: string; job: TrainJob }> {
+  const res = await apiFetch('/api/direk/train/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Training failed to start (${res.status})`);
+  return body;
+}
+
+export async function direkTrainCancel(): Promise<boolean> {
+  const res = await apiFetch('/api/direk/train/cancel', { method: 'POST' });
+  if (!res.ok) return false;
+  return (await res.json()).cancelled === true;
+}
+
+/** URL for the live training log stream, with the token as a query parameter. */
+export function trainStreamUrl(): string {
+  const token = getAuthToken();
+  return token
+    ? `/api/direk/train/stream?token=${encodeURIComponent(token)}`
+    : '/api/direk/train/stream';
+}
+
+export interface LoraFile {
+  name: string;
+  bytes: number;
+  modified: string;
+}
+
+export interface DirekSettings {
+  comfyui_url?: string;
+  comfyui_checkpoint?: string;
+  comfyui_workflow?: string;
+  comfyui_loras_dir?: string;
+  kohya_dir?: string;
+  kohya_base_model?: string;
+  kohya_python?: string;
+  kohya_accelerate?: boolean;
+  kohya_output_dir?: string;
+  ollama_url?: string;
+  ollama_model?: string;
+}
+
+export interface SetupReport {
+  config_path: string;
+  text: {
+    backend: 'gemini' | 'ollama' | 'none';
+    gemini_key: boolean;
+    model: string;
+    ready: boolean;
+    ollama: {
+      url: string;
+      model: string;
+      reachable: boolean;
+      model_present: boolean;
+      models: string[];
+      error?: string;
+    };
+  };
+  comfyui: {
+    url: string;
+    reachable: boolean;
+    checkpoints: string[];
+    loras: string[];
+    error?: string;
+  };
+  trainer: { available: boolean; reason?: string; base_model: string | null };
+  loras_dir: string;
+  published_loras: LoraFile[];
+  ready: boolean;
+}
+
+export async function direkGetSettings(): Promise<{ config_path: string; settings: DirekSettings }> {
+  const res = await apiFetch('/api/direk/settings');
+  if (!res.ok) throw new Error(`Settings failed (${res.status})`);
+  return res.json();
+}
+
+export async function direkSaveSettings(settings: DirekSettings): Promise<{ config_path: string; settings: DirekSettings }> {
+  const res = await apiFetch('/api/direk/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Save failed (${res.status})`);
+  return body;
+}
+
+export async function direkSetup(): Promise<SetupReport> {
+  const res = await apiFetch('/api/direk/setup');
+  if (!res.ok) throw new Error(`Setup check failed (${res.status})`);
+  return res.json();
+}
+
+export async function direkLoraList(): Promise<{ dir: string; loras: LoraFile[] }> {
+  const res = await apiFetch('/api/direk/lora/list');
+  if (!res.ok) return { dir: '', loras: [] };
+  return res.json();
+}
+
+/** Fetch the LoRA training set zip as a blob for download. */
+export async function direkLoraDataset(input: LoraBriefInput): Promise<Blob> {
+  const res = await apiFetch('/api/direk/lora/dataset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `LoRA dataset failed (${res.status})`);
+  }
+  return res.blob();
+}

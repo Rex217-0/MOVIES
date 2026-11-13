@@ -7,7 +7,35 @@
  * output. See https://ai.google.dev/gemini-api/docs/pricing
  */
 
-export const TEXT_MODEL = 'gemini-2.5-flash';
+/**
+ * Text models, in the order we try them. Google retires model ids and rate
+ * limits individual models, so we fall through to the next one instead of
+ * failing the request. TEXT_MODEL is the preferred one, used for display.
+ */
+export const TEXT_MODELS = [
+  'gemini-3-flash-preview',
+  'gemini-flash-latest',
+  'gemini-3.8-flash',
+  'gemini-2.5-flash',
+] as const;
+
+export const TEXT_MODEL = TEXT_MODELS[0];
+
+/** True when an error means "try the next model", not "give up". */
+export function isRetryableModelError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes('no longer available') ||
+    m.includes('not_found') ||
+    m.includes('not found') ||
+    m.includes('high demand') ||
+    m.includes('overloaded') ||
+    m.includes('rate limit') ||
+    m.includes('429') ||
+    m.includes('503') ||
+    m.includes('unavailable')
+  );
+}
 export const IMAGE_MODEL = 'gemini-2.5-flash-image';
 export const VIDEO_MODEL = 'gemini-omni-1.2-flash';
 
