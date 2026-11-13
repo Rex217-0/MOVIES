@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "direk"
+version = "0.1.0"
+description = "Direk — AI Movie Director API (OpenAI-compatible) with script, shot list, character bible at AI video prompts."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pandas>=2.2",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+gpu = ["torch>=2.2", "transformers>=4.44", "accelerate>=0.33"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+direk = "direk.__main__:main"
+
+[tool.setuptools]
+packages = ["direk"]
+
+[tool.setuptools.package-data]
+direk = ["../static/*", "../data/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+extend-exclude = ["notebooks", "data", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+ignore = ["E501"]
