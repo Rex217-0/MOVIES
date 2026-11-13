@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { apiFetch } from '../api';
 import { 
   Video, Film, Sparkles, Play, Pause, RefreshCw, 
   Download, Maximize2, Radio, Check, Layers, Sliders
@@ -52,7 +53,7 @@ export const VideoReconSuite: React.FC<{
 
   // Fetch existing videos
   useEffect(() => {
-    fetch('/api/pilot/media/gallery')
+    apiFetch('/api/pilot/media/gallery')
       .then(res => res.json())
       .then(data => {
         if (data.items) {
@@ -73,7 +74,7 @@ export const VideoReconSuite: React.FC<{
     setErrorMsg(null);
 
     try {
-      const res = await fetch('/api/pilot/video/generate', {
+      const res = await apiFetch('/api/pilot/video/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -85,6 +86,9 @@ export const VideoReconSuite: React.FC<{
       });
 
       const data = await res.json();
+      if (res.status === 503) {
+        throw new Error(data.error || 'Video generation is unavailable.');
+      }
       if (!res.ok || data.error) {
         throw new Error(data.error || 'Video generation failed');
       }
@@ -118,7 +122,7 @@ export const VideoReconSuite: React.FC<{
               </span>
             </div>
             <p className="text-[10px] text-gray-400 font-mono">
-              Model: <code className="text-[#F6E076]">gemini-omni-1.2-flash</code> · Native 16:9 & 9:16 Video Generation
+              Model: <code className="text-[#F6E076]">gemini-omni-1.2-flash</code> (paid tier only - currently unavailable)
             </p>
           </div>
         </div>
@@ -217,7 +221,7 @@ export const VideoReconSuite: React.FC<{
                 id="video-prompt-input"
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Describe cinematic video reconnaissance scene to generate via gemini-omni-1.2-flash..."
+                placeholder="Describe a cinematic video scene (video generation is currently unavailable)..."
                 disabled={isGenerating}
                 rows={4}
                 className="w-full bg-black/80 border border-gray-800 focus:border-[#00E5FF] focus:ring-1 focus:ring-[#00E5FF]/40 rounded-lg p-2.5 text-xs font-mono text-gray-200 resize-none disabled:opacity-50 transition-colors"
@@ -272,12 +276,12 @@ export const VideoReconSuite: React.FC<{
               ) : (
                 <>
                   <Film size={15} />
-                  <span>GENERATE VIDEO (GEMINI-OMNI-1.2-FLASH)</span>
+                  <span>GENERATE VIDEO</span>
                 </>
               )}
             </button>
             <div className="text-[9px] text-gray-500 text-center font-mono mt-1.5">
-              Powered by Google GenAI Interactions API · Model gemini-omni-1.2-flash
+              Video generation requires a paid Gemini tier and is currently unavailable.
             </div>
           </div>
         </div>
