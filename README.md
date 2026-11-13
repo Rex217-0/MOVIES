@@ -1,8 +1,30 @@
-# Pilot's VIP Battle Room
+# MOVIE CREATOR
 
-A tactical neural-link cockpit: a React + TypeScript front end with an Express
-backend that streams "pilot thoughts" over Server-Sent Events (SSE) and answers
-commander directives with Gemini.
+One app, two suites. A React + TypeScript front end with an Express backend:
+
+- **Director's Chair (Direk)** — a Filipino AI movie director. It grounds genre
+  advice in a bundled catalog, gates on missing essentials (haba at mood), and
+  walks a film from IDEYA → SCRIPT → KARAKTER → SHOT LIST → VISUAL → EDIT → PUBLISH.
+- **VIP Battle Room (Pilot)** — the tactical cockpit that streams "pilot
+  thoughts" over Server-Sent Events (SSE) and answers commander directives.
+
+Both share the same server, the same honest-availability rules, and the same
+`GEMINI_API_KEY`.
+
+## Datasets
+
+Grounding data lives in `data/` and is read at startup — nothing is fetched from
+the network:
+
+| File | Rows | Used by |
+| --- | --- | --- |
+| `netflix_titles.csv` | 8,809 | reference catalog |
+| `imdb_movies.csv` | 1,000 | reference catalog |
+| `filipino_movies.csv` | 469 | reference catalog |
+| `tmdb_movies.csv` + `tmdb_directors.csv` | 1,465 | per-title benchmarks |
+| `boxoffice/*.csv` | 9 files | market intel (genres, distributors, methods, ratings) |
+
+The reference catalog searches **10,278 titles** across three sources.
 
 ## What actually works
 
@@ -87,15 +109,23 @@ The SSE stream (`/api/pilot/thought-stream`) also accepts `?token=` because
 - The gallery never invents a `url` for placeholder items. Preset items keep an
   empty `url` and `model: "placeholder"`, so the UI shows them as unavailable.
 
-## Earlier work: the "Direk" movie-director app
+## The Direk endpoints
 
-Before this cockpit, the repository held a different app: **Direk**, a Filipino
-AI movie-director assistant (Python, OpenAI-compatible `POST /v1/chat/completions`,
-with a genre gate and a Netflix-style reference catalog). It was built from
-`notebooks/direk_kaggle_prototype.ipynb` and lives in git history at commit
-`e4acafb`.
+| Endpoint | Model? | Purpose |
+| --- | --- | --- |
+| `GET /api/direk/status` | No | Model, pipeline, genres, sources, row counts |
+| `GET /api/direk/reference?genre=&n=` | No | Catalog titles for a genre |
+| `GET /api/direk/market` | No | Real box-office stats |
+| `GET /api/direk/benchmark?title=` | No | Per-title budget/revenue/votes (TMDB) |
+| `POST /api/direk/chat` | Yes | The director. Gated before the model runs |
 
-That Python service and this Node/React cockpit are two different apps. This
-branch does not restore Direk, because that is an architecture decision, not a
-bug fix. If the movie-director assistant is the real goal, say so and it can be
-restored or merged as a separate service.
+The gate is deterministic: with no key, an incomplete request (missing haba or
+mood) still gets a real question back, and a complete request returns
+`503 AI_UNAVAILABLE` rather than fabricated output.
+
+## History
+
+Direk started as a Python/Kaggle prototype (`notebooks/direk_kaggle_prototype.ipynb`,
+built into a service at commit `e4acafb`). It has since been ported to TypeScript
+under `src/direk/` and merged into this app, so the director and the cockpit ship
+together.
