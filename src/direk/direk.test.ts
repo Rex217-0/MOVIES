@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { findGenre, catalogTerms } from './genres.ts';
 import { missingFields, gateQuestion } from './gate.ts';
 import { extractAction } from './skills.ts';
-import { buildSystemPrompt } from './persona.ts';
+import { buildSystemPrompt, RULES, DIREK_SYSTEM } from './persona.ts';
 import { ReferenceCatalog } from './reference.ts';
 import { DirekService, type ChatMessage } from './service.ts';
 
@@ -114,4 +114,18 @@ test('DirekService gates before calling the model', async () => {
   assert.equal(full.reply, 'nagawa');
   assert.equal(full.genre, 'horror');
   assert.ok(full.references.length > 0, 'a complete genre request carries references');
+});
+
+test('the system prompt allows realistic fictional characters', () => {
+  assert.match(DIREK_SYSTEM, /photoreal|realistic/i);
+  assert.match(RULES, /PINAPAYAGAN|pinapayagan/i);
+  // The ban is narrow: real people's quotes, deepfakes, lookalikes.
+  assert.match(RULES, /BUHAY na totoong tao|deepfake|kilalang artista/i);
+  // It must not read as a blanket ban on real-looking people.
+  assert.doesNotMatch(RULES, /TUMANGGI nang maikli at mag-alok ng fiktional na karakter\s*$/m);
+});
+
+test('buildSystemPrompt includes the realistic-character guidance', () => {
+  const prompt = buildSystemPrompt({ genre: 'drama', references: [] });
+  assert.match(prompt, /photoreal/i);
 });
