@@ -1,7 +1,8 @@
 /**
  * Read-only reference catalog used to ground Direk's genre advice.
  * Ported from direk/reference.py and extended to read several datasets:
- * Netflix titles, an IMDb movie dataset, and a Filipino movies dataset.
+ * Netflix titles, an IMDb movie dataset, a Filipino movies dataset, and a
+ * movie-statistics dataset (ratings, runtime, budget, gross).
  *
  * The catalog never throws on a missing dataset: a source that cannot be read
  * is skipped and `available` reflects whatever loaded.
@@ -20,6 +21,10 @@ export interface CatalogTitle {
   director?: string;
   cast?: string;
   source: string;
+  /** Real commercial figures, present for the statistics dataset. */
+  rating?: number;
+  budget?: number;
+  worldwide_gross?: number;
 }
 
 interface Source {
@@ -31,6 +36,7 @@ const SOURCES: Source[] = [
   { name: 'Netflix', file: 'netflix_titles.csv' },
   { name: 'IMDb', file: 'imdb_movies.csv' },
   { name: 'Filipino', file: 'filipino_movies.csv' },
+  { name: 'Statistics', file: 'movie_statistics.csv' },
 ];
 
 export class ReferenceCatalog {
@@ -76,12 +82,32 @@ export class ReferenceCatalog {
       return {
         title: pick(header, row, 'Title'),
         type: 'Movie',
-        listed_in: pick(header, row, 'Genre'),
+        listed_in: cleanListCell(pick(header, row, 'Genre')),
         release_year: pick(header, row, 'Year'),
         duration: minutes ? `${minutes} min` : '',
         director: pick(header, row, 'Director'),
         cast: pick(header, row, 'Actors'),
         source: name,
+      };
+    }
+    if (name === 'Statistics') {
+      const runtime = pick(header, row, 'runtime_minutes');
+      const rating = Number(pick(header, row, 'movie_averageRating'));
+      const budget = Number(pick(header, row, 'Production budget $'));
+      const gross = Number(pick(header, row, 'Worldwide gross $'));
+      const director = pick(header, row, 'director_name');
+      return {
+        title: pick(header, row, 'movie_title'),
+        type: 'Movie',
+        listed_in: cleanListCell(pick(header, row, 'genres')),
+        release_year: (pick(header, row, 'production_date') || '').slice(0, 4),
+        duration: runtime && runtime !== 'NaN' ? `${runtime} min` : '',
+        director: director && director !== '-' ? director : '',
+        cast: '',
+        source: name,
+        rating: Number.isFinite(rating) ? rating : undefined,
+        budget: Number.isFinite(budget) ? budget : undefined,
+        worldwide_gross: Number.isFinite(gross) ? gross : undefined,
       };
     }
     // Filipino movies dataset (Python-list style cells).
@@ -112,7 +138,13 @@ export class ReferenceCatalog {
     return out;
   }
 
-  /** Return up to `n` titles matching `genre` (and optional `kind`). */
+  /**
+   * Return up to `n` titles matching `genre` (and optional `kind`).
+   *
+   * Matches are drawn round-robin across sources, so one large dataset cannot
+   * crowd out the others. That keeps the grounding balanced and lets the
+   * statistics source (with ratings and budgets) actually surface.
+   */
   search(genre: string | null, kind?: string | null, n?: number): CatalogTitle[] {
     if (!this.available || !genre) return [];
     const limit = Math.min(n ?? this.maxResults, this.maxResults);
@@ -120,14 +152,33 @@ export class ReferenceCatalog {
     if (!terms.length) return [];
 
     const kindLc = kind ? kind.toLowerCase() : null;
-    const out: CatalogTitle[] = [];
+    const buckets = new Map<string, CatalogTitle[]>();
+    const order: string[] = [];
     for (let i = 0; i < this.rows.length; i++) {
-      const hay = this.haystacks[i];
-      if (!terms.some(t => hay.includes(t))) continue;
+      if (!terms.some(t => this.haystacks[i].includes(t))) continue;
       const row = this.rows[i];
       if (kindLc && row.type.toLowerCase() !== kindLc) continue;
-      out.push(row);
-      if (out.length >= limit) break;
+      let bucket = buckets.get(row.source);
+      if (!bucket) {
+        bucket = [];
+        buckets.set(row.source, bucket);
+        order.push(row.source);
+      }
+      bucket.push(row);
+    }
+
+    const out: CatalogTitle[] = [];
+    for (let round = 0; out.length < limit; round++) {
+      let added = false;
+      for (const source of order) {
+        const bucket = buckets.get(source)!;
+        if (round < bucket.length) {
+          out.push(bucket[round]);
+          added = true;
+          if (out.length >= limit) break;
+        }
+      }
+      if (!added) break;
     }
     return out;
   }

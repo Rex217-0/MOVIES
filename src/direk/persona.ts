@@ -38,11 +38,15 @@ export interface Reference {
   release_year?: string | number;
   listed_in?: string;
   source?: string;
+  rating?: number;
 }
 
 export function referencePreamble(genre: string, references: Reference[]): string {
   const lines = references
-    .map(r => `- ${r.title} (${r.release_year}, ${r.listed_in}${r.source ? `, ${r.source}` : ''})`)
+    .map(r => {
+      const rating = typeof r.rating === 'number' ? `, rating ${r.rating}` : '';
+      return `- ${r.title} (${r.release_year}, ${r.listed_in}${rating}${r.source ? `, ${r.source}` : ''})`;
+    })
     .join('\n');
   return (
     `REFERENSYA mula sa movie catalog, genre: ${genre}. ` +

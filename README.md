@@ -21,10 +21,13 @@ the network:
 | `netflix_titles.csv` | 8,809 | reference catalog |
 | `imdb_movies.csv` | 1,000 | reference catalog |
 | `filipino_movies.csv` | 469 | reference catalog |
+| `movie_statistics.csv` | 4,380 | reference catalog + ratings/budgets |
 | `tmdb_movies.csv` + `tmdb_directors.csv` | 1,465 | per-title benchmarks |
 | `boxoffice/*.csv` | 9 files | market intel (genres, distributors, methods, ratings) |
 
-The reference catalog searches **10,278 titles** across three sources.
+The reference catalog searches **14,658 titles** across four sources. Matches
+are drawn round-robin across sources, so the large Netflix set cannot crowd out
+the smaller ones (and the statistics rows with ratings and budgets do surface).
 
 ## What actually works
 

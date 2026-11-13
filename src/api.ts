@@ -67,6 +67,9 @@ export interface CatalogTitle {
   director?: string;
   cast?: string;
   source: string;
+  rating?: number;
+  budget?: number;
+  worldwide_gross?: number;
 }
 
 export interface SkillAction {

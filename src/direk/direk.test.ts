@@ -74,6 +74,28 @@ test('the catalog loads the bundled datasets and searches by genre', () => {
   assert.deepEqual(catalog.search(null), []);
 });
 
+test('the catalog loads all four sources, including the statistics dataset', () => {
+  const sources = catalog.sources();
+  for (const name of ['Netflix', 'IMDb', 'Filipino', 'Statistics']) {
+    assert.ok((sources[name] ?? 0) > 0, `expected rows for ${name}, got ${sources[name]}`);
+  }
+});
+
+test('search draws round-robin across sources so none is crowded out', () => {
+  const results = catalog.search('action', null, 4);
+  const distinct = new Set(results.map(r => r.source));
+  assert.ok(distinct.size >= 2, `expected multiple sources, got ${[...distinct].join(', ')}`);
+});
+
+test('the statistics dataset carries real commercial figures', () => {
+  const withFigures = catalog
+    .search('action', null, 20)
+    .filter(r => r.source === 'Statistics' && typeof r.rating === 'number');
+  assert.ok(withFigures.length > 0, 'expected a statistics row with a rating');
+  assert.ok(withFigures[0].budget !== undefined, 'expected a budget');
+  assert.ok(withFigures[0].worldwide_gross !== undefined, 'expected a worldwide gross');
+});
+
 test('DirekService gates before calling the model', async () => {
   let called = false;
   const service = new DirekService(catalog, async () => {

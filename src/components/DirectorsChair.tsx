@@ -279,6 +279,7 @@ const TurnBubble: React.FC<{ turn: Turn }> = ({ turn }) => {
               <div key={i} className="text-[10px] font-mono text-gray-400">
                 <span className="text-gray-300">{r.title}</span>
                 {r.release_year ? ` (${r.release_year})` : ''} · {r.listed_in}
+                {typeof r.rating === 'number' ? ` · ★ ${r.rating.toFixed(1)}` : ''}
                 <span className="text-gray-600"> · {r.source}</span>
               </div>
             ))}
