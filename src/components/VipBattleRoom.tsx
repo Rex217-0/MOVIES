@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { apiFetch, thoughtStreamUrl } from '../api';
 import { 
   BrainCircuit, Activity, Send, ShieldCheck, 
   Crosshair, TerminalSquare, AlertTriangle,
@@ -31,7 +32,7 @@ export const VipBattleRoom: React.FC<{
     { id: 'A24_CINEMATOGRAPHY', name: 'A24_CINEMATOGRAPHY', active: true },
     { id: 'MOCCASIN_CONSISTENCY', name: 'MOCCASIN_CONSISTENCY', active: true },
     { id: 'SAFEMED_COMPLIANCE', name: 'SAFEMED_COMPLIANCE', active: true },
-    { id: 'GEMINI_4_CARBON_HIGH_THINKING', name: 'GEMINI_4_CARBON_HIGH_THINKING', active: true },
+    { id: 'GEMINI_TEXT_REASONING', name: 'GEMINI_TEXT_REASONING', active: true },
   ]);
   const [logs, setLogs] = useState<string[]>([
     "SYS: Initializing Neural Link...",
@@ -86,7 +87,7 @@ export const VipBattleRoom: React.FC<{
     let isMounted = true;
     const fetchVitals = async () => {
       try {
-        const res = await fetch('/api/pilot/status');
+        const res = await apiFetch('/api/pilot/status');
         if (res.ok && isMounted) {
           const data = await res.json();
           setVitals({
@@ -109,7 +110,7 @@ export const VipBattleRoom: React.FC<{
 
   // Fetch protocols
   useEffect(() => {
-    fetch('/api/pilot/protocols')
+    apiFetch('/api/pilot/protocols')
       .then(res => res.json())
       .then(data => {
         if (data.protocols && Array.isArray(data.protocols)) {
@@ -126,7 +127,7 @@ export const VipBattleRoom: React.FC<{
 
     const connectSSE = () => {
       try {
-        eventSource = new EventSource('/api/pilot/thought-stream');
+        eventSource = new EventSource(thoughtStreamUrl());
         
         eventSource.onmessage = (event) => {
           setLogs(prev => [...prev, `PILOT: ${event.data}`]);
@@ -164,7 +165,7 @@ export const VipBattleRoom: React.FC<{
   // Protocol toggle handler
   const handleToggleProtocol = async (id: string) => {
     try {
-      const res = await fetch('/api/pilot/protocol/toggle', {
+      const res = await apiFetch('/api/pilot/protocol/toggle', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id }),
@@ -193,7 +194,7 @@ export const VipBattleRoom: React.FC<{
     playTacticalChime(forceConfirm ? 'confirm' : 'beep');
     
     try {
-      const res = await fetch('/api/pilot/command', {
+      const res = await apiFetch('/api/pilot/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ directive: commandText, confirmed: forceConfirm })
@@ -201,7 +202,10 @@ export const VipBattleRoom: React.FC<{
 
       const data = await res.json();
 
-      if (data.status === 'requires_confirmation') {
+      if (res.status === 503) {
+        playTacticalChime('alert');
+        setLogs(prev => [...prev, `SYS: ❌ AI UNAVAILABLE: ${data.error || 'The AI backend is unavailable.'}`]);
+      } else if (data.status === 'requires_confirmation') {
         playTacticalChime('alert');
         setLogs(prev => [...prev, `SYS: ⚠️ CONFIRMATION REQUIRED FOR: ${data.action}`]);
         setRequiresConfirmation(data.action);
@@ -209,7 +213,7 @@ export const VipBattleRoom: React.FC<{
         playTacticalChime('confirm');
         setLogs(prev => [...prev, `SYS: Directive acknowledged. Intent: ${data.intent || 'Processing'}`]);
         if (data.analysis) {
-          setLogs(prev => [...prev, `PILOT: [HIGH THINKING ANALYSIS] ${data.analysis}`]);
+          setLogs(prev => [...prev, `PILOT: [ANALYSIS] ${data.analysis}`]);
         }
         setInputCommand('');
       } else if (data.error) {
@@ -241,7 +245,7 @@ export const VipBattleRoom: React.FC<{
               </span>
             </div>
             <p className="text-[10px] text-[#00E5FF] font-mono flex items-center gap-1.5">
-              <span>Neural Link: GEMINI 4 CARBON / QWEN 2.5</span>
+              <span>Neural Link: GEMINI 2.5 FLASH</span>
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span>
             </p>
           </div>
@@ -296,13 +300,13 @@ export const VipBattleRoom: React.FC<{
                <div className="pt-2 border-t border-gray-800/80 flex justify-between items-center text-[10px] text-gray-400 font-mono">
                  <span>Thinking Protocol</span>
                  <span className="text-[#F6E076] font-bold flex items-center gap-1">
-                   <Sparkles size={11} /> ThinkingLevel.HIGH
+                   <Sparkles size={11} /> Structured JSON
                  </span>
                </div>
 
                <div className="flex justify-between items-center text-[10px] text-gray-400 font-mono">
                  <span>Reasoning Engine</span>
-                 <span className="text-cyan-400">gemini-4-carbon</span>
+                 <span className="text-cyan-400">gemini-2.5-flash</span>
                </div>
             </div>
           </div>

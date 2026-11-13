@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { apiFetch } from '../api';
 import { 
   Image, Wand2, Sparkles, Upload, Download, 
   RefreshCw, Check, ArrowRight, Layers, Sliders, Eye
@@ -52,7 +53,7 @@ export const ImageMatrixSuite: React.FC<{
 
   // Fetch initial media gallery
   useEffect(() => {
-    fetch('/api/pilot/media/gallery')
+    apiFetch('/api/pilot/media/gallery')
       .then(res => res.json())
       .then(data => {
         if (data.items) {
@@ -89,7 +90,7 @@ export const ImageMatrixSuite: React.FC<{
     setErrorMsg(null);
 
     try {
-      const res = await fetch('/api/pilot/image/generate', {
+      const res = await apiFetch('/api/pilot/image/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -100,6 +101,7 @@ export const ImageMatrixSuite: React.FC<{
       });
 
       const data = await res.json();
+      if (res.status === 503) throw new Error(data.error || 'Image generation is unavailable.');
       if (!res.ok || data.error) throw new Error(data.error || 'Image generation failed');
 
       if (data.item) {
@@ -122,7 +124,7 @@ export const ImageMatrixSuite: React.FC<{
     setErrorMsg(null);
 
     try {
-      const res = await fetch('/api/pilot/image/edit', {
+      const res = await apiFetch('/api/pilot/image/edit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -133,6 +135,7 @@ export const ImageMatrixSuite: React.FC<{
       });
 
       const data = await res.json();
+      if (res.status === 503) throw new Error(data.error || 'Image editing is unavailable.');
       if (!res.ok || data.error) throw new Error(data.error || 'Image editing failed');
 
       if (data.item) {
@@ -160,11 +163,11 @@ export const ImageMatrixSuite: React.FC<{
                 Image Matrix & Inpainting Suite
               </h2>
               <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#D4AF37]/20 text-[#F6E076] border border-[#D4AF37]/40 font-mono font-bold">
-                NANO BANANA 2.1
+                IMAGE MATRIX
               </span>
             </div>
             <p className="text-[10px] text-gray-400 font-mono">
-              Model: <code className="text-[#00E5FF]">gemini-nano-banana-2.1</code> · Text-to-Image & Multimodal Image Editing
+              Model: <code className="text-[#00E5FF]">gemini-2.5-flash-image</code> (paid tier only - currently unavailable)
             </p>
           </div>
         </div>
@@ -248,7 +251,7 @@ export const ImageMatrixSuite: React.FC<{
                 <div className="space-y-1.5">
                   <div className="flex justify-between items-center">
                     <label htmlFor="image-prompt-input" className="text-xs font-mono font-bold text-gray-300">
-                      SYNTHESIS PROMPT (NANO BANANA 2.1):
+                      SYNTHESIS PROMPT:
                     </label>
                     <span className="text-[10px] text-gray-500 font-mono">{createPrompt.length} chars</span>
                   </div>
@@ -379,7 +382,7 @@ export const ImageMatrixSuite: React.FC<{
                 {isProcessing ? (
                   <>
                     <RefreshCw size={15} className="animate-spin" />
-                    <span>SYNTHESIZING IMAGE VIA NANO BANANA 2.1...</span>
+                    <span>SYNTHESIZING IMAGE...</span>
                   </>
                 ) : (
                   <>
@@ -398,18 +401,18 @@ export const ImageMatrixSuite: React.FC<{
                 {isProcessing ? (
                   <>
                     <RefreshCw size={15} className="animate-spin" />
-                    <span>APPLYING MODIFICATION VIA NANO BANANA 2.1...</span>
+                    <span>APPLYING MODIFICATION...</span>
                   </>
                 ) : (
                   <>
                     <Wand2 size={15} />
-                    <span>APPLY IMAGE MODIFICATION (NANO BANANA 2.1)</span>
+                    <span>APPLY IMAGE MODIFICATION</span>
                   </>
                 )}
               </button>
             )}
             <div className="text-[9px] text-gray-500 text-center font-mono mt-1.5">
-              Powered by Google GenAI Interactions API · Model gemini-nano-banana-2.1
+              Image generation requires a paid Gemini tier and is currently unavailable.
             </div>
           </div>
         </div>
@@ -441,7 +444,7 @@ export const ImageMatrixSuite: React.FC<{
                     {mode === 'create' ? 'GENERATING IMAGE' : 'MODIFYING IMAGE'}
                   </div>
                   <p className="text-xs text-gray-400 max-w-sm font-mono">
-                    gemini-nano-banana-2.1 computing high-resolution pixel matrices...
+                    Computing high-resolution pixel matrices...
                   </p>
                 </div>
               ) : (mode === 'edit' || currentImage?.type === 'edited-image') && (currentImage?.sourceImageUrl || selectedSourceImage) ? (
@@ -456,7 +459,7 @@ export const ImageMatrixSuite: React.FC<{
                     />
                   </div>
                   <div className="flex flex-col items-center">
-                    <span className="text-[10px] font-mono text-cyan-400 font-bold mb-1">EDITED (NANO BANANA 2.1)</span>
+                    <span className="text-[10px] font-mono text-cyan-400 font-bold mb-1">EDITED</span>
                     <img
                       src={currentImage?.url || selectedSourceImage || ''}
                       alt="Edited result"

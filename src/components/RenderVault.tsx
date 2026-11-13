@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { apiFetch } from '../api';
 import { PlayCircle, CheckCircle, XCircle, RefreshCw, Send, Film, ShieldCheck } from 'lucide-react';
 
 export interface VideoAsset {
@@ -21,7 +22,7 @@ export const RenderVault: React.FC<{
   const fetchAssets = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/assets/list'); 
+      const res = await apiFetch('/api/assets/list'); 
       if (res.ok) {
         const data = await res.json();
         setAssets(data);
@@ -37,7 +38,7 @@ export const RenderVault: React.FC<{
   const handleReviewAction = async (id: string, action: 'approve' | 'reject') => {
     try {
       // Send command to backend
-      const res = await fetch('/api/assets/review', {
+      const res = await apiFetch('/api/assets/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ assetId: id, action })

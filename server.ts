@@ -1,8 +1,9 @@
-import express, { Request, Response } from 'express';
+import express from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import { 
   evaluateDirectiveHazard, 
   calculateVitals, 
@@ -11,8 +12,18 @@ import {
   validateImageEditInput,
   buildTacticalVideoPrompt,
   applyAssetReview,
-  VideoAsset
-} from './src/tactical/rules.js';
+  type VideoAsset
+} from './src/tactical/rules.ts';
+import {
+  IMAGE_MODEL,
+  IMAGE_MODEL_FREE,
+  TEXT_MODEL,
+  VIDEO_MODEL,
+  VIDEO_MODEL_FREE,
+  aiUnavailable,
+  NO_FREE_IMAGE_MODEL,
+  NO_FREE_VIDEO_MODEL,
+} from './src/config.ts';
 
 dotenv.config();
 
@@ -26,6 +37,43 @@ const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// ---------------------------------------------------------------------------
+// Authentication
+// Every /api route is protected by a bearer token. Auth is fail-closed in
+// production: if APP_AUTH_TOKEN is not set there, the server refuses to start
+// rather than exposing unauthenticated (and billable) AI endpoints.
+// EventSource cannot set headers, so the SSE route additionally accepts the
+// token via a `?token=` query parameter.
+// ---------------------------------------------------------------------------
+const AUTH_TOKEN = process.env.APP_AUTH_TOKEN;
+const authRequired = isProd || Boolean(AUTH_TOKEN);
+
+if (isProd && !AUTH_TOKEN) {
+  console.error('APP_AUTH_TOKEN must be set when NODE_ENV=production. Refusing to start.');
+  process.exit(1);
+}
+
+function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  if (!authRequired) {
+    next();
+    return;
+  }
+  const header = req.get('authorization') || '';
+  const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  const queryToken = typeof req.query.token === 'string' ? req.query.token : '';
+  if (AUTH_TOKEN && (bearer === AUTH_TOKEN || queryToken === AUTH_TOKEN)) {
+    next();
+    return;
+  }
+  res.status(401).json({
+    error:
+      'Unauthorized. Send a valid bearer token in the Authorization header ' +
+      '(or ?token= for the thought stream).',
+  });
+}
+
+app.use('/api', requireAuth);
+
 // Initialize GoogleGenAI server-side with telemetry header
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -38,10 +86,10 @@ const ai = new GoogleGenAI({
 
 // Tactical state
 let currentVitals = {
-  latency_ms: 32,
-  tokens_per_sec: 54.2,
-  model: 'gemini-4-carbon (ThinkingLevel.HIGH)',
-  status: 'ONLINE',
+  latency_ms: 0,
+  tokens_per_sec: 0,
+  model: TEXT_MODEL,
+  status: 'IDLE',
   memory_load_pct: 28,
   shield_pct: 94,
   hull_pct: 100,
@@ -52,7 +100,7 @@ let activeProtocols = [
   { id: 'A24_CINEMATOGRAPHY', name: 'A24 Cinematography', active: true, desc: 'Dynamic dramatic atmospheric color grading & HUD camera fidelity' },
   { id: 'MOCCASIN_CONSISTENCY', name: 'Moccasin Consistency', active: true, desc: 'Stealth footing telemetry & non-linear trajectory tracking' },
   { id: 'SAFEMED_COMPLIANCE', name: 'SafeMed Compliance', active: true, desc: 'Biological pilot life-support safety & anti-g-force locks' },
-  { id: 'GEMINI_4_CARBON_HIGH_THINKING', name: 'Carbon High Thinking', active: true, desc: 'Deep cognitive reasoning matrix via ThinkingLevel.HIGH' },
+  { id: 'GEMINI_TEXT_REASONING', name: 'Gemini Text Reasoning', active: true, desc: `Text directives are answered by ${TEXT_MODEL}` },
 ];
 
 const directiveHistory: Array<{
@@ -86,8 +134,8 @@ const mediaGallery: MediaItem[] = [
     prompt: 'Orbital dreadnought entering hyperspace above Europa with ion particle wake',
     aspect_ratio: '16:9',
     timestamp: 'Initial Recon',
-    model: 'gemini-omni-1.2-flash',
-    details: 'Resolution: 720p | Duration: 10s',
+    model: 'placeholder',
+    details: 'Sample clip shipped with the project - not AI generated',
   },
   {
     id: 'IMG-PRESET-1',
@@ -96,8 +144,8 @@ const mediaGallery: MediaItem[] = [
     prompt: 'Tactical holographic wireframe of deep-space combat cruiser with cybernetic HUD reticles',
     aspect_ratio: '1:1',
     timestamp: 'Initial Recon',
-    model: 'gemini-nano-banana-2.1',
-    details: 'Resolution: 1K',
+    model: 'placeholder',
+    details: 'Placeholder illustration - not AI generated',
   }
 ];
 
@@ -128,51 +176,26 @@ let renderVaultAssets: VideoAsset[] = [
     createdAt: new Date(Date.now() - 1000 * 60 * 180).toISOString(),
   },
 ];
-
-// Helper to generate a procedural high-tech SVG data URI for tactical fallback
-function createProceduralTacticalImageSvg(prompt: string, aspect = '1:1', isEdited = false): string {
-  const width = aspect === '16:9' ? 960 : aspect === '9:16' ? 540 : 800;
-  const height = aspect === '16:9' ? 540 : aspect === '9:16' ? 960 : 800;
-  const accent = isEdited ? '#00E5FF' : '#D4AF37';
-  const tag = isEdited ? 'EDITED RECON FEED · NANO BANANA 2.1' : 'SYNTHESIZED RECON FEED · NANO BANANA 2.1';
-  
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-    <defs>
-      <radialGradient id="bg" cx="50%" cy="50%" r="70%">
-        <stop offset="0%" stop-color="#0E1322"/>
-        <stop offset="100%" stop-color="#04060A"/>
-      </radialGradient>
-      <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="${accent}" stop-opacity="0.8"/>
-        <stop offset="100%" stop-color="#00E5FF" stop-opacity="0.2"/>
-      </linearGradient>
-    </defs>
-    <rect width="${width}" height="${height}" fill="url(#bg)"/>
-    <!-- Grid lines -->
-    <g stroke="rgba(0,229,255,0.12)" stroke-width="1">
-      ${Array.from({ length: 16 }).map((_, i) => `<line x1="${(i * width) / 16}" y1="0" x2="${(i * width) / 16}" y2="${height}"/>`).join('')}
-      ${Array.from({ length: 16 }).map((_, i) => `<line x1="0" y1="${(i * height) / 16}" x2="${width}" y2="${(i * height) / 16}"/>`).join('')}
-    </g>
-    <!-- Targeting Circles -->
-    <circle cx="${width/2}" cy="${height/2}" r="${Math.min(width, height) * 0.35}" fill="none" stroke="${accent}" stroke-width="2" stroke-dasharray="8 6" opacity="0.7"/>
-    <circle cx="${width/2}" cy="${height/2}" r="${Math.min(width, height) * 0.22}" fill="none" stroke="#00E5FF" stroke-width="1.5" opacity="0.6"/>
-    <circle cx="${width/2}" cy="${height/2}" r="6" fill="${accent}"/>
-    <!-- Crosshairs -->
-    <line x1="${width/2 - 60}" y1="${height/2}" x2="${width/2 + 60}" y2="${height/2}" stroke="${accent}" stroke-width="2"/>
-    <line x1="${width/2}" y1="${height/2 - 60}" x2="${width/2}" y2="${height/2 + 60}" stroke="${accent}" stroke-width="2"/>
-    <!-- Corner HUD brackets -->
-    <path d="M 40 70 L 40 40 L 70 40" fill="none" stroke="${accent}" stroke-width="3"/>
-    <path d="M ${width - 70} 40 L ${width - 40} 40 L ${width - 40} 70" fill="none" stroke="${accent}" stroke-width="3"/>
-    <path d="M 40 ${height - 70} L 40 ${height - 40} L 70 ${height - 40}" fill="none" stroke="${accent}" stroke-width="3"/>
-    <path d="M ${width - 70} ${height - 40} L ${width - 40} ${height - 40} L ${width - 40} ${height - 70}" fill="none" stroke="${accent}" stroke-width="3"/>
-    <!-- Tactical HUD text -->
-    <text x="50" y="70" font-family="monospace" font-size="14" fill="${accent}" font-weight="bold">${tag}</text>
-    <text x="50" y="95" font-family="monospace" font-size="11" fill="#718096">ASPECT: ${aspect} · SEC-7 MATRIX</text>
-    <text x="50" y="${height - 60}" font-family="monospace" font-size="12" fill="#E2E8F0">PROMPT: "${prompt.slice(0, 48).replace(/"/g, '')}..."</text>
-    <text x="50" y="${height - 35}" font-family="monospace" font-size="10" fill="#00E5FF">NEURAL LINK SIGNATURE: AUTH_CONFIRMED · SAFE_MED ACTIVE</text>
-  </svg>`;
-
-  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+/**
+ * Extracts the first inline image returned by an Interactions API call.
+ * Returns null when the response contains no image, so callers can fail loudly
+ * instead of substituting a placeholder.
+ */
+function extractImageFromInteraction(interaction: any): string | null {
+  if (interaction?.output_image?.data) {
+    const mime = interaction.output_image.mime_type || 'image/png';
+    return `data:${mime};base64,${interaction.output_image.data}`;
+  }
+  for (const step of interaction?.steps || []) {
+    if (step?.type === 'model_output') {
+      const imageContent = step.content?.find((c: any) => c.type === 'image');
+      if (imageContent?.data) {
+        const mime = imageContent.mime_type || 'image/png';
+        return `data:${mime};base64,${imageContent.data}`;
+      }
+    }
+  }
+  return null;
 }
 
 // SSE Clients for Thought Stream
@@ -222,6 +245,29 @@ app.get('/api/pilot/status', (_req: Request, res: Response) => {
   });
 });
 
+// 1b. Health / capability report. States plainly which features are real and
+// which are unavailable, so the UI never has to guess.
+app.get('/api/health', (_req: Request, res: Response) => {
+  const keyConfigured = Boolean(process.env.GEMINI_API_KEY);
+  res.json({
+    ok: keyConfigured,
+    gemini_key_configured: keyConfigured,
+    text: { model: TEXT_MODEL, available: keyConfigured, free_tier: true },
+    image: {
+      model: IMAGE_MODEL,
+      available: keyConfigured && IMAGE_MODEL_FREE,
+      free_tier: IMAGE_MODEL_FREE,
+      reason: IMAGE_MODEL_FREE ? null : NO_FREE_IMAGE_MODEL,
+    },
+    video: {
+      model: VIDEO_MODEL,
+      available: keyConfigured && VIDEO_MODEL_FREE,
+      free_tier: VIDEO_MODEL_FREE,
+      reason: VIDEO_MODEL_FREE ? null : NO_FREE_VIDEO_MODEL,
+    },
+  });
+});
+
 // 2. Thought Stream (SSE)
 app.get('/api/pilot/thought-stream', (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -230,7 +276,7 @@ app.get('/api/pilot/thought-stream', (req: Request, res: Response) => {
   res.flushHeaders?.();
 
   // Send initial handshake thought
-  res.write('data: Pilot cognitive link established. Gemini 4 Carbon High-Thinking online.\n\n');
+  res.write(`data: Pilot cognitive link established. Text model: ${TEXT_MODEL}.\n\n`);
   sseClients.add(res);
 
   req.on('close', () => {
@@ -264,79 +310,47 @@ app.post('/api/pilot/command', async (req: Request, res: Response) => {
 
   // Broadcast cognitive initialization
   broadcastThought(`[COGNITIVE LINK] Directive received: "${cleanDirective}"`);
-  broadcastThought(`[HIGH THINKING] Activating gemini-4-carbon with ThinkingLevel.HIGH...`);
+
+  // Honest behaviour: if no usable model is available, say so. We never
+  // fabricate a tactical "analysis" and present it as a model response.
+  if (!process.env.GEMINI_API_KEY) {
+    broadcastThought('[SYS] No GEMINI_API_KEY configured - directive not executed.');
+    res.status(503).json(
+      aiUnavailable(
+        TEXT_MODEL,
+        'Set GEMINI_API_KEY (free tier) to enable directive execution.',
+        'The Gemini API key is not configured'
+      )
+    );
+    return;
+  }
+
+  broadcastThought(`[TEXT REASONING] Calling ${TEXT_MODEL}...`);
 
   try {
-    let resultIntent = 'TACTICAL_DIRECTIVE_EXECUTED';
-    let resultAction = 'DIRECTIVE_EXECUTED';
-    let resultAnalysis = 'Neural pilot executed directive under standard protocol.';
-    let tokenEst = Math.max(30, cleanDirective.length * 2);
-
-    if (process.env.GEMINI_API_KEY) {
-      try {
-        const response = await ai.models.generateContent({
-          model: 'gemini-4-carbon',
-          contents: `Commander Directive: "${cleanDirective}"
+    const response = await ai.models.generateContent({
+      model: TEXT_MODEL,
+      contents: `Commander Directive: "${cleanDirective}"
 Analyze and execute this tactical command for the VIP Battle Room.
 Respond in strict JSON with:
 {
   "intent": "SHORT_UPPERCASE_INTENT",
   "action": "Specific tactical action executed",
-  "analysis": "Tactical assessment and deep thinking rationale (2-3 sentences)",
+  "analysis": "Tactical assessment and reasoning (2-3 sentences)",
   "readiness": "OPTIMAL"
 }`,
-          config: {
-            systemInstruction: "You are the elite AI Pilot Tactical Core in a military sci-fi battle room. Execute directives with high-thinking analytical rigor.",
-            responseMimeType: "application/json",
-            thinkingConfig: {
-              thinkingLevel: ThinkingLevel.HIGH,
-            },
-          },
-        });
+      config: {
+        systemInstruction: "You are the elite AI Pilot Tactical Core in a military sci-fi battle room. Execute directives with analytical rigor.",
+        responseMimeType: "application/json",
+      },
+    });
 
-        const rawText = response.text || '';
-        const parsed = parsePilotResponse(rawText, 'TACTICAL_SYNTHESIS');
-        resultIntent = parsed.intent;
-        resultAction = parsed.action;
-        resultAnalysis = parsed.analysis;
-        tokenEst = (rawText.length / 4) + 80;
-      } catch (geminiError: any) {
-        console.warn('Gemini 4 Carbon API call note:', geminiError?.message || geminiError);
-        broadcastThought(`[THINKING ADAPTATION] High-Thinking cognitive model synthesizing operational fallback for: "${cleanDirective}"`);
-        
-        if (/scan|radar|detect|sweep/i.test(cleanDirective)) {
-          resultIntent = 'SECTOR_SCAN_OPTIMIZED';
-          resultAction = 'LONG_RANGE_LIDAR_ARRAY_POINTED';
-          resultAnalysis = 'Sub-space sensors completed multi-spectrum sweep. Perimeter secure; zero hostile locks detected.';
-        } else if (/shield|defense|barrier/i.test(cleanDirective)) {
-          resultIntent = 'SHIELD_RESONANCE_STABILIZED';
-          resultAction = 'DEFLECTION_BARRIER_MODULATED';
-          resultAnalysis = 'Quantum shield harmonics calibrated to 98.4%. Power routed to forward deflector arrays.';
-        } else if (/strike|kinetic|fire|attack/i.test(cleanDirective)) {
-          resultIntent = 'ORBITAL_STRIKE_CONFIRMED';
-          resultAction = 'KINETIC_PENETRATORS_RELEASED';
-          resultAnalysis = 'Ballistic trajectory locked. Target vector neutralized with minimal collateral thermal bloom.';
-        } else if (/safe|med|bio/i.test(cleanDirective)) {
-          resultIntent = 'SAFEMED_VERIFICATION_PASSED';
-          resultAction = 'BIOMETRIC_COCKPIT_SYNCHRONIZED';
-          resultAnalysis = 'Pilot neural feedback loop verified. Anti-g dampeners calibrated to peak combat velocity.';
-        } else {
-          resultIntent = 'DIRECTIVE_SYNTHESIZED';
-          resultAction = 'TACTICAL_PIPELINE_ENGAGED';
-          resultAnalysis = `High-thinking reasoning path formulated for "${cleanDirective}". Tactical alignment optimal.`;
-        }
-      }
-    } else {
-      if (/strike|kinetic|attack/i.test(cleanDirective)) {
-        resultIntent = 'ORBITAL_STRIKE_CONFIRMED';
-        resultAction = 'KINETIC_PENETRATORS_RELEASED';
-        resultAnalysis = 'Target vector locked and executed with maximum strategic efficiency.';
-      } else {
-        resultIntent = 'TACTICAL_DIRECTIVE_EXECUTED';
-        resultAction = 'DIRECTIVE_PROCESSED';
-        resultAnalysis = `Carbon high-thinking model evaluated "${cleanDirective}" across operational matrices.`;
-      }
-    }
+    const rawText = response.text || '';
+    const parsed = parsePilotResponse(rawText, 'TACTICAL_SYNTHESIS');
+    const resultIntent = parsed.intent;
+    const resultAction = parsed.action;
+    const resultAnalysis = parsed.analysis;
+    const tokenEst = (rawText.length / 4) + 80;
 
     const elapsedMs = Math.max(18, Date.now() - startTime);
     const calculated = calculateVitals(elapsedMs, tokenEst);
@@ -344,6 +358,8 @@ Respond in strict JSON with:
       ...currentVitals,
       latency_ms: calculated.latency_ms,
       tokens_per_sec: calculated.tokens_per_sec,
+      status: 'ONLINE',
+      model: TEXT_MODEL,
     };
 
     broadcastThought(`[SYNTHESIS COMPLETE] Intent: ${resultIntent} | ${resultAnalysis}`);
@@ -362,6 +378,7 @@ Respond in strict JSON with:
 
     res.json({
       status: 'success',
+      model: TEXT_MODEL,
       intent: resultIntent,
       action: resultAction,
       analysis: resultAnalysis,
@@ -369,13 +386,18 @@ Respond in strict JSON with:
       tokens_per_sec: calculated.tokens_per_sec,
     });
   } catch (error: any) {
-    broadcastThought(`[SYS ERROR] Directive execution failure: ${error?.message || 'Internal failure'}`);
-    res.status(500).json({ error: error?.message || 'Directive processing error.' });
+    const reason = error?.message || 'Unknown error';
+    console.error(`[SYS ERROR] ${TEXT_MODEL} directive execution failed:`, reason);
+    currentVitals = { ...currentVitals, status: 'DEGRADED' };
+    broadcastThought(`[SYS ERROR] Directive execution failed: ${reason}`);
+    res.status(503).json(
+      aiUnavailable(TEXT_MODEL, 'Check the server logs and the Gemini API key.', reason)
+    );
   }
 });
 
 // ==========================================
-// FEATURE: Video Generation via gemini-omni-1.2-flash & Interactions API
+// FEATURE: Video Generation
 // ==========================================
 app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   const { prompt, aspect_ratio, duration, resolution } = req.body;
@@ -390,50 +412,53 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   const formattedPrompt = buildTacticalVideoPrompt(prompt);
   const startTime = Date.now();
 
-  broadcastThought(`[VIDEO PIPELINE] Initializing video synthesis for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
-  broadcastThought(`[OMNI FLASH] Calling gemini-omni-1.2-flash via Interactions API...`);
+  broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
+
+  // Honest behaviour: there is no video model on the Gemini free tier, so
+  // report the feature as unavailable instead of returning a stock clip that
+  // looks like a generated result.
+  if (!process.env.GEMINI_API_KEY || !VIDEO_MODEL_FREE) {
+    broadcastThought(`[VIDEO UNAVAILABLE] ${NO_FREE_VIDEO_MODEL}`);
+    res.status(503).json(
+      aiUnavailable(
+        VIDEO_MODEL,
+        NO_FREE_VIDEO_MODEL,
+        'Video generation is unavailable'
+      )
+    );
+    return;
+  }
+
+  broadcastThought(`[VIDEO PIPELINE] Calling ${VIDEO_MODEL} via Interactions API...`);
 
   try {
+    const interaction = await ai.interactions.create({
+      model: VIDEO_MODEL,
+      input: formattedPrompt,
+      background: false,
+      store: false,
+      stream: false,
+      response_format: {
+        type: 'video',
+        aspect_ratio: validAspect, // Strictly '16:9' or '9:16'
+        duration: duration || '10s',
+        resolution: resolution || '720p',
+      },
+    }, { timeout: 300000 });
+
     let videoUrl = '';
-    let usedModel = 'gemini-omni-1.2-flash';
-
-    if (process.env.GEMINI_API_KEY) {
-      try {
-        // Use gemini-omni-1.2-flash with Interactions API
-        const interaction = await ai.interactions.create({
-          model: 'gemini-omni-1.2-flash',
-          input: formattedPrompt,
-          background: false,
-          store: false,
-          stream: false,
-          response_format: {
-            type: 'video',
-            aspect_ratio: validAspect, // Strictly '16:9' or '9:16'
-            duration: duration || '10s',
-            resolution: resolution || '720p',
-          },
-        }, { timeout: 300000 });
-
-        const videoPart = interaction.output_video;
-        if (videoPart) {
-          if (videoPart.data) {
-            const mime = videoPart.mime_type || 'video/mp4';
-            videoUrl = `data:${mime};base64,${videoPart.data}`;
-          } else if (videoPart.uri) {
-            videoUrl = videoPart.uri;
-          }
-        }
-      } catch (omniErr: any) {
-        console.warn('Omni Flash video generation notice:', omniErr?.message || omniErr);
-        broadcastThought(`[VIDEO NOTICE] Omni Flash stream adapting visual replay telemetry...`);
+    const videoPart = interaction.output_video;
+    if (videoPart) {
+      if (videoPart.data) {
+        const mime = videoPart.mime_type || 'video/mp4';
+        videoUrl = `data:${mime};base64,${videoPart.data}`;
+      } else if (videoPart.uri) {
+        videoUrl = videoPart.uri;
       }
     }
 
-    // If API returned video URL, use it; otherwise create tactical telemetry fallback
     if (!videoUrl) {
-      // Create a visual simulation video/canvas data stream fallback
-      // High-resolution tactical placeholder video indicator
-      videoUrl = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
+      throw new Error('The model did not return video data');
     }
 
     const elapsedMs = Date.now() - startTime;
@@ -446,7 +471,7 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
       prompt: cleanPrompt(prompt),
       aspect_ratio: validAspect,
       timestamp: new Date().toLocaleTimeString(),
-      model: usedModel,
+      model: VIDEO_MODEL,
       details: `Resolution: ${resolution || '720p'} · Duration: ${duration || '10s'} · Aspect: ${validAspect}`,
     };
 
@@ -469,13 +494,18 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
       latency_ms: elapsedMs,
     });
   } catch (error: any) {
-    broadcastThought(`[VIDEO ERROR] Generation failure: ${error?.message || 'Unknown error'}`);
-    res.status(500).json({ error: error?.message || 'Video generation failed.' });
+    const reason = error?.message || 'Unknown error';
+    console.error(`[VIDEO ERROR] ${VIDEO_MODEL} generation failed:`, reason);
+    broadcastThought(`[VIDEO ERROR] Generation failed: ${reason}`);
+    res.status(503).json(
+      aiUnavailable(VIDEO_MODEL, 'Check the server logs and the Gemini API key.', reason)
+    );
   }
 });
 
 // ==========================================
-// FEATURE: Create & Edit Images via gemini-nano-banana-2.1
+// ==========================================
+// FEATURE: Create & Edit Images
 // ==========================================
 app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
   const { prompt, aspect_ratio, image_size } = req.body;
@@ -488,53 +518,38 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
   const validAspect = aspect_ratio || '1:1';
   const startTime = Date.now();
 
-  broadcastThought(`[IMAGE PIPELINE] Initializing image synthesis with gemini-nano-banana-2.1: "${prompt.slice(0, 45)}..."`);
+  broadcastThought(`[IMAGE PIPELINE] Image request: "${prompt.slice(0, 45)}..."`);
+
+  // Honest behaviour: no image model on the Gemini free tier, so report the
+  // feature as unavailable instead of returning a generated-looking SVG.
+  if (!process.env.GEMINI_API_KEY || !IMAGE_MODEL_FREE) {
+    broadcastThought(`[IMAGE UNAVAILABLE] ${NO_FREE_IMAGE_MODEL}`);
+    res.status(503).json(
+      aiUnavailable(IMAGE_MODEL, NO_FREE_IMAGE_MODEL, 'Image generation is unavailable')
+    );
+    return;
+  }
 
   try {
-    let imageUrl = '';
-    const usedModel = 'gemini-nano-banana-2.1';
+    const interaction = await ai.interactions.create({
+      model: IMAGE_MODEL,
+      input: prompt,
+      response_modalities: ['image', 'text'],
+      generation_config: {
+        image_config: {
+          aspect_ratio: validAspect,
+          image_size: image_size || '1K',
+        },
+      },
+    });
 
-    if (process.env.GEMINI_API_KEY) {
-      try {
-        const interaction = await ai.interactions.create({
-          model: 'gemini-nano-banana-2.1',
-          input: prompt,
-          response_modalities: ['image', 'text'],
-          generation_config: {
-            image_config: {
-              aspect_ratio: validAspect,
-              image_size: image_size || '1K',
-            },
-          },
-        });
-
-        if (interaction.output_image?.data) {
-          const mime = interaction.output_image.mime_type || 'image/png';
-          imageUrl = `data:${mime};base64,${interaction.output_image.data}`;
-        } else {
-          for (const step of interaction.steps || []) {
-            if (step.type === 'model_output') {
-              const imageContent = step.content?.find((c: any) => c.type === 'image') as any;
-              if (imageContent?.data) {
-                const mime = imageContent.mime_type || 'image/png';
-                imageUrl = `data:${mime};base64,${imageContent.data}`;
-                break;
-              }
-            }
-          }
-        }
-      } catch (imgErr: any) {
-        console.warn('gemini-nano-banana-2.1 image generate note:', imgErr?.message || imgErr);
-        broadcastThought(`[IMAGE NOTICE] Nano Banana 2.1 formulating high-res vector imagery telemetry...`);
-      }
-    }
-
+    const imageUrl = extractImageFromInteraction(interaction);
     if (!imageUrl) {
-      imageUrl = createProceduralTacticalImageSvg(prompt, validAspect, false);
+      throw new Error('The model did not return image data');
     }
 
     const elapsedMs = Date.now() - startTime;
-    broadcastThought(`[IMAGE COMPLETE] Tactical image asset synthesized via ${usedModel} (${elapsedMs}ms).`);
+    broadcastThought(`[IMAGE COMPLETE] Tactical image asset synthesized via ${IMAGE_MODEL} (${elapsedMs}ms).`);
 
     const mediaRecord: MediaItem = {
       id: `IMG-${Date.now()}`,
@@ -543,25 +558,25 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
       prompt: cleanPrompt(prompt),
       aspect_ratio: validAspect,
       timestamp: new Date().toLocaleTimeString(),
-      model: usedModel,
+      model: IMAGE_MODEL,
       details: `Resolution: ${image_size || '1K'} · Aspect: ${validAspect}`,
     };
 
     mediaGallery.unshift(mediaRecord);
     if (mediaGallery.length > 40) mediaGallery.pop();
 
-    res.json({
-      status: 'success',
-      item: mediaRecord,
-      latency_ms: elapsedMs,
-    });
+    res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
   } catch (error: any) {
-    broadcastThought(`[IMAGE ERROR] Generation failure: ${error?.message || 'Unknown error'}`);
-    res.status(500).json({ error: error?.message || 'Image generation failed.' });
+    const reason = error?.message || 'Unknown error';
+    console.error(`[IMAGE ERROR] ${IMAGE_MODEL} generation failed:`, reason);
+    broadcastThought(`[IMAGE ERROR] Generation failed: ${reason}`);
+    res.status(503).json(
+      aiUnavailable(IMAGE_MODEL, 'Check the server logs and the Gemini API key.', reason)
+    );
   }
 });
 
-// Edit existing image using gemini-nano-banana-2.1
+// Edit existing image
 app.post('/api/pilot/image/edit', async (req: Request, res: Response) => {
   const { prompt, imageBase64, mimeType } = req.body;
 
@@ -572,58 +587,35 @@ app.post('/api/pilot/image/edit', async (req: Request, res: Response) => {
   }
 
   const startTime = Date.now();
-  broadcastThought(`[IMAGE EDIT] Applying tactical modification with gemini-nano-banana-2.1: "${prompt.slice(0, 45)}..."`);
+  broadcastThought(`[IMAGE EDIT] Image modification request: "${prompt.slice(0, 45)}..."`);
+
+  if (!process.env.GEMINI_API_KEY || !IMAGE_MODEL_FREE) {
+    broadcastThought(`[IMAGE UNAVAILABLE] ${NO_FREE_IMAGE_MODEL}`);
+    res.status(503).json(
+      aiUnavailable(IMAGE_MODEL, NO_FREE_IMAGE_MODEL, 'Image editing is unavailable')
+    );
+    return;
+  }
 
   try {
-    let editedImageUrl = '';
-    const usedModel = 'gemini-nano-banana-2.1';
     const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
 
-    if (process.env.GEMINI_API_KEY) {
-      try {
-        const interaction = await ai.interactions.create({
-          model: 'gemini-nano-banana-2.1',
-          input: [
-            {
-              type: 'image',
-              data: cleanBase64,
-              mime_type: mimeType || 'image/png',
-            },
-            {
-              type: 'text',
-              text: prompt,
-            },
-          ],
-          response_modalities: ['image', 'text'],
-        });
+    const interaction = await ai.interactions.create({
+      model: IMAGE_MODEL,
+      input: [
+        { type: 'image', data: cleanBase64, mime_type: mimeType || 'image/png' },
+        { type: 'text', text: prompt },
+      ],
+      response_modalities: ['image', 'text'],
+    });
 
-        if (interaction.output_image?.data) {
-          const mime = interaction.output_image.mime_type || 'image/png';
-          editedImageUrl = `data:${mime};base64,${interaction.output_image.data}`;
-        } else {
-          for (const step of interaction.steps || []) {
-            if (step.type === 'model_output') {
-              const imageContent = step.content?.find((c: any) => c.type === 'image') as any;
-              if (imageContent?.data) {
-                const mime = imageContent.mime_type || 'image/png';
-                editedImageUrl = `data:${mime};base64,${imageContent.data}`;
-                break;
-              }
-            }
-          }
-        }
-      } catch (editErr: any) {
-        console.warn('gemini-nano-banana-2.1 edit note:', editErr?.message || editErr);
-        broadcastThought(`[IMAGE NOTICE] Nano Banana 2.1 applying procedural tactical filter to imagery...`);
-      }
-    }
-
+    const editedImageUrl = extractImageFromInteraction(interaction);
     if (!editedImageUrl) {
-      editedImageUrl = createProceduralTacticalImageSvg(prompt, '1:1', true);
+      throw new Error('The model did not return image data');
     }
 
     const elapsedMs = Date.now() - startTime;
-    broadcastThought(`[IMAGE EDIT COMPLETE] Modification applied via ${usedModel} (${elapsedMs}ms).`);
+    broadcastThought(`[IMAGE EDIT COMPLETE] Modification applied via ${IMAGE_MODEL} (${elapsedMs}ms).`);
 
     const mediaRecord: MediaItem = {
       id: `EDIT-${Date.now()}`,
@@ -633,44 +625,30 @@ app.post('/api/pilot/image/edit', async (req: Request, res: Response) => {
       prompt: cleanPrompt(prompt),
       aspect_ratio: '1:1',
       timestamp: new Date().toLocaleTimeString(),
-      model: usedModel,
-      details: 'Modified with Nano Banana 2.1 Multimodal Inpainting',
+      model: IMAGE_MODEL,
+      details: `Edited with ${IMAGE_MODEL}`,
     };
 
     mediaGallery.unshift(mediaRecord);
     if (mediaGallery.length > 40) mediaGallery.pop();
 
-    res.json({
-      status: 'success',
-      item: mediaRecord,
-      latency_ms: elapsedMs,
-    });
+    res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
   } catch (error: any) {
-    broadcastThought(`[IMAGE EDIT ERROR] Modification failure: ${error?.message || 'Unknown error'}`);
-    res.status(500).json({ error: error?.message || 'Image editing failed.' });
+    const reason = error?.message || 'Unknown error';
+    console.error(`[IMAGE EDIT ERROR] ${IMAGE_MODEL} edit failed:`, reason);
+    broadcastThought(`[IMAGE EDIT ERROR] Modification failed: ${reason}`);
+    res.status(503).json(
+      aiUnavailable(IMAGE_MODEL, 'Check the server logs and the Gemini API key.', reason)
+    );
   }
 });
 
 // 4. Media Gallery
 app.get('/api/pilot/media/gallery', (_req: Request, res: Response) => {
-  // Populate fallback preset URLs if not set
-  const items = mediaGallery.map(item => {
-    if (!item.url) {
-      if (item.type === 'video') {
-        return {
-          ...item,
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-        };
-      } else {
-        return {
-          ...item,
-          url: createProceduralTacticalImageSvg(item.prompt, item.aspect_ratio || '1:1', false),
-        };
-      }
-    }
-    return item;
-  });
-  res.json({ items });
+  // Only items that were really produced by a model have a url. Preset items
+  // without a url stay without one; the UI renders them as unavailable rather
+  // than showing a placeholder that looks AI generated.
+  res.json({ items: mediaGallery });
 });
 
 // 5. Protocols Management

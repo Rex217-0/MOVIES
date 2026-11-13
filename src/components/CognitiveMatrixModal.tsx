@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Sparkles, Brain, Cpu, Shield, Clock, CheckCircle2, X } from 'lucide-react';
+import { apiFetch } from '../api';
 
 interface HistoryRecord {
   id: string;
@@ -21,7 +22,7 @@ export const CognitiveMatrixModal: React.FC<{
   useEffect(() => {
     if (isOpen) {
       setLoading(true);
-      fetch('/api/pilot/history')
+      apiFetch('/api/pilot/history')
         .then(res => res.json())
         .then(data => {
           if (data.history) setHistory(data.history);
@@ -52,7 +53,7 @@ export const CognitiveMatrixModal: React.FC<{
                 Cognitive Reasoning Matrix
               </h2>
               <p className="text-[11px] font-mono text-[#00E5FF]">
-                gemini-4-carbon · ThinkingLevel.HIGH · Uncapped Tokens
+                gemini-2.5-flash · Structured JSON output
               </p>
             </div>
           </div>
@@ -74,7 +75,7 @@ export const CognitiveMatrixModal: React.FC<{
               <div className="text-[10px] text-gray-400 flex items-center gap-1.5">
                 <Brain size={13} className="text-cyan-400" /> REASONING MODEL
               </div>
-              <div className="text-sm font-bold text-white">gemini-4-carbon</div>
+              <div className="text-sm font-bold text-white">gemini-2.5-flash</div>
               <p className="text-[10px] text-gray-400">Deep reasoning engine pushing analytical depth.</p>
             </div>
 
@@ -82,7 +83,7 @@ export const CognitiveMatrixModal: React.FC<{
               <div className="text-[10px] text-gray-400 flex items-center gap-1.5">
                 <Sparkles size={13} className="text-amber-400" /> THINKING LEVEL
               </div>
-              <div className="text-sm font-bold text-[#F6E076]">ThinkingLevel.HIGH</div>
+              <div className="text-sm font-bold text-[#F6E076]">responseMimeType: JSON</div>
               <p className="text-[10px] text-gray-400">Maximized reasoning for mission-critical directives.</p>
             </div>
 
@@ -104,7 +105,7 @@ export const CognitiveMatrixModal: React.FC<{
               <li>Commander issues tactical directive via the Cockpit Command Input.</li>
               <li>Safety gate checks directive against hazard criteria (kinetic strikes, protocol overrides).</li>
               <li>Real-time SSE event is dispatched to stream pilot thoughts to all connected displays.</li>
-              <li>Direct request routed to <code className="text-cyan-300">gemini-4-carbon</code> with <code className="text-amber-300">thinkingConfig: &#123; thinkingLevel: ThinkingLevel.HIGH &#125;</code>.</li>
+              <li>Direct request routed to <code className="text-cyan-300">gemini-2.5-flash</code> with <code className="text-amber-300">responseMimeType: application/json</code>.</li>
               <li>Full strategic rationale and operational action synthesized and archived.</li>
             </ol>
           </div>

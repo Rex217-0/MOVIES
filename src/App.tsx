@@ -34,7 +34,7 @@ export default function App() {
               </span>
             </div>
             <p className="text-[10px] text-gray-400 font-mono">
-              Autonomous AI Pilot Neural Link · High-Thinking Combat Protocol
+              Autonomous AI Pilot Neural Link · Text Reasoning Protocol
             </p>
           </div>
         </div>
@@ -74,7 +74,7 @@ export default function App() {
             }`}
           >
             <Video size={13} />
-            <span>VIDEO RECON (OMNI FLASH)</span>
+            <span>VIDEO RECON</span>
           </button>
 
           <button
@@ -86,7 +86,7 @@ export default function App() {
             }`}
           >
             <Wand2 size={13} />
-            <span>IMAGE MATRIX (NANO BANANA 2.1)</span>
+            <span>IMAGE MATRIX</span>
           </button>
 
           <button
@@ -137,10 +137,10 @@ export default function App() {
         <div className="flex items-center gap-4">
           <span className="flex items-center gap-1.5 text-gray-400">
             <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-            NEURAL PROTOCOL: GEMINI 4 CARBON (ThinkingLevel.HIGH)
+            NEURAL PROTOCOL: GEMINI 2.5 FLASH
           </span>
           <span className="hidden sm:inline text-gray-600">|</span>
-          <span className="hidden sm:inline">MAX_OUTPUT_TOKENS: UNBOUNDED</span>
+          <span className="hidden sm:inline">TEXT MODEL: GEMINI-2.5-FLASH</span>
           <span className="hidden sm:inline text-gray-600">|</span>
           <span className="hidden sm:inline">SAFEMED: ACTIVE</span>
         </div>
