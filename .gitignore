@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Data / model caches
+data/netflix_titles.csv
+data/*.zip
+.cache/
+models/
+
+# Notebook checkpoints and Kaggle artefacts
+.ipynb_checkpoints/
+notebooks/*_executed.ipynb
+__notebook__.ipynb
+cf.log
+cloudflared
+
+# OS
+.DS_Store
