@@ -2,11 +2,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   direkChat, direkStatus, direkMarket, AiUnavailableError,
   type DirekChatMessage, type DirekStatus, type CatalogTitle, type SkillAction,
+  type ConnectorRunResult, assetDownloadUrl,
   type MarketIntel, type ShareStat,
 } from '../api';
 import {
   Clapperboard, Send, Loader2, AlertTriangle, BookOpen, Sparkles,
   ShieldAlert, Link2, Film, TrendingUp, Building2,
+  Download,
 } from 'lucide-react';
 
 interface Turn {
@@ -17,6 +19,7 @@ interface Turn {
   gate?: string | null;
   action?: SkillAction | null;
   actionError?: string | null;
+  connector?: ConnectorRunResult | null;
   error?: string;
 }
 
@@ -73,6 +76,7 @@ export const DirectorsChair: React.FC = () => {
           gate: result.gate,
           action: result.action,
           actionError: result.action_error,
+          connector: result.connector,
         },
       ]);
     } catch (e: any) {
@@ -261,12 +265,38 @@ const TurnBubble: React.FC<{ turn: Turn }> = ({ turn }) => {
         )}
 
         {turn.action && (
-          <div className="flex items-start gap-1.5 text-[10px] font-mono text-sky-300 bg-sky-500/5 border border-sky-500/20 rounded p-2">
-            <Link2 size={11} className="mt-0.5 shrink-0" />
-            <span>
-              Connector: <span className="font-bold">{turn.action.connector}</span> · {turn.action.skill} ·{' '}
-              <span className="uppercase">{turn.action.status.replace('_', ' ')}</span>
-            </span>
+          <div className="space-y-1.5 text-[10px] font-mono text-sky-300 bg-sky-500/5 border border-sky-500/20 rounded p-2">
+            <div className="flex items-start gap-1.5">
+              <Link2 size={11} className="mt-0.5 shrink-0" />
+              <span>
+                Connector: <span className="font-bold">{turn.action.connector}</span> · {turn.action.skill} ·{' '}
+                <span className="uppercase">{turn.action.status.replace('_', ' ')}</span>
+              </span>
+            </div>
+            {turn.connector && (
+              <div className={turn.connector.ok ? 'text-emerald-300' : 'text-amber-300'}>
+                {turn.connector.ok ? '✔' : '!'} {turn.connector.note}
+              </div>
+            )}
+            {turn.connector?.download && (
+              <a
+                href={assetDownloadUrl(turn.connector.download.name)}
+                download
+                className="inline-flex items-center gap-1 text-sky-200 underline hover:text-white"
+              >
+                <Download size={11} /> {turn.connector.download.name}
+              </a>
+            )}
+            {turn.connector?.assets?.map(a => (
+              <a
+                key={a.id}
+                href={assetDownloadUrl(a.name)}
+                download
+                className="block text-gray-300 underline hover:text-white"
+              >
+                {a.kind} · {a.title}
+              </a>
+            ))}
           </div>
         )}
 

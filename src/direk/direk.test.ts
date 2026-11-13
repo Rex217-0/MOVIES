@@ -125,7 +125,6 @@ test('the system prompt allows realistic fictional characters', () => {
   assert.doesNotMatch(RULES, /TUMANGGI nang maikli at mag-alok ng fiktional na karakter\s*$/m);
 });
 
-test('buildSystemPrompt includes the realistic-character guidance', () => {
-  const prompt = buildSystemPrompt({ genre: 'drama', references: [] });
-  assert.match(prompt, /photoreal/i);
+test('buildSystemPrompt carries the realistic-character guidance', () => {
+  assert.match(buildSystemPrompt(), /photoreal/i);
 });

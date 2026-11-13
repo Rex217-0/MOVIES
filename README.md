@@ -233,6 +233,74 @@ move, dramatic lighting and a film look to an image or video prompt, but only
 the parts the user left out, so their own wording always wins. This lifts the
 output of both ComfyUI and Gemini toward Veo-grade results.
 
+## Free connectors (no cloud account)
+
+The skill registry used to list paid services — Cloudinary, Picsart, OpusClip,
+Descript, HeyGen, vidIQ, Tracy, Tella, Orshot, Google Drive — and only hand back
+an "action" object. Nothing ran. Now every one of them maps to a **local job**
+that produces a real file, and the app runs it for you.
+
+| Skill | Was | Now (free, local) |
+| --- | --- | --- |
+| `image_assets` | Cloudinary | asset store in `assets/` |
+| `media_edit` | Picsart | ffmpeg color grade |
+| `poster_design` | Orshot | ffmpeg poster / thumbnail |
+| `video_edit` | Descript | ffmpeg trim |
+| `short_clips` | OpusClip | ffmpeg cut + 9:16 |
+| `auto_producer` | AI Producer | ffmpeg produced short + cover |
+| `motion_video` | HeyGen | ffmpeg ken-burns from stills |
+| `screen_demo` | Tella | ffmpeg burned-in caption |
+| `growth_seo` | vidIQ | local SEO pack |
+| `audience_research` | Tracy | local SEO pack |
+| `cloud_storage` | Google Drive | Drive API v3, or a local ZIP |
+| `delete_asset` | Cloudinary/Drive | local delete |
+| `publish_post` | OpusClip/vidIQ/Tella | 9:16 cut + poster + metadata |
+
+The only requirement is ffmpeg, which ships with the app through
+`@ffmpeg-installer/ffmpeg`, so there is nothing to install by hand. Set
+`FFMPEG_PATH` to use your own build instead.
+
+### How it runs
+
+When you ask for something that needs a file ("gawin mo na ang poster"), Direk
+writes its normal answer and then appends one action block:
+
+```action
+{"skill": "poster_design", "args": {"title": "Alat ng Dagat", "background": "a weathered Filipino fisherman at sunset, 35mm film"}}
+```
+
+The server runs the matching connector and returns the result with the reply, so
+the UI can show the file and a download button. `publish_post` still asks for
+confirmation first.
+
+`source`, `background` and `images` accept an asset name, a URL, or a **prompt**.
+A prompt is generated into an image first (ComfyUI when it is running, else the
+Gemini image model), so a poster request that only carries a description still
+works.
+
+### Google Drive
+
+`cloud_storage` really uploads when Drive is set up. The Drive API is free; you
+only need an OAuth client:
+
+1. Google Cloud Console -> enable **Google Drive API**.
+2. Create an OAuth client (Web application) and add the redirect URI from
+   `GET /api/direk/drive/status`.
+3. Set `GDRIVE_CLIENT_ID` and `GDRIVE_CLIENT_SECRET`, then open
+   `/api/direk/drive/auth` and consent.
+
+The scope is `drive.file`, so the app only sees the files it creates. Without
+this setup, `cloud_storage` falls back to a local ZIP so the skill still produces
+something.
+
+### Endpoints
+
+- `GET  /api/direk/connectors` — readiness and the full catalog.
+- `POST /api/direk/connectors/run` — run one connector by skill name.
+- `GET  /api/direk/assets` — every saved render.
+- `GET  /api/direk/assets/:name/download` — download one.
+- `GET  /api/direk/drive/status` / `/auth` / `/callback` — Drive setup.
+
 ## LoRA auto-training (kohya_ss)
 
 Direk can train the set it just generated, without leaving the app. The

@@ -3,8 +3,9 @@
  * Ported from direk/skills.py.
  *
  * Local skills are executed by the model inside its own answer. API skills are
- * surfaced to the caller as a structured "action" object that an orchestrator
- * (the web UI, a workflow, a human) can run later.
+ * surfaced to the caller as a structured "action" object. They used to be dead
+ * ends; now each one maps to a free local connector (see connectors.ts), so the
+ * status is 'ready' and the caller can actually run it.
  */
 
 export interface SkillSpec {
@@ -38,7 +39,7 @@ export interface SkillAction {
   connector: string;
   args: Record<string, unknown>;
   needs_confirm: boolean;
-  status: 'needs_confirm' | 'not_connected';
+  status: 'needs_confirm' | 'ready';
 }
 
 const ACTION_RE = /```action\s*([\s\S]*?)```/;
@@ -69,7 +70,7 @@ export function extractAction(text: string): [string, SkillAction | null, string
       connector: spec.connector!,
       args: payload.args ?? {},
       needs_confirm: Boolean(spec.confirm),
-      status: spec.confirm ? 'needs_confirm' : 'not_connected',
+      status: spec.confirm ? 'needs_confirm' : 'ready',
     },
     null,
   ];

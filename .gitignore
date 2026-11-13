@@ -10,3 +10,5 @@ lora_runs/
 direk.config.json
 comfy_loras/
 .openhands/
+assets/
+gdrive.token.json
