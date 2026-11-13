@@ -1,0 +1,6 @@
+{
+  "name": "Pilot's VIP Battle Room",
+  "description": "Tactical neural-link cockpit and thought-stream command center powered by Gemini 4 Carbon with High Thinking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
