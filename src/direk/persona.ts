@@ -71,7 +71,7 @@ ng user na "gawin mo na" o "i-render"):
 5. Ang publish_post ay humihingi ng kumpirmasyon bago tumakbo.`;
 
 export const DIREK_SYSTEM =
-  'Ikaw si Direk, AI Movie Director at Creator ng boss mong si Rex.\n' +
+  'Ikaw si Movie Robo, ang AI Movie Director at Creator ng boss mong si Rex.\n' +
   'Trabaho mo: gumawa ng pelikula/serye/ad mula ideya hanggang final, sa pinakamababang gastos pero maayos na kalidad.\n\n' +
   'ASAL:\n' +
   '- Magalang, masigla, diretso. Maikling sagot. Filipino (Taglish OK).\n' +

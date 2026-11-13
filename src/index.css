@@ -1,1 +1,131 @@
 @import "tailwindcss";
+
+/*
+ * Artlist-style design tokens.
+ *
+ * The palette is the neutral dark ramp plus the single warm yellow accent that
+ * Artlist uses. Defining them under @theme makes Tailwind v4 emit the matching
+ * utilities (bg-page, text-muted, border-subtle, rounded-card, bg-primary, ...)
+ * so components can drop the old hard-coded hex values.
+ */
+@theme {
+  /* Surfaces */
+  --color-page: #0a0a0a;
+  --color-page-soft: #171717;
+  --color-surface: #171717;
+  --color-raised: #2b2b2b;
+  --color-sunken: #050505;
+
+  /* Text */
+  --color-ink: #f2f2f2;
+  --color-muted: #a5a5a5;
+  --color-dim: #777777;
+  --color-faint: #555555;
+
+  /* Borders */
+  --color-subtle: #2b2b2b;
+  --color-edge: #3f3f3f;
+  --color-edge-strong: #777777;
+
+  /* Accent */
+  --color-primary: #ffda2a;
+  --color-primary-hover: #ffde3d;
+  --color-primary-ink: #1a1500;
+  --color-primary-subtle: #4a3d00;
+  --color-primary-soft: #2b2400;
+
+  /* Status */
+  --color-growth: #54f893;
+  --color-growth-soft: #128749;
+
+  /* Shape */
+  --radius-card: 16px;
+  --radius-panel: 20px;
+  --radius-pill: 999px;
+
+  /* Type */
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: var(--color-page);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+  }
+
+  /* The tactical views used a monospace body; keep code/mono explicit instead. */
+  code,
+  pre,
+  kbd,
+  .font-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  ::selection {
+    background-color: color-mix(in srgb, var(--color-primary) 35%, transparent);
+    color: #fff;
+  }
+
+  /* Slim, neutral scrollbars to match the flat surfaces. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-edge) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-edge);
+    border-radius: var(--radius-pill);
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--color-edge-strong);
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  /* Warm accent button, with the soft top sheen Artlist gives its primaries. */
+  .btn-primary {
+    background-color: var(--color-primary);
+    color: var(--color-primary-ink);
+    border-radius: var(--radius-pill);
+    box-shadow: inset 0 1px 8px -4px rgba(255, 255, 255, 0.28);
+    transition: background-color 140ms ease, transform 140ms ease;
+  }
+  .btn-primary:hover {
+    background-color: var(--color-primary-hover);
+  }
+  .btn-primary:active {
+    transform: translateY(1px);
+  }
+
+  /* Neutral pill button for secondary actions. */
+  .btn-ghost {
+    background-color: var(--color-raised);
+    color: var(--color-ink);
+    border: 1px solid var(--color-edge);
+    border-radius: var(--radius-pill);
+    transition: background-color 140ms ease, border-color 140ms ease;
+  }
+  .btn-ghost:hover {
+    background-color: var(--color-edge);
+    border-color: var(--color-edge-strong);
+  }
+
+  /* Frosted panel used for the top bar and floating surfaces. */
+  .panel-blur {
+    background-color: color-mix(in srgb, var(--color-page) 82%, transparent);
+    backdrop-filter: blur(14px);
+  }
+}

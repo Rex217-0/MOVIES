@@ -42,7 +42,7 @@ export class DirekService {
 
   health() {
     return {
-      persona: 'Direk',
+      persona: 'Movie Robo',
       reference_available: this.catalog.available,
       reference_rows: this.catalog.size,
     };

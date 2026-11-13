@@ -173,7 +173,7 @@ export const LoraStudio: React.FC = () => {
             LoRA Studio
           </h2>
           <p className="text-[10px] text-gray-400 font-mono">
-            Direk turns a brief into a LoRA training set — captions, config, metadata
+            Movie Robo turns a brief into a LoRA training set — captions, config, metadata
           </p>
         </div>
       </div>
