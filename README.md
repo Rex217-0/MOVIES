@@ -169,6 +169,34 @@ Each caption leads with the trigger token, then the character's fixed look, then
 the shot description — the order LoRA trainers expect. The trigger must match
 `^[a-z][a-z0-9_]{2,39}$`; the API rejects anything else.
 
+## First run: the SETUP panel
+
+The app needs to know where ComfyUI and kohya are. Open **SETUP** in the header,
+type the paths, press SAVE. The app writes `direk.config.json` and uses it from
+then on — no environment variables to edit, and the paths survive a restart.
+
+The panel also shows a live check: whether ComfyUI is reachable, which
+checkpoints and LoRAs it can see, and whether training is ready. Environment
+variables still work and always win over the file.
+
+| Setting | Meaning |
+| --- | --- |
+| ComfyUI URL | Where ComfyUI listens (`http://127.0.0.1:8188`, or a LAN IP) |
+| Checkpoint | Model for the built-in workflow |
+| LoRAs folder | ComfyUI's `models/loras`; trained LoRAs are copied here |
+| kohya folder | kohya_ss / sd-scripts checkout (has `train_network.py`) |
+| Base model | Base model path or HuggingFace id for training |
+| Python | Interpreter for training |
+| Output folder | Where runs and checkpoints are written |
+
+## Using a trained LoRA
+
+After a training run finishes, its `.safetensors` is copied into the LoRAs
+folder automatically. From then on it appears in the **LoRA Studio** and
+**Image Matrix** pickers; choose it (and a strength) and the next images are
+generated in that style. The workflow gains a `LoraLoader` node wired between
+the checkpoint and the sampler.
+
 ## LoRA auto-training (kohya_ss)
 
 Direk can train the set it just generated, without leaving the app. The

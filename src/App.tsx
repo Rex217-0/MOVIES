@@ -7,14 +7,16 @@ import { RenderVault } from './components/RenderVault';
 import { CognitiveMatrixModal } from './components/CognitiveMatrixModal';
 import { DirectorsChair } from './components/DirectorsChair';
 import { LoraStudio } from './components/LoraStudio';
+import { SetupModal } from './components/SetupModal';
 import { 
   ShieldAlert, Sparkles, Radio, BrainCircuit, 
-  Layers, Terminal, Award, Video, Wand2, Film, Clapperboard, Boxes
+  Layers, Terminal, Award, Video, Wand2, Film, Clapperboard, Boxes, FolderCog
 } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'direk' | 'lora' | 'cockpit' | 'radar' | 'video' | 'image' | 'vault'>('direk');
   const [isCognitiveModalOpen, setIsCognitiveModalOpen] = useState(false);
+  const [isSetupOpen, setIsSetupOpen] = useState(false);
 
   return (
     <div className="min-h-screen bg-[#020306] text-gray-200 flex flex-col font-sans selection:bg-[#D4AF37]/30 selection:text-white">
@@ -128,6 +130,14 @@ export default function App() {
           </button>
 
           <button
+            onClick={() => setIsSetupOpen(true)}
+            className="px-3 py-1.5 rounded-md text-xs font-mono font-semibold text-gray-300 hover:bg-gray-800 border border-gray-700 transition-all flex items-center gap-1.5"
+          >
+            <FolderCog size={13} />
+            <span>SETUP</span>
+          </button>
+
+          <button
             onClick={() => setIsCognitiveModalOpen(true)}
             className="px-3 py-1.5 rounded-md text-xs font-mono font-semibold text-[#F6E076] hover:bg-[#D4AF37]/20 border border-[#D4AF37]/30 transition-all flex items-center gap-1.5"
           >
@@ -180,6 +190,7 @@ export default function App() {
       </footer>
 
       {/* MODAL */}
+      <SetupModal isOpen={isSetupOpen} onClose={() => setIsSetupOpen(false)} />
       <CognitiveMatrixModal 
         isOpen={isCognitiveModalOpen} 
         onClose={() => setIsCognitiveModalOpen(false)} 

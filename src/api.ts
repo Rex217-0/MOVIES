@@ -177,6 +177,10 @@ export interface LoraBriefInput {
   baseModel?: string;
   /** Ask the server to generate sample images too (default: true). */
   images?: boolean;
+  /** Name of a published LoRA to apply while generating images. */
+  lora?: string;
+  /** LoRA blend strength, default 1. */
+  loraStrength?: number;
 }
 
 export interface LoraPlanResult {
@@ -262,6 +266,68 @@ export function trainStreamUrl(): string {
   return token
     ? `/api/direk/train/stream?token=${encodeURIComponent(token)}`
     : '/api/direk/train/stream';
+}
+
+export interface LoraFile {
+  name: string;
+  bytes: number;
+  modified: string;
+}
+
+export interface DirekSettings {
+  comfyui_url?: string;
+  comfyui_checkpoint?: string;
+  comfyui_workflow?: string;
+  comfyui_loras_dir?: string;
+  kohya_dir?: string;
+  kohya_base_model?: string;
+  kohya_python?: string;
+  kohya_accelerate?: boolean;
+  kohya_output_dir?: string;
+}
+
+export interface SetupReport {
+  config_path: string;
+  comfyui: {
+    url: string;
+    reachable: boolean;
+    checkpoints: string[];
+    loras: string[];
+    error?: string;
+  };
+  trainer: { available: boolean; reason?: string; base_model: string | null };
+  loras_dir: string;
+  published_loras: LoraFile[];
+  ready: boolean;
+}
+
+export async function direkGetSettings(): Promise<{ config_path: string; settings: DirekSettings }> {
+  const res = await apiFetch('/api/direk/settings');
+  if (!res.ok) throw new Error(`Settings failed (${res.status})`);
+  return res.json();
+}
+
+export async function direkSaveSettings(settings: DirekSettings): Promise<{ config_path: string; settings: DirekSettings }> {
+  const res = await apiFetch('/api/direk/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Save failed (${res.status})`);
+  return body;
+}
+
+export async function direkSetup(): Promise<SetupReport> {
+  const res = await apiFetch('/api/direk/setup');
+  if (!res.ok) throw new Error(`Setup check failed (${res.status})`);
+  return res.json();
+}
+
+export async function direkLoraList(): Promise<{ dir: string; loras: LoraFile[] }> {
+  const res = await apiFetch('/api/direk/lora/list');
+  if (!res.ok) return { dir: '', loras: [] };
+  return res.json();
 }
 
 /** Fetch the LoRA training set zip as a blob for download. */

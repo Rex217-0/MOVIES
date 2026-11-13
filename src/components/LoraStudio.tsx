@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import {
   direkLoraPlan, direkLoraDataset, direkTrainStatus, direkTrainStart, direkTrainCancel,
-  trainStreamUrl, type LoraBriefInput, type LoraPlanResult, type TrainJob, type TrainStatus,
+  direkLoraList, trainStreamUrl,
+  type LoraBriefInput, type LoraPlanResult, type TrainJob, type TrainStatus, type LoraFile,
 } from '../api';
 import {
   Layers, Download, Loader2, AlertTriangle, Wand2, Film, CheckCircle2, Boxes,
@@ -38,6 +39,9 @@ export const LoraStudio: React.FC = () => {
   const [job, setJob] = useState<TrainJob | null>(null);
   const [isStarting, setIsStarting] = useState(false);
   const [logLines, setLogLines] = useState<string[]>([]);
+  const [loras, setLoras] = useState<LoraFile[]>([]);
+  const [useLora, setUseLora] = useState('');
+  const [loraStrength, setLoraStrength] = useState(1);
 
   const input = (): LoraBriefInput => ({
     title,
@@ -51,6 +55,8 @@ export const LoraStudio: React.FC = () => {
       wardrobe: charWardrobe || undefined,
     },
     images: includeImages,
+    lora: useLora || undefined,
+    loraStrength: useLora ? loraStrength : undefined,
   });
 
   const refreshTrainStatus = async () => {
@@ -68,7 +74,18 @@ export const LoraStudio: React.FC = () => {
 
   React.useEffect(() => {
     refreshTrainStatus();
+    direkLoraList().then(r => setLoras(r.loras)).catch(() => {});
   }, []);
+
+  // A freshly trained LoRA becomes available; refresh and select it.
+  React.useEffect(() => {
+    if (job?.status !== 'done' || !job.artifact) return;
+    direkLoraList().then(r => {
+      setLoras(r.loras);
+      const name = job.artifact!.split('/').pop();
+      if (name && r.loras.some(l => l.name === name)) setUseLora(name);
+    }).catch(() => {});
+  }, [job?.status, job?.artifact]);
 
   // Follow the live training log while a job runs.
   React.useEffect(() => {
@@ -213,6 +230,36 @@ export const LoraStudio: React.FC = () => {
                 placeholder="hal. pulang jacket" className={inputCls}
               />
             </Field>
+          </div>
+
+          <div className="border-t border-gray-800 pt-3 space-y-2">
+            <div className="text-[10px] font-mono text-gray-500 uppercase tracking-wider">
+              Gamitin ang na-train na LoRA
+            </div>
+            <select
+              value={useLora}
+              onChange={e => setUseLora(e.target.value)}
+              className={inputCls}
+            >
+              <option value="">(wala — base model lang)</option>
+              {loras.map(l => (
+                <option key={l.name} value={l.name}>{l.name}</option>
+              ))}
+            </select>
+            {useLora && (
+              <Field label={`Strength: ${loraStrength.toFixed(2)}`}>
+                <input
+                  type="range" min={0} max={2} step={0.05} value={loraStrength}
+                  onChange={e => setLoraStrength(Number(e.target.value))}
+                  className="w-full accent-[#F6E076]"
+                />
+              </Field>
+            )}
+            {loras.length === 0 && (
+              <div className="text-[10px] font-mono text-gray-600">
+                Wala pang na-train na LoRA. Mag-train muna sa ibaba.
+              </div>
+            )}
           </div>
 
           <label className="flex items-center gap-2 text-[10px] font-mono text-gray-400 pt-1 cursor-pointer">

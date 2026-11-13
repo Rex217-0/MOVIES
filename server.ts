@@ -36,12 +36,23 @@ import {
   buildLoraArtifacts, buildLoraZip, buildCaption, isValidTrigger, toSlug,
   numberedName, MAX_LORA_IMAGES,
 } from './src/direk/lora.ts';
-import { comfyAvailable, generateWithComfy, comfyUrl } from './src/direk/comfyui.ts';
+import {
+  comfyAvailable, generateWithComfy, comfyUrl,
+  publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
+} from './src/direk/comfyui.ts';
 import {
   LoRATrainer, trainerStatus, trainingConfig, buildTrainCommand,
 } from './src/direk/trainer.ts';
+import {
+  readSettings, writeSettings, applySettings, effectiveSettings,
+  configPath, comfyModelOptions, type DirekSettings,
+} from './src/direk/settings.ts';
 
 dotenv.config();
+
+// Load the saved runtime settings (ComfyUI / kohya paths) so the backends work
+// without hand-editing environment variables. Real env vars still win.
+applySettings(readSettings());
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -531,7 +542,7 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
 // FEATURE: Create & Edit Images
 // ==========================================
 app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
-  const { prompt, aspect_ratio, image_size } = req.body;
+  const { prompt, aspect_ratio, image_size, lora, loraStrength } = req.body;
 
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     res.status(400).json({ error: 'Image prompt is required.' });
@@ -548,7 +559,9 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
   const backend = await resolveImageBackend();
   if (backend === 'comfyui') {
     try {
-      const png = await generateWithComfy(prompt, { width: 1024, height: 1024 });
+      const png = await generateWithComfy(prompt, {
+        width: 1024, height: 1024, lora: parseLoraChoice({ lora, loraStrength }),
+      });
       const elapsedMs = Date.now() - startTime;
       const dataUrl = `data:image/png;base64,${png.toString('base64')}`;
       broadcastThought(`[IMAGE COMPLETE] ComfyUI image generated (${elapsedMs}ms).`);
@@ -951,8 +964,15 @@ async function generateGeminiImage(prompt: string): Promise<Buffer | null> {
   return Buffer.from(dataUrl.slice(comma + 1), 'base64');
 }
 
-function generateLoraImage(prompt: string, backend: ImageBackend): Promise<Buffer | null> {
-  return backend === 'comfyui' ? generateWithComfy(prompt) : generateGeminiImage(prompt);
+function generateLoraImage(
+  prompt: string,
+  backend: ImageBackend,
+  lora?: LoraChoice,
+): Promise<Buffer | null> {
+  // The LoRA only applies to ComfyUI; the Gemini path has no LoRA concept.
+  return backend === 'comfyui'
+    ? generateWithComfy(prompt, { lora })
+    : generateGeminiImage(prompt);
 }
 
 function noImageNote(): string {
@@ -1005,6 +1025,13 @@ async function mapLimited<T, R>(
   return results;
 }
 
+/** Read a LoRA selection out of a request body, or undefined for none. */
+function parseLoraChoice(body: { lora?: string; loraStrength?: number }): LoraChoice | undefined {
+  const name = (body.lora || '').trim();
+  if (!name) return undefined;
+  return { name, strength: clampStrength(body.loraStrength) };
+}
+
 /**
  * Generate the sample images for a plan. Shared by the zip download and the
  * trainer, so both produce the same set.
@@ -1012,6 +1039,7 @@ async function mapLimited<T, R>(
 async function generateLoraImages(
   plan: ReturnType<typeof planLora>,
   wantImages: boolean,
+  lora?: LoraChoice,
 ): Promise<{ images: Map<string, Buffer>; skipped: string[]; imageNote?: string }> {
   const images = new Map<string, Buffer>();
   const skipped: string[] = [];
@@ -1032,7 +1060,7 @@ async function generateLoraImages(
     await mapLimited(targets, limit, async (sample, i) => {
       const name = names[i];
       try {
-        const png = await generateLoraImage(sample.prompt, backend);
+        const png = await generateLoraImage(sample.prompt, backend, lora);
         if (png) images.set(name, png);
         else skipped.push(name);
       } catch (error: any) {
@@ -1055,14 +1083,15 @@ async function generateLoraImages(
 // available, the sample images are generated and bundled too; otherwise the
 // zip still contains the text half and an IMAGES.md explaining the gap.
 app.post('/api/direk/lora/dataset', async (req: Request, res: Response) => {
-  const body = req.body as LoraRequestBody & { images?: boolean };
+  const body = req.body as LoraRequestBody & { images?: boolean; lora?: string; loraStrength?: number };
   const parsed = parseLoraBody(body);
   if ('error' in parsed) {
     res.status(400).json({ error: parsed.error });
     return;
   }
   const { plan } = parsed;
-  const { images, skipped, imageNote } = await generateLoraImages(plan, body.images !== false);
+  const lora = parseLoraChoice(body);
+  const { images, skipped, imageNote } = await generateLoraImages(plan, body.images !== false, lora);
 
   const zip = buildLoraZip(plan.brief, { images, skipped, imageNote });
   const name = `${toSlug(plan.brief.title)}_${plan.brief.trigger}_lora.zip`;
@@ -1106,6 +1135,58 @@ app.get('/api/direk/train/status', (_req: Request, res: Response) => {
   res.json({ ...status, job: jobSummary() });
 });
 
+// The LoRAs available to ComfyUI: trained ones Direk published, plus any the
+// user dropped into the same folder.
+app.get('/api/direk/lora/list', (_req: Request, res: Response) => {
+  res.json({ dir: lorasDir(), loras: listLoras() });
+});
+
+// ---------------------------------------------------------------------------
+// Setup: the local backend paths, editable from the UI so a fresh install
+// needs no hand-editing of environment variables.
+// ---------------------------------------------------------------------------
+app.get('/api/direk/settings', (_req: Request, res: Response) => {
+  const { settings, source } = effectiveSettings();
+  res.json({ config_path: configPath(), settings, source });
+});
+
+app.put('/api/direk/settings', (req: Request, res: Response) => {
+  const body = (req.body || {}) as DirekSettings;
+  const allowed: (keyof DirekSettings)[] = [
+    'comfyui_url', 'comfyui_checkpoint', 'comfyui_workflow', 'comfyui_loras_dir',
+    'kohya_dir', 'kohya_base_model', 'kohya_python', 'kohya_accelerate', 'kohya_output_dir',
+  ];
+  const clean: DirekSettings = {};
+  for (const key of allowed) {
+    if (body[key] !== undefined) (clean as any)[key] = body[key];
+  }
+  writeSettings(clean);
+  // Apply live so the next request already uses the new paths.
+  applySettings(clean, true);
+  comfyOk = null;
+  res.json({ saved: true, config_path: configPath(), settings: clean });
+});
+
+// One call the UI makes on load: is everything wired up and working?
+app.get('/api/direk/setup', async (_req: Request, res: Response) => {
+  const comfy = await comfyModelOptions();
+  const trainer = trainerStatus();
+  res.json({
+    config_path: configPath(),
+    comfyui: {
+      url: comfyUrl(),
+      reachable: comfy.reachable,
+      checkpoints: comfy.checkpoints,
+      loras: comfy.loras,
+      error: comfy.error,
+    },
+    trainer: { available: trainer.available, reason: trainer.reason, base_model: trainer.base_model },
+    loras_dir: lorasDir(),
+    published_loras: listLoras(),
+    ready: comfy.reachable && trainer.available,
+  });
+});
+
 // Start training. Generates the images first (so there is something to train
 // on), writes the dataset to disk, then launches the trainer.
 app.post('/api/direk/train/start', async (req: Request, res: Response) => {
@@ -1115,6 +1196,8 @@ app.post('/api/direk/train/start', async (req: Request, res: Response) => {
     resolution?: number;
     networkDim?: number;
     numRepeats?: number;
+    lora?: string;
+    loraStrength?: number;
   };
   const parsed = parseLoraBody(body);
   if ('error' in parsed) {
@@ -1127,7 +1210,8 @@ app.post('/api/direk/train/start', async (req: Request, res: Response) => {
     return;
   }
   const { plan } = parsed;
-  const { images } = await generateLoraImages(plan, body.images !== false);
+  const lora = parseLoraChoice(body);
+  const { images } = await generateLoraImages(plan, body.images !== false, lora);
   if (images.size === 0) {
     res.status(400).json({
       error: 'Walang larawan na na-generate. Magpatakbo ng ComfyUI o mag-enable ng image model bago mag-train.',
@@ -1167,6 +1251,11 @@ app.post('/api/direk/train/start', async (req: Request, res: Response) => {
       captions,
       images,
       config,
+      // Make the trained LoRA immediately usable by ComfyUI.
+      onArtifact: file => {
+        const published = publishLora(file);
+        broadcastThought(`[DIREK] LoRA published: ${published.name}`);
+      },
     });
     broadcastThought(`[DIREK] Training started: ${job.trigger} (${images.size} images).`);
     res.json({ status: 'started', job: jobSummary() });

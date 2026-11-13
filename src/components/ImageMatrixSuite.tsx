@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { apiFetch } from '../api';
+import { apiFetch, direkLoraList, type LoraFile } from '../api';
 import { 
   Image, Wand2, Sparkles, Upload, Download, 
   RefreshCw, Check, ArrowRight, Layers, Sliders, Eye
@@ -38,6 +38,9 @@ export const ImageMatrixSuite: React.FC<{
   const [createPrompt, setCreatePrompt] = useState(IMAGE_CREATE_PRESETS[0]);
   const [aspectRatio, setAspectRatio] = useState('1:1');
   const [imageSize, setImageSize] = useState('1K');
+  const [loras, setLoras] = useState<LoraFile[]>([]);
+  const [useLora, setUseLora] = useState('');
+  const [loraStrength, setLoraStrength] = useState(1);
   
   // Edit mode states
   const [editPrompt, setEditPrompt] = useState(IMAGE_EDIT_PRESETS[0]);
@@ -50,6 +53,11 @@ export const ImageMatrixSuite: React.FC<{
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Fetch the trained LoRAs that ComfyUI can load.
+  useEffect(() => {
+    direkLoraList().then(r => setLoras(r.loras)).catch(() => {});
+  }, []);
 
   // Fetch initial media gallery
   useEffect(() => {
@@ -97,6 +105,8 @@ export const ImageMatrixSuite: React.FC<{
           prompt: createPrompt.trim(),
           aspect_ratio: aspectRatio,
           image_size: imageSize,
+          lora: useLora || undefined,
+          loraStrength: useLora ? loraStrength : undefined,
         }),
       });
 
@@ -167,7 +177,7 @@ export const ImageMatrixSuite: React.FC<{
               </span>
             </div>
             <p className="text-[10px] text-gray-400 font-mono">
-              Model: <code className="text-[#00E5FF]">gemini-2.5-flash-image</code> (paid tier only - currently unavailable)
+              Backend: <code className="text-[#00E5FF]">ComfyUI (local, free)</code> · fallback gemini-2.5-flash-image (paid)
             </p>
           </div>
         </div>
@@ -245,6 +255,33 @@ export const ImageMatrixSuite: React.FC<{
                       <option value="2K">2K High Res</option>
                       <option value="4K">4K Ultra Res</option>
                     </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-mono font-bold text-gray-300">TRAINED LORA:</label>
+                    <select
+                      value={useLora}
+                      onChange={(e) => setUseLora(e.target.value)}
+                      className="w-full bg-[#0a0d14] border border-gray-800 rounded p-2 text-xs font-mono text-white focus:outline-none focus:border-[#D4AF37]"
+                    >
+                      <option value="">(base model only)</option>
+                      {loras.map(l => (
+                        <option key={l.name} value={l.name}>{l.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-mono font-bold text-gray-300">
+                      LORA STRENGTH: {loraStrength.toFixed(2)}
+                    </label>
+                    <input
+                      type="range" min={0} max={2} step={0.05} value={loraStrength}
+                      onChange={(e) => setLoraStrength(Number(e.target.value))}
+                      disabled={!useLora}
+                      className="w-full accent-[#F6E076] disabled:opacity-40"
+                    />
                   </div>
                 </div>
 
@@ -412,7 +449,7 @@ export const ImageMatrixSuite: React.FC<{
               </button>
             )}
             <div className="text-[9px] text-gray-500 text-center font-mono mt-1.5">
-              Image generation requires a paid Gemini tier and is currently unavailable.
+              Free via local ComfyUI. Without ComfyUI this needs a paid Gemini tier.
             </div>
           </div>
         </div>

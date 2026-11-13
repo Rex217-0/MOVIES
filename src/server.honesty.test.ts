@@ -10,7 +10,15 @@ function startServer(env: Record<string, string>) {
   const port = 4300 + Math.floor(Math.random() * 500);
   const child = spawn('node', ['server.ts'], {
     cwd: repoRoot,
-    env: { ...process.env, PORT: String(port), GEMINI_API_KEY: '', ...env },
+    // Isolate from any direk.config.json in the working tree: this test checks
+    // the server's own defaults, not a developer's saved settings.
+    env: {
+      ...process.env,
+      PORT: String(port),
+      GEMINI_API_KEY: '',
+      DIREK_CONFIG: path.join(repoRoot, '.no-such-config.json'),
+      ...env,
+    },
     stdio: 'ignore',
   });
   return { child, port };

@@ -177,6 +177,8 @@ export function writeTrainingJob(opts: {
   captions: { name: string; text: string }[];
   images: Map<string, Buffer>;
   config: string;
+  /** Called with the trained file path when a run finishes successfully. */
+  onArtifact?: (filePath: string) => void;
 }): { datasetDir: string; configPath: string; imagesWritten: number } {
   const datasetDir = path.join(opts.root, 'dataset');
   fs.mkdirSync(datasetDir, { recursive: true });
@@ -218,6 +220,8 @@ export interface StartTrainOptions {
   captions: { name: string; text: string }[];
   images: Map<string, Buffer>;
   config: string;
+  /** Called with the trained file path when a run finishes successfully. */
+  onArtifact?: (filePath: string) => void;
 }
 
 /**
@@ -325,6 +329,11 @@ export class LoRATrainer {
         job.status = 'done';
         job.artifact = findArtifact(outputDir);
         push(job.artifact ? `tapos: ${job.artifact}` : 'tapos (walang .safetensors na nakita)');
+        if (job.artifact && opts.onArtifact) {
+          try { opts.onArtifact(job.artifact); } catch (e: any) {
+            push(`warning: hindi na-publish ang LoRA: ${e?.message || e}`);
+          }
+        }
       } else {
         job.status = 'failed';
         job.error = `Trainer exited with code ${code}.`;
