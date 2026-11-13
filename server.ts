@@ -24,6 +24,12 @@ import {
   NO_FREE_IMAGE_MODEL,
   NO_FREE_VIDEO_MODEL,
 } from './src/config.ts';
+import { ReferenceCatalog } from './src/direk/reference.ts';
+import { MarketIntel } from './src/direk/market.ts';
+import { DirekService, type ChatMessage } from './src/direk/service.ts';
+import { PIPELINE, STAGE_SKILL } from './src/direk/pipeline.ts';
+import { GENRE_MAP } from './src/direk/genres.ts';
+import { SKILLS } from './src/direk/skills.ts';
 
 dotenv.config();
 
@@ -253,6 +259,13 @@ app.get('/api/health', (_req: Request, res: Response) => {
     ok: keyConfigured,
     gemini_key_configured: keyConfigured,
     text: { model: TEXT_MODEL, available: keyConfigured, free_tier: true },
+    direk: {
+      available: keyConfigured,
+      free_tier: true,
+      model: TEXT_MODEL,
+      reference_available: referenceCatalog.available,
+      reference_rows: referenceCatalog.size,
+    },
     image: {
       model: IMAGE_MODEL,
       available: keyConfigured && IMAGE_MODEL_FREE,
@@ -689,6 +702,128 @@ app.post('/api/assets/review', (req: Request, res: Response) => {
   const updated = renderVaultAssets.find(a => a.id === assetId);
   broadcastThought(`[RENDER VAULT] Asset ${assetId} review status updated: ${action.toUpperCase()}`);
   res.json({ success: true, asset: updated });
+});
+
+// ==========================================
+// FEATURE: Direk - AI Movie Director
+// The movie-director assistant, merged into the cockpit. It grounds genre
+// advice in the bundled Netflix-style catalog and gates on missing essentials.
+// ==========================================
+const referenceCatalog = new ReferenceCatalog(path.join(__dirname, 'data'), 5);
+const marketIntel = new MarketIntel(path.join(__dirname, 'data'));
+
+const direkService = new DirekService(
+  referenceCatalog,
+  async (systemPrompt, messages) => {
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error('GEMINI_API_KEY is not configured');
+    }
+    const contents = messages.map(m => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }],
+    }));
+    const response = await ai.models.generateContent({
+      model: TEXT_MODEL,
+      contents,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.5,
+        topP: 0.9,
+        maxOutputTokens: 1024,
+      },
+    });
+    return response.text || '';
+  },
+  () => marketIntel.brief(),
+);
+
+app.get('/api/direk/status', (_req: Request, res: Response) => {
+  res.json({
+    ok: Boolean(process.env.GEMINI_API_KEY),
+    model: TEXT_MODEL,
+    gemini_key_configured: Boolean(process.env.GEMINI_API_KEY),
+    pipeline: PIPELINE,
+    genres: Object.keys(GENRE_MAP),
+    skills: Object.entries(SKILLS).map(([id, spec]) => ({ id, ...spec })),
+    reference_sources: referenceCatalog.sources(),
+    market_available: marketIntel.available,
+    ...direkService.health(),
+  });
+});
+
+app.post('/api/direk/chat', async (req: Request, res: Response) => {
+  const { messages } = req.body as { messages?: ChatMessage[] };
+  if (!Array.isArray(messages) || messages.length === 0) {
+    res.status(400).json({ error: 'messages array is required.' });
+    return;
+  }
+
+  try {
+    const result = await direkService.chat(messages);
+    broadcastThought(`[DIREK] Genre: ${result.genre ?? 'n/a'} · ${result.reply.slice(0, 60)}...`);
+    res.json({
+      status: 'success',
+      model: TEXT_MODEL,
+      reply: result.reply,
+      reference_genre: result.genre,
+      references: result.references,
+      gate: result.gate,
+      action: result.action,
+      action_error: result.action_error,
+      market_brief: result.market_brief,
+    });
+  } catch (error: any) {
+    const reason = error?.message || 'Unknown error';
+    console.error(`[DIREK ERROR] ${TEXT_MODEL} chat failed:`, reason);
+    broadcastThought(`[DIREK ERROR] ${reason}`);
+    res.status(503).json(
+      aiUnavailable(TEXT_MODEL, 'Check the server logs and the Gemini API key.', reason)
+    );
+  }
+});
+
+// Box-office market intelligence (real stats, no model needed).
+app.get('/api/direk/market', (_req: Request, res: Response) => {
+  res.json({
+    available: marketIntel.available,
+    brief: marketIntel.brief(),
+    top_genres: marketIntel.topGenres(),
+    top_distributors: marketIntel.topDistributors(),
+    production_methods: marketIntel.productionMethods(),
+    ratings: marketIntel.ratings(),
+  });
+});
+
+// Commercial benchmark for a single title, from the TMDB dataset.
+app.get('/api/direk/benchmark', (req: Request, res: Response) => {
+  const title = typeof req.query.title === 'string' ? req.query.title : '';
+  if (!title) {
+    res.status(400).json({ error: 'title query parameter is required.' });
+    return;
+  }
+  const benchmark = marketIntel.lookupBenchmark(title);
+  if (!benchmark) {
+    res.status(404).json({ error: `Walang benchmark para sa '${title}'.` });
+    return;
+  }
+  res.json(benchmark);
+});
+
+// Look up catalog titles directly (no model needed).
+app.get('/api/direk/reference', (req: Request, res: Response) => {
+  const genre = typeof req.query.genre === 'string' ? req.query.genre : null;
+  const kind = typeof req.query.kind === 'string' ? req.query.kind : 'Movie';
+  const n = typeof req.query.n === 'string' ? parseInt(req.query.n, 10) : undefined;
+  if (!genre) {
+    res.status(400).json({ error: 'genre query parameter is required.' });
+    return;
+  }
+  res.json({
+    genre,
+    available: referenceCatalog.available,
+    rows: referenceCatalog.size,
+    items: referenceCatalog.search(genre, kind, n),
+  });
 });
 
 function cleanPrompt(p: string): string {

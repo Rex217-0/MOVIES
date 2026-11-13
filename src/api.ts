@@ -48,3 +48,111 @@ export function thoughtStreamUrl(): string {
     ? `/api/pilot/thought-stream?token=${encodeURIComponent(token)}`
     : '/api/pilot/thought-stream';
 }
+
+// ---------------------------------------------------------------------------
+// Direk (AI Movie Director) endpoints
+// ---------------------------------------------------------------------------
+
+export interface DirekChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface CatalogTitle {
+  title: string;
+  type: string;
+  listed_in: string;
+  release_year: string;
+  duration: string;
+  director?: string;
+  cast?: string;
+  source: string;
+}
+
+export interface SkillAction {
+  skill: string;
+  connector: string;
+  args: Record<string, unknown>;
+  needs_confirm: boolean;
+  status: 'needs_confirm' | 'not_connected';
+}
+
+export interface DirekChatResult {
+  status: 'success';
+  model: string;
+  reply: string;
+  reference_genre: string | null;
+  references: CatalogTitle[];
+  gate: string | null;
+  action: SkillAction | null;
+  action_error: string | null;
+}
+
+export interface DirekStatus {
+  ok: boolean;
+  model: string;
+  gemini_key_configured: boolean;
+  pipeline: { id: string; name: string; description: string }[];
+  genres: string[];
+  skills: { id: string; kind: 'local' | 'api'; connector?: string; confirm?: boolean }[];
+  reference_available: boolean;
+  reference_rows: number;
+  reference_sources: Record<string, number>;
+  persona: string;
+}
+
+/** A structured failure from an AI endpoint (HTTP 503 AI_UNAVAILABLE). */
+export class AiUnavailableError extends Error {
+  code: string;
+  model: string;
+  constructor(body: { error?: string; code?: string; model?: string; detail?: string }) {
+    super(body.error || 'The AI service is unavailable.');
+    this.code = body.code || 'AI_UNAVAILABLE';
+    this.model = body.model || '';
+  }
+}
+
+export async function direkStatus(): Promise<DirekStatus> {
+  const res = await apiFetch('/api/direk/status');
+  if (!res.ok) throw new Error(`Status request failed (${res.status})`);
+  return res.json();
+}
+
+export async function direkChat(messages: DirekChatMessage[]): Promise<DirekChatResult> {
+  const res = await apiFetch('/api/direk/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages }),
+  });
+  if (res.status === 503) throw new AiUnavailableError(await res.json());
+  if (!res.ok) throw new Error(`Direk request failed (${res.status})`);
+  return res.json();
+}
+
+export async function direkReference(genre: string, n = 5): Promise<CatalogTitle[]> {
+  const res = await apiFetch(`/api/direk/reference?genre=${encodeURIComponent(genre)}&n=${n}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.items ?? [];
+}
+
+export interface ShareStat {
+  name: string;
+  movies: string;
+  marketShare: string;
+}
+
+export interface MarketIntel {
+  available: boolean;
+  brief: string;
+  top_genres: ShareStat[];
+  top_distributors: ShareStat[];
+  production_methods: ShareStat[];
+  ratings: ShareStat[];
+}
+
+export async function direkMarket(): Promise<MarketIntel | null> {
+  const res = await apiFetch('/api/direk/market');
+  if (!res.ok) return null;
+  return res.json();
+}

@@ -5,13 +5,14 @@ import { VideoReconSuite } from './components/VideoReconSuite';
 import { ImageMatrixSuite } from './components/ImageMatrixSuite';
 import { RenderVault } from './components/RenderVault';
 import { CognitiveMatrixModal } from './components/CognitiveMatrixModal';
+import { DirectorsChair } from './components/DirectorsChair';
 import { 
   ShieldAlert, Sparkles, Radio, BrainCircuit, 
-  Layers, Terminal, Award, Video, Wand2, Film
+  Layers, Terminal, Award, Video, Wand2, Film, Clapperboard
 } from 'lucide-react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'cockpit' | 'radar' | 'video' | 'image' | 'vault'>('cockpit');
+  const [activeTab, setActiveTab] = useState<'direk' | 'cockpit' | 'radar' | 'video' | 'image' | 'vault'>('direk');
   const [isCognitiveModalOpen, setIsCognitiveModalOpen] = useState(false);
 
   return (
@@ -21,26 +22,38 @@ export default function App() {
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#D4AF37] to-[#F6E076] p-[1px] shadow-[0_0_15px_rgba(212,175,55,0.3)]">
             <div className="w-full h-full bg-[#07080C] rounded-lg flex items-center justify-center">
-              <BrainCircuit className="w-4 h-4 text-[#F6E076]" />
+              <Clapperboard className="w-4 h-4 text-[#F6E076]" />
             </div>
           </div>
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-sm font-bold text-white tracking-wider uppercase font-mono">
-                Aegis Tactical Command Deck
+                MOVIE CREATOR
               </h1>
               <span className="flex items-center gap-1 text-[10px] font-mono font-bold text-[#F6E076] bg-[#D4AF37]/15 px-2 py-0.5 rounded border border-[#D4AF37]/40">
                 <Award size={11} /> VIP SUITE
               </span>
             </div>
             <p className="text-[10px] text-gray-400 font-mono">
-              Autonomous AI Pilot Neural Link · Text Reasoning Protocol
+              AI Movie Director · Pilot Cockpit · Ideya hanggang Publish
             </p>
           </div>
         </div>
 
         {/* NAVIGATION & MODE TABS */}
         <div className="flex items-center gap-1 bg-[#0c101a] p-1 rounded-lg border border-gray-800 flex-wrap">
+          <button
+            onClick={() => setActiveTab('direk')}
+            className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all flex items-center gap-1.5 ${
+              activeTab === 'direk'
+                ? 'bg-[#241a0b] text-[#F6E076] shadow-[0_0_10px_rgba(246,224,118,0.25)] border border-[#F6E076]/40'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <Clapperboard size={13} />
+            <span>DIRECTOR'S CHAIR</span>
+          </button>
+
           <button
             onClick={() => setActiveTab('cockpit')}
             className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all flex items-center gap-1.5 ${
@@ -114,7 +127,9 @@ export default function App() {
       {/* MAIN VIEWPORT */}
       <main className="flex-1 p-2 sm:p-4 flex flex-col max-w-[1700px] w-full mx-auto min-h-0">
         <div className="flex-1 flex flex-col h-full min-h-[680px]">
-          {activeTab === 'cockpit' ? (
+          {activeTab === 'direk' ? (
+            <DirectorsChair />
+          ) : activeTab === 'cockpit' ? (
             <VipBattleRoom 
               onInspectThinking={() => setIsCognitiveModalOpen(true)}
               onOpenVideoRecon={() => setActiveTab('video')}
@@ -145,7 +160,7 @@ export default function App() {
           <span className="hidden sm:inline">SAFEMED: ACTIVE</span>
         </div>
         <div className="text-gray-400">
-          VIP TACTICAL SUITE v4.5 · ALL DIRECTIVES AUTHORIZED
+          MOVIE CREATOR v1.0 · DIREK + PILOT SUITE
         </div>
       </footer>
 
