@@ -124,7 +124,7 @@ const ai = new GoogleGenAI({
 let currentVitals = {
   latency_ms: 0,
   tokens_per_sec: 0,
-  model: TEXT_MODEL,
+  model: TEXT_MODEL as string,
   status: 'IDLE',
   memory_load_pct: 28,
   shield_pct: 94,
@@ -413,7 +413,7 @@ Respond in strict JSON with:
       latency_ms: calculated.latency_ms,
       tokens_per_sec: calculated.tokens_per_sec,
       status: 'ONLINE',
-      model: TEXT_MODEL,
+      model: textModelName,
     };
 
     broadcastThought(`[SYNTHESIS COMPLETE] Intent: ${resultIntent} | ${resultAnalysis}`);
@@ -432,7 +432,7 @@ Respond in strict JSON with:
 
     res.json({
       status: 'success',
-      model: TEXT_MODEL,
+      model: textModelName,
       intent: resultIntent,
       action: resultAction,
       analysis: resultAnalysis,
@@ -916,7 +916,7 @@ app.post('/api/direk/chat', async (req: Request, res: Response) => {
     broadcastThought(`[DIREK] Genre: ${result.genre ?? 'n/a'} · ${result.reply.slice(0, 60)}...`);
     res.json({
       status: 'success',
-      model: TEXT_MODEL,
+      model: textModelName,
       reply: result.reply,
       reference_genre: result.genre,
       references: result.references,

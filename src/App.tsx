@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { VipBattleRoom } from './components/VipBattleRoom';
 import { TacticalRadarMap } from './components/TacticalRadarMap';
 import { VideoReconSuite } from './components/VideoReconSuite';
@@ -8,6 +8,7 @@ import { CognitiveMatrixModal } from './components/CognitiveMatrixModal';
 import { DirectorsChair } from './components/DirectorsChair';
 import { LoraStudio } from './components/LoraStudio';
 import { SetupModal } from './components/SetupModal';
+import { direkStatus } from './api';
 import { 
   ShieldAlert, Sparkles, Radio, BrainCircuit, 
   Layers, Terminal, Award, Video, Wand2, Film, Clapperboard, Boxes, FolderCog
@@ -17,6 +18,24 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'direk' | 'lora' | 'cockpit' | 'radar' | 'video' | 'image' | 'vault'>('direk');
   const [isCognitiveModalOpen, setIsCognitiveModalOpen] = useState(false);
   const [isSetupOpen, setIsSetupOpen] = useState(false);
+  const [textModel, setTextModel] = useState<string>('');
+  const [textBackend, setTextBackend] = useState<string>('');
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      direkStatus()
+        .then((s: Awaited<ReturnType<typeof direkStatus>>) => {
+          if (!alive) return;
+          setTextModel(s.model);
+          setTextBackend((s as any).text_backend || (s.gemini_key_configured ? 'gemini' : ''));
+        })
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 30000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
 
   return (
     <div className="min-h-screen bg-[#020306] text-gray-200 flex flex-col font-sans selection:bg-[#D4AF37]/30 selection:text-white">
@@ -177,10 +196,12 @@ export default function App() {
         <div className="flex items-center gap-4">
           <span className="flex items-center gap-1.5 text-gray-400">
             <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-            NEURAL PROTOCOL: GEMINI 2.5 FLASH
+            NEURAL PROTOCOL: {textBackend ? textBackend.toUpperCase() : 'CHECKING…'}
           </span>
           <span className="hidden sm:inline text-gray-600">|</span>
-          <span className="hidden sm:inline">TEXT MODEL: GEMINI-2.5-FLASH</span>
+          <span className="hidden sm:inline">
+            TEXT MODEL: {textModel ? textModel.toUpperCase() : '—'}
+          </span>
           <span className="hidden sm:inline text-gray-600">|</span>
           <span className="hidden sm:inline">SAFEMED: ACTIVE</span>
         </div>
