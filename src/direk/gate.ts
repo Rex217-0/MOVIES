@@ -14,7 +14,10 @@ export const MOOD_WORDS = [
   'happy', 'sad', 'scary', 'funny', 'tense', 'heavy', 'serious', 'hopeful',
 ];
 
-export const DURATION_RE = /\d+\s*(segundo|sec|second|minuto|min|minute|oras|hour)/i;
+// Tagalog joins the number to the unit with a hyphen and often adds -ng, as in
+// "2-minutong pelikula". The hyphen and suffix must be accepted, or the gate
+// keeps asking for a length the user already gave.
+export const DURATION_RE = /\d+\s*-?\s*(segundo|segundong|sec|second|minuto|minutong|min|minute|oras|hour)/i;
 
 export const GATE_QUESTIONS: Record<string, string> = {
   haba: 'Bago ako gumawa: gaano katagal ang gusto mo? Halimbawa: 30 segundo, 3 minuto, o 45 minuto.',

@@ -29,6 +29,10 @@ import {
 } from './src/config.ts';
 import { ReferenceCatalog } from './src/direk/reference.ts';
 import { MarketIntel } from './src/direk/market.ts';
+import { runConnector, connectorCatalog, allAssets } from './src/direk/connectors.ts';
+import { ffmpegAvailable, ffmpegPath } from './src/direk/render.ts';
+import { assetsDir, assetPath } from './src/direk/assets.ts';
+import { driveStatus, authUrl, redirectUri, exchangeCode } from './src/direk/gdrive.ts';
 import { DirekService, type ChatMessage } from './src/direk/service.ts';
 import { PIPELINE, STAGE_SKILL } from './src/direk/pipeline.ts';
 import { GENRE_MAP } from './src/direk/genres.ts';
@@ -324,6 +328,15 @@ app.get('/api/health', async (_req: Request, res: Response) => {
       available: keyConfigured && VIDEO_MODEL_FREE,
       free_tier: VIDEO_MODEL_FREE,
       reason: VIDEO_MODEL_FREE ? null : NO_FREE_VIDEO_MODEL,
+    },
+    // The paid cloud connectors are replaced by free local jobs, so this is
+    // always available: the only requirement is ffmpeg, which ships with us.
+    connectors: {
+      available: await ffmpegAvailable(),
+      free_tier: true,
+      engine: 'ffmpeg (local)',
+      assets_dir: assetsDir(),
+      skills: connectorCatalog().length,
     },
   });
 });
@@ -961,6 +974,16 @@ app.post('/api/direk/chat', async (req: Request, res: Response) => {
 
   try {
     const result = await direkService.chat(messages);
+
+    // An API skill used to be a dead end. Now it runs the free local connector
+    // so the reply comes with a real file. Confirmed skills wait for the user.
+    let connector = null;
+    if (result.action && result.action.status === 'ready') {
+      broadcastThought(`[CONNECTOR] ${result.action.skill} → ${result.action.connector} (free, local)`);
+      connector = await runConnector(result.action.skill, result.action.args);
+      broadcastThought(`[CONNECTOR] ${connector.ok ? 'OK' : 'FAIL'}: ${connector.note}`);
+    }
+
     broadcastThought(`[DIREK] Genre: ${result.genre ?? 'n/a'} · ${result.reply.slice(0, 60)}...`);
     res.json({
       status: 'success',
@@ -971,6 +994,7 @@ app.post('/api/direk/chat', async (req: Request, res: Response) => {
       gate: result.gate,
       action: result.action,
       action_error: result.action_error,
+      connector,
       market_brief: result.market_brief,
     });
   } catch (error: any) {
@@ -1288,6 +1312,78 @@ app.get('/api/direk/lora/list', (_req: Request, res: Response) => {
 // Setup: the local backend paths, editable from the UI so a fresh install
 // needs no hand-editing of environment variables.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Free connectors: each paid skill mapped to a real local job.
+// ---------------------------------------------------------------------------
+app.get('/api/direk/connectors', async (_req: Request, res: Response) => {
+  res.json({
+    ready: await ffmpegAvailable(),
+    ffmpeg: ffmpegPath(),
+    assets_dir: assetsDir(),
+    catalog: connectorCatalog(),
+  });
+});
+
+app.post('/api/direk/connectors/run', async (req: Request, res: Response) => {
+  const { skill, args } = req.body as { skill?: string; args?: Record<string, unknown> };
+  if (!skill) {
+    res.status(400).json({ error: 'skill is required.' });
+    return;
+  }
+  broadcastThought(`[CONNECTOR] Manual run: ${skill}`);
+  const result = await runConnector(skill, args ?? {});
+  broadcastThought(`[CONNECTOR] ${result.ok ? 'OK' : 'FAIL'}: ${result.note}`);
+  res.status(result.ok ? 200 : 400).json(result);
+});
+
+app.get('/api/direk/assets', (_req: Request, res: Response) => {
+  res.json({ assets: allAssets() });
+});
+
+app.get('/api/direk/assets/:name/download', (req: Request, res: Response) => {
+  const full = assetPath(String(req.params.name));
+  if (!full) {
+    res.status(404).json({ error: 'Hindi mahanap ang asset.' });
+    return;
+  }
+  res.download(full);
+});
+
+// Google Drive API v3: status, consent, and the callback Google redirects to.
+app.get('/api/direk/drive/status', (req: Request, res: Response) => {
+  const base = `${req.protocol}://${req.get('host')}`;
+  res.json(driveStatus(base));
+});
+
+app.get('/api/direk/drive/auth', (req: Request, res: Response) => {
+  const base = `${req.protocol}://${req.get('host')}`;
+  const status = driveStatus(base);
+  if (!status.configured) {
+    res.status(400).json({
+      error: 'Kailangan ng GDRIVE_CLIENT_ID at GDRIVE_CLIENT_SECRET.',
+      redirect_uri: status.redirect_uri,
+    });
+    return;
+  }
+  res.redirect(authUrl(status.redirect_uri));
+});
+
+app.get('/api/direk/drive/callback', async (req: Request, res: Response) => {
+  const code = typeof req.query.code === 'string' ? req.query.code : '';
+  const base = `${req.protocol}://${req.get('host')}`;
+  if (!code) {
+    res.status(400).send('Walang code mula sa Google.');
+    return;
+  }
+  try {
+    await exchangeCode(code, redirectUri(base));
+    broadcastThought('[GDRIVE] Naka-authorize na ang Google Drive.');
+    res.send('<h2>Ayos! Naka-connect na ang Google Drive.</h2><p>Puwede mo nang isara ang tab na ito.</p>');
+  } catch (error: any) {
+    res.status(500).send(`<h2>Nabigo</h2><pre>${String(error?.message || error)}</pre>`);
+  }
+});
+
 app.get('/api/direk/settings', (_req: Request, res: Response) => {
   const { settings, source } = effectiveSettings();
   res.json({ config_path: configPath(), settings, source });

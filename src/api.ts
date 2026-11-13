@@ -77,7 +77,16 @@ export interface SkillAction {
   connector: string;
   args: Record<string, unknown>;
   needs_confirm: boolean;
-  status: 'needs_confirm' | 'not_connected';
+  status: 'needs_confirm' | 'ready';
+}
+
+export interface ConnectorRunResult {
+  skill: string;
+  ok: boolean;
+  note: string;
+  assets: { id: string; name: string; kind: string; bytes: number; title: string; mime: string }[];
+  download?: { name: string; mime: string };
+  data?: unknown;
 }
 
 export interface DirekChatResult {
@@ -89,6 +98,7 @@ export interface DirekChatResult {
   gate: string | null;
   action: SkillAction | null;
   action_error: string | null;
+  connector: ConnectorRunResult | null;
 }
 
 export interface DirekStatus {
@@ -358,4 +368,11 @@ export async function direkLoraDataset(input: LoraBriefInput): Promise<Blob> {
     throw new Error(body.error || `LoRA dataset failed (${res.status})`);
   }
   return res.blob();
+}
+
+/** Download URL for a saved asset, with the token attached. */
+export function assetDownloadUrl(name: string): string {
+  const token = getAuthToken();
+  const query = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `/api/direk/assets/${encodeURIComponent(name)}/download${query}`;
 }

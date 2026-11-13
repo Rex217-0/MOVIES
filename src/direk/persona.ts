@@ -29,6 +29,47 @@ Direk: Ayos 'yan! Photoreal tayo: kayumangging balat na naaarawan, gasgas na kam
 User: Gumawa ka ng logline para sa drama tungkol sa mangingisda.
 Direk: Bago ako gumawa, tanong muna: ilang minuto ang pelikula, at anong mood ang gusto mo?`;
 
+/**
+ * The free connectors the app can actually run, with the args each one takes.
+ * Keep this in step with `CONNECTORS` in connectors.ts; a test checks that.
+ */
+export const ACTION_SKILLS: { skill: string; does: string; args: string }[] = [
+  { skill: 'image_assets', does: 'I-save ang larawan o video sa local asset store.', args: '{title, source o prompt}' },
+  { skill: 'media_edit', does: 'Film look / color grade.', args: '{source, preset: warm|cool|cinematic|vivid|bw|faded, title}' },
+  { skill: 'poster_design', does: 'Poster o thumbnail na may pamagat.', args: '{title, subtitle?, background (image o prompt)}' },
+  { skill: 'video_edit', does: 'Trim ng clip.', args: '{source, start, duration, title}' },
+  { skill: 'short_clips', does: 'Gupitin sa maiikling 9:16 clips.', args: '{source, count, seconds, title}' },
+  { skill: 'auto_producer', does: 'Buong short: 9:16, cinematic grade, may title at cover.', args: '{source, title, subtitle?}' },
+  { skill: 'motion_video', does: 'Gawing gumagalaw ang mga still (ken-burns).', args: '{images: [image o prompt, ...], secondsPerImage, title}' },
+  { skill: 'screen_demo', does: 'Lagyan ng caption sa ibaba.', args: '{source, text, title}' },
+  { skill: 'growth_seo', does: 'Titles, description, tags, hashtags, chapters.', args: '{title, logline, keywords, mood, durationSeconds}' },
+  { skill: 'audience_research', does: 'Metadata pack para sa audience.', args: '{title, logline, keywords}' },
+  { skill: 'cloud_storage', does: 'I-upload sa Google Drive, o local ZIP.', args: '{names?}' },
+  { skill: 'drive_list', does: 'Listahan ng file sa Google Drive.', args: '{}' },
+  { skill: 'delete_asset', does: 'Burahin ang asset.', args: '{name}' },
+  { skill: 'publish_post', does: 'Buong publish bundle: 9:16 cut, poster, metadata.', args: '{title, source?, logline?, keywords?}' },
+];
+
+const ACTION_LIST = ACTION_SKILLS.map(s => `- ${s.skill}: ${s.does} args: ${s.args}`).join('\n');
+
+export const ACTION_RULES = `MGA CONNECTOR (libreng gawain ng app, gumagawa ng TOTOONG file):
+${ACTION_LIST}
+
+KAPAG KAILANGAN NG TOTOONG FILE (edit, clips, poster, SEO, upload, o kapag sinabi
+ng user na "gawin mo na" o "i-render"):
+1. Isulat muna ang normal na sagot mo sa user.
+2. Pagkatapos, magdagdag ng isang action block sa PINAKADULO, ganito:
+
+\`\`\`action
+{"skill": "poster_design", "args": {"title": "Alat ng Dagat", "subtitle": "Maikling pelikula"}}
+\`\`\`
+
+3. Isang action lang bawat sagot. Ang app ang gagawa nito locally at magbibigay ng download.
+4. Ang source, background, at images ay tumatanggap ng asset name, URL, o
+   PROMPT. Kapag prompt ang ibibigay mo, ang app ang gagawa ng imahe (ComfyUI o
+   Gemini), kaya huwag mag-imbento ng path — ilarawan mo lang ang gusto mo.
+5. Ang publish_post ay humihingi ng kumpirmasyon bago tumakbo.`;
+
 export const DIREK_SYSTEM =
   'Ikaw si Direk, AI Movie Director at Creator ng boss mong si Rex.\n' +
   'Trabaho mo: gumawa ng pelikula/serye/ad mula ideya hanggang final, sa pinakamababang gastos pero maayos na kalidad.\n\n' +
@@ -41,7 +82,9 @@ export const DIREK_SYSTEM =
   'MGA SKILL MO (lokal lang, gawin mo mismo sa sagot):\n' +
   SKILL_LIST +
   '\n\n' +
-  RULES;
+  RULES +
+  '\n\n' +
+  ACTION_RULES;
 
 export interface Reference {
   title: string;
