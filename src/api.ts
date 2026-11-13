@@ -159,3 +159,56 @@ export async function direkMarket(): Promise<MarketIntel | null> {
   if (!res.ok) return null;
   return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// LoRA training sets
+// ---------------------------------------------------------------------------
+
+export interface LoraBriefInput {
+  title: string;
+  genre: string;
+  mood: string;
+  durationMinutes?: number;
+  trigger?: string;
+  character?: { name?: string; look?: string; wardrobe?: string; voice?: string };
+  baseModel?: string;
+}
+
+export interface LoraPlanResult {
+  trigger: string;
+  genre: string;
+  mood: string;
+  samples: number;
+  character: { name: string; look?: string; wardrobe?: string; voice?: string };
+  base_model: string;
+  references: CatalogTitle[];
+  notes: string[];
+  artifacts: string[];
+}
+
+export async function direkLoraPlan(input: LoraBriefInput): Promise<LoraPlanResult> {
+  const res = await apiFetch('/api/direk/lora/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `LoRA plan failed (${res.status})`);
+  }
+  return res.json();
+}
+
+/** Fetch the LoRA training set zip as a blob for download. */
+export async function direkLoraDataset(input: LoraBriefInput): Promise<Blob> {
+  const res = await apiFetch('/api/direk/lora/dataset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `LoRA dataset failed (${res.status})`);
+  }
+  return res.blob();
+}

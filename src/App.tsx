@@ -6,13 +6,14 @@ import { ImageMatrixSuite } from './components/ImageMatrixSuite';
 import { RenderVault } from './components/RenderVault';
 import { CognitiveMatrixModal } from './components/CognitiveMatrixModal';
 import { DirectorsChair } from './components/DirectorsChair';
+import { LoraStudio } from './components/LoraStudio';
 import { 
   ShieldAlert, Sparkles, Radio, BrainCircuit, 
-  Layers, Terminal, Award, Video, Wand2, Film, Clapperboard
+  Layers, Terminal, Award, Video, Wand2, Film, Clapperboard, Boxes
 } from 'lucide-react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'direk' | 'cockpit' | 'radar' | 'video' | 'image' | 'vault'>('direk');
+  const [activeTab, setActiveTab] = useState<'direk' | 'lora' | 'cockpit' | 'radar' | 'video' | 'image' | 'vault'>('direk');
   const [isCognitiveModalOpen, setIsCognitiveModalOpen] = useState(false);
 
   return (
@@ -52,6 +53,18 @@ export default function App() {
           >
             <Clapperboard size={13} />
             <span>DIRECTOR'S CHAIR</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('lora')}
+            className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all flex items-center gap-1.5 ${
+              activeTab === 'lora'
+                ? 'bg-[#241a0b] text-[#F6E076] shadow-[0_0_10px_rgba(246,224,118,0.25)] border border-[#F6E076]/40'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <Boxes size={13} />
+            <span>LORA STUDIO</span>
           </button>
 
           <button
@@ -129,6 +142,8 @@ export default function App() {
         <div className="flex-1 flex flex-col h-full min-h-[680px]">
           {activeTab === 'direk' ? (
             <DirectorsChair />
+          ) : activeTab === 'lora' ? (
+            <LoraStudio />
           ) : activeTab === 'cockpit' ? (
             <VipBattleRoom 
               onInspectThinking={() => setIsCognitiveModalOpen(true)}

@@ -126,6 +126,32 @@ The gate is deterministic: with no key, an incomplete request (missing haba or
 mood) still gets a real question back, and a complete request returns
 `503 AI_UNAVAILABLE` rather than fabricated output.
 
+## LoRA training sets
+
+Direk turns a brief into a LoRA training set for image or video models. The
+**LoRA Studio** tab (or the API) produces the text half that is usually wrong:
+one caption per sample, a kohya_ss config, and dataset metadata.
+
+```
+POST /api/direk/lora/plan      preview the plan + file list (no model needed)
+POST /api/direk/lora/dataset   download the whole set as a .zip
+```
+
+The plan is deterministic and grounded: it draws visual references from the
+catalog, sizes the shot count from the runtime, and folds the character bible
+into every caption so the look stays consistent.
+
+```
+dataset/direk_ang_huling_tala_001.txt   direk_ang_huling_tala, sariwang mukha, ...
+dataset/README.md
+kohya_config.toml
+dataset_info.json
+```
+
+Each caption leads with the trigger token, then the character's fixed look, then
+the shot description — the order LoRA trainers expect. The trigger must match
+`^[a-z][a-z0-9_]{2,39}$`; the API rejects anything else.
+
 ## History
 
 Direk started as a Python/Kaggle prototype (`notebooks/direk_kaggle_prototype.ipynb`,

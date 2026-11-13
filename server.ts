@@ -30,6 +30,8 @@ import { DirekService, type ChatMessage } from './src/direk/service.ts';
 import { PIPELINE, STAGE_SKILL } from './src/direk/pipeline.ts';
 import { GENRE_MAP } from './src/direk/genres.ts';
 import { SKILLS } from './src/direk/skills.ts';
+import { planLora } from './src/direk/loraPlan.ts';
+import { buildLoraArtifacts, buildLoraZip, isValidTrigger, toSlug } from './src/direk/lora.ts';
 
 dotenv.config();
 
@@ -824,6 +826,88 @@ app.get('/api/direk/reference', (req: Request, res: Response) => {
     rows: referenceCatalog.size,
     items: referenceCatalog.search(genre, kind, n),
   });
+});
+
+// ---------------------------------------------------------------------------
+// LoRA training sets
+// Direk turns a brief into a LoRA training set, reusing the catalog, the
+// box-office presets and the character bible. Deterministic: no model needed.
+// ---------------------------------------------------------------------------
+
+interface LoraRequestBody {
+  title?: string;
+  genre?: string;
+  mood?: string;
+  durationMinutes?: number;
+  trigger?: string;
+  character?: { name?: string; look?: string; wardrobe?: string; voice?: string };
+  baseModel?: string;
+}
+
+function parseLoraBody(body: LoraRequestBody) {
+  const title = (body.title || '').trim();
+  const genre = (body.genre || '').trim();
+  const mood = (body.mood || '').trim();
+  if (!title || !genre || !mood) {
+    return { error: 'title, genre, and mood are required.' as const };
+  }
+  if (body.trigger && !isValidTrigger(body.trigger)) {
+    return {
+      error:
+        'Invalid trigger token. Use lowercase letters, digits and underscores (3-40 chars).',
+    } as const;
+  }
+  const plan = planLora(
+    {
+      title,
+      genre,
+      mood,
+      durationMinutes: Number(body.durationMinutes) || undefined,
+      trigger: body.trigger?.trim() || undefined,
+      character: body.character,
+      baseModel: body.baseModel?.trim() || undefined,
+    },
+    referenceCatalog,
+    marketIntel,
+  );
+  return { plan } as const;
+}
+
+// Preview the plan and the generated artifacts (no zip).
+app.post('/api/direk/lora/plan', (req: Request, res: Response) => {
+  const parsed = parseLoraBody(req.body as LoraRequestBody);
+  if ('error' in parsed) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const { plan } = parsed;
+  res.json({
+    trigger: plan.brief.trigger,
+    genre: plan.brief.genre,
+    mood: plan.brief.mood,
+    samples: plan.brief.samples.length,
+    character: plan.brief.character,
+    base_model: plan.brief.baseModel || 'stabilityai/stable-diffusion-xl-base-1.0',
+    references: plan.references,
+    notes: plan.notes,
+    artifacts: buildLoraArtifacts(plan.brief).map(a => a.filename),
+  });
+});
+
+// Download the whole LoRA training set as a zip.
+app.post('/api/direk/lora/dataset', (req: Request, res: Response) => {
+  const parsed = parseLoraBody(req.body as LoraRequestBody);
+  if ('error' in parsed) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const { plan } = parsed;
+  const zip = buildLoraZip(plan.brief);
+  const name = `${toSlug(plan.brief.title)}_${plan.brief.trigger}_lora.zip`;
+  broadcastThought(`[DIREK] LoRA set: ${plan.brief.samples.length} samples · ${plan.brief.trigger}`);
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+  res.send(zip);
 });
 
 function cleanPrompt(p: string): string {
