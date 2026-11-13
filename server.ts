@@ -2,6 +2,7 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import { 
@@ -32,10 +33,13 @@ import { GENRE_MAP } from './src/direk/genres.ts';
 import { SKILLS } from './src/direk/skills.ts';
 import { planLora } from './src/direk/loraPlan.ts';
 import {
-  buildLoraArtifacts, buildLoraZip, isValidTrigger, toSlug,
+  buildLoraArtifacts, buildLoraZip, buildCaption, isValidTrigger, toSlug,
   numberedName, MAX_LORA_IMAGES,
 } from './src/direk/lora.ts';
 import { comfyAvailable, generateWithComfy, comfyUrl } from './src/direk/comfyui.ts';
+import {
+  LoRATrainer, trainerStatus, trainingConfig, buildTrainCommand,
+} from './src/direk/trainer.ts';
 
 dotenv.config();
 
@@ -1001,18 +1005,14 @@ async function mapLimited<T, R>(
   return results;
 }
 
-// Download the whole LoRA training set as a zip. When an image model is
-// available, the sample images are generated and bundled too; otherwise the
-// zip still contains the text half and an IMAGES.md explaining the gap.
-app.post('/api/direk/lora/dataset', async (req: Request, res: Response) => {
-  const body = req.body as LoraRequestBody & { images?: boolean };
-  const parsed = parseLoraBody(body);
-  if ('error' in parsed) {
-    res.status(400).json({ error: parsed.error });
-    return;
-  }
-  const { plan } = parsed;
-  const wantImages = body.images !== false;
+/**
+ * Generate the sample images for a plan. Shared by the zip download and the
+ * trainer, so both produce the same set.
+ */
+async function generateLoraImages(
+  plan: ReturnType<typeof planLora>,
+  wantImages: boolean,
+): Promise<{ images: Map<string, Buffer>; skipped: string[]; imageNote?: string }> {
   const images = new Map<string, Buffer>();
   const skipped: string[] = [];
   let imageNote: string | undefined;
@@ -1048,15 +1048,153 @@ app.post('/api/direk/lora/dataset', async (req: Request, res: Response) => {
       imageNote = `${imageNote ? imageNote + ' ' : ''}${skipped.length} sample(s) na bigo.`;
     }
   }
+  return { images, skipped, imageNote };
+}
+
+// Download the whole LoRA training set as a zip. When an image model is
+// available, the sample images are generated and bundled too; otherwise the
+// zip still contains the text half and an IMAGES.md explaining the gap.
+app.post('/api/direk/lora/dataset', async (req: Request, res: Response) => {
+  const body = req.body as LoraRequestBody & { images?: boolean };
+  const parsed = parseLoraBody(body);
+  if ('error' in parsed) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const { plan } = parsed;
+  const { images, skipped, imageNote } = await generateLoraImages(plan, body.images !== false);
 
   const zip = buildLoraZip(plan.brief, { images, skipped, imageNote });
   const name = `${toSlug(plan.brief.title)}_${plan.brief.trigger}_lora.zip`;
   broadcastThought(
-    `[DIREK] LoRA set ready: ${plan.brief.samples.length} samples · ${images.size} images (${backend})`,
+    `[DIREK] LoRA set ready: ${plan.brief.samples.length} samples · ${images.size} images`,
   );
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
   res.send(zip);
+});
+
+// ---------------------------------------------------------------------------
+// LoRA training
+// Runs kohya_ss / sd-scripts locally. Nothing is faked: with no trainer
+// installed the endpoints report it as unavailable.
+// ---------------------------------------------------------------------------
+const loraTrainer = new LoRATrainer();
+const RUNS_ROOT = process.env.KOHYA_RUNS_ROOT || path.join(process.cwd(), 'lora_runs');
+// Default the trained output next to each run's dataset, so a run is self-contained.
+if (!process.env.KOHYA_OUTPUT_DIR) process.env.KOHYA_OUTPUT_DIR = RUNS_ROOT;
+
+function jobSummary() {
+  const job = loraTrainer.current();
+  if (!job) return null;
+  return {
+    id: job.id,
+    title: job.title,
+    trigger: job.trigger,
+    status: job.status,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    outputDir: job.outputDir,
+    artifact: job.artifact,
+    error: job.error,
+    log: job.log,
+  };
+}
+
+app.get('/api/direk/train/status', (_req: Request, res: Response) => {
+  const status = trainerStatus();
+  res.json({ ...status, job: jobSummary() });
+});
+
+// Start training. Generates the images first (so there is something to train
+// on), writes the dataset to disk, then launches the trainer.
+app.post('/api/direk/train/start', async (req: Request, res: Response) => {
+  const body = req.body as LoraRequestBody & {
+    images?: boolean;
+    epochs?: number;
+    resolution?: number;
+    networkDim?: number;
+    numRepeats?: number;
+  };
+  const parsed = parseLoraBody(body);
+  if ('error' in parsed) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const status = trainerStatus();
+  if (!status.available) {
+    res.status(503).json({ error: status.reason, code: 'TRAINER_UNAVAILABLE' });
+    return;
+  }
+  const { plan } = parsed;
+  const { images } = await generateLoraImages(plan, body.images !== false);
+  if (images.size === 0) {
+    res.status(400).json({
+      error: 'Walang larawan na na-generate. Magpatakbo ng ComfyUI o mag-enable ng image model bago mag-train.',
+    });
+    return;
+  }
+
+  const id = `${Date.now()}_${plan.brief.trigger}`;
+  const runRoot = path.join(RUNS_ROOT, id);
+  fs.mkdirSync(runRoot, { recursive: true });
+  const outputDir = path.join(status.output_dir, id);
+
+  const config = trainingConfig({
+    datasetDir: path.join(runRoot, 'dataset'),
+    outputDir,
+    outputName: `${toSlug(plan.brief.title)}_${plan.brief.trigger}`,
+    baseModel: status.base_model as string,
+    resolution: Number(body.resolution) || 1024,
+    numRepeats: Number(body.numRepeats) || 10,
+    maxEpochs: Number(body.epochs) || 10,
+    networkDim: Number(body.networkDim) || 32,
+    networkAlpha: Math.round((Number(body.networkDim) || 32) / 2),
+    seed: 42,
+  });
+
+  const captions = plan.brief.samples.map((s, i) => ({
+    name: numberedName(plan.brief.trigger, i),
+    text: buildCaption(plan.brief, s),
+  }));
+
+  try {
+    const job = loraTrainer.start({
+      id,
+      title: plan.brief.title,
+      trigger: plan.brief.trigger,
+      root: runRoot,
+      captions,
+      images,
+      config,
+    });
+    broadcastThought(`[DIREK] Training started: ${job.trigger} (${images.size} images).`);
+    res.json({ status: 'started', job: jobSummary() });
+  } catch (error: any) {
+    res.status(409).json({ error: error?.message || 'Hindi ma-start ang training.' });
+  }
+});
+
+app.post('/api/direk/train/cancel', (_req: Request, res: Response) => {
+  const cancelled = loraTrainer.cancel();
+  broadcastThought(cancelled ? '[DIREK] Training cancelled.' : '[DIREK] Walang tumatakbong training.');
+  res.json({ cancelled });
+});
+
+// Live training log (SSE). EventSource cannot set headers, so the token is
+// also accepted as a query parameter by the auth middleware.
+app.get('/api/direk/train/stream', (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const job = loraTrainer.current();
+  if (job) {
+    for (const line of job.log.slice(-100)) res.write(`data: ${line}\n\n`);
+  }
+  const off = loraTrainer.onLine(line => res.write(`data: ${line}\n\n`));
+  req.on('close', off);
 });
 
 function cleanPrompt(p: string): string {

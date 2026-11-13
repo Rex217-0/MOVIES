@@ -207,6 +207,63 @@ export async function direkLoraPlan(input: LoraBriefInput): Promise<LoraPlanResu
   return res.json();
 }
 
+export interface TrainJob {
+  id: string;
+  title: string;
+  trigger: string;
+  status: 'running' | 'done' | 'failed' | 'cancelled';
+  startedAt: string;
+  finishedAt?: string;
+  outputDir: string;
+  artifact?: string;
+  error?: string;
+  log: string[];
+}
+
+export interface TrainStatus {
+  available: boolean;
+  dir: string;
+  script: string | null;
+  python: string;
+  base_model: string | null;
+  output_dir: string;
+  reason?: string;
+  job: TrainJob | null;
+}
+
+export async function direkTrainStatus(): Promise<TrainStatus> {
+  const res = await apiFetch('/api/direk/train/status');
+  if (!res.ok) throw new Error(`Train status failed (${res.status})`);
+  return res.json();
+}
+
+export async function direkTrainStart(
+  input: LoraBriefInput & { epochs?: number; resolution?: number; networkDim?: number; numRepeats?: number },
+): Promise<{ status: string; job: TrainJob }> {
+  const res = await apiFetch('/api/direk/train/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Training failed to start (${res.status})`);
+  return body;
+}
+
+export async function direkTrainCancel(): Promise<boolean> {
+  const res = await apiFetch('/api/direk/train/cancel', { method: 'POST' });
+  if (!res.ok) return false;
+  return (await res.json()).cancelled === true;
+}
+
+/** URL for the live training log stream, with the token as a query parameter. */
+export function trainStreamUrl(): string {
+  const token = getAuthToken();
+  return token
+    ? `/api/direk/train/stream?token=${encodeURIComponent(token)}`
+    : '/api/direk/train/stream';
+}
+
 /** Fetch the LoRA training set zip as a blob for download. */
 export async function direkLoraDataset(input: LoraBriefInput): Promise<Blob> {
   const res = await apiFetch('/api/direk/lora/dataset', {

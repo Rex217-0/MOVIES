@@ -1,7 +1,11 @@
 import React, { useState } from 'react';
-import { direkLoraPlan, direkLoraDataset, type LoraBriefInput, type LoraPlanResult } from '../api';
+import {
+  direkLoraPlan, direkLoraDataset, direkTrainStatus, direkTrainStart, direkTrainCancel,
+  trainStreamUrl, type LoraBriefInput, type LoraPlanResult, type TrainJob, type TrainStatus,
+} from '../api';
 import {
   Layers, Download, Loader2, AlertTriangle, Wand2, Film, CheckCircle2, Boxes,
+  Play, Square, Terminal, Cpu,
 } from 'lucide-react';
 
 const GENRE_OPTIONS = [
@@ -30,6 +34,11 @@ export const LoraStudio: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
+  const [trainStatus, setTrainStatus] = useState<TrainStatus | null>(null);
+  const [job, setJob] = useState<TrainJob | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
+  const [logLines, setLogLines] = useState<string[]>([]);
+
   const input = (): LoraBriefInput => ({
     title,
     genre,
@@ -43,6 +52,62 @@ export const LoraStudio: React.FC = () => {
     },
     images: includeImages,
   });
+
+  const refreshTrainStatus = async () => {
+    try {
+      const s = await direkTrainStatus();
+      setTrainStatus(s);
+      if (s.job) {
+        setJob(s.job);
+        if (s.job.log.length) setLogLines(s.job.log);
+      }
+    } catch {
+      // Trainer status is advisory; a failure here must not break the form.
+    }
+  };
+
+  React.useEffect(() => {
+    refreshTrainStatus();
+  }, []);
+
+  // Follow the live training log while a job runs.
+  React.useEffect(() => {
+    if (job?.status !== 'running') return;
+    const es = new EventSource(trainStreamUrl());
+    es.onmessage = e => setLogLines(prev => [...prev.slice(-300), e.data]);
+    return () => es.close();
+  }, [job?.status, job?.id]);
+
+  // Poll job state so the UI notices done/failed without a reload.
+  React.useEffect(() => {
+    if (job?.status !== 'running') return;
+    const t = setInterval(async () => {
+      try {
+        const s = await direkTrainStatus();
+        if (s.job) setJob(s.job);
+      } catch { /* ignore */ }
+    }, 2000);
+    return () => clearInterval(t);
+  }, [job?.status]);
+
+  const startTraining = async () => {
+    setIsStarting(true);
+    setError(null);
+    setLogLines([]);
+    try {
+      const res = await direkTrainStart({ ...input(), epochs: 10 });
+      setJob(res.job);
+    } catch (e: any) {
+      setError(e?.message || 'Hindi ma-start ang training.');
+    } finally {
+      setIsStarting(false);
+    }
+  };
+
+  const cancelTraining = async () => {
+    await direkTrainCancel();
+    await refreshTrainStatus();
+  };
 
   const preview = async () => {
     setIsPlanning(true);
@@ -191,6 +256,74 @@ export const LoraStudio: React.FC = () => {
               {isDownloading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
               DOWNLOAD .ZIP
             </button>
+          </div>
+
+          {/* TRAIN (kohya_ss) */}
+          <div className="border-t border-gray-800 pt-3 space-y-2">
+            <div className="flex items-center gap-2 text-[10px] font-mono text-gray-500 uppercase tracking-wider">
+              <Cpu size={11} /> Train (kohya_ss)
+            </div>
+
+            {trainStatus && !trainStatus.available && (
+              <div className="text-[10px] font-mono text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded p-2">
+                {trainStatus.reason}
+              </div>
+            )}
+
+            {job?.status === 'running' ? (
+              <button
+                onClick={cancelTraining}
+                className="w-full px-3 py-2 rounded border border-red-500/50 text-red-300 text-xs font-mono font-bold flex items-center justify-center gap-1.5 hover:bg-red-500/10"
+              >
+                <Square size={12} /> CANCEL TRAINING
+              </button>
+            ) : (
+              <button
+                onClick={startTraining}
+                disabled={isStarting || !title.trim() || !trainStatus?.available}
+                className="w-full px-3 py-2 rounded bg-gradient-to-br from-emerald-500 to-emerald-300 text-black text-xs font-mono font-bold disabled:opacity-40 flex items-center justify-center gap-1.5"
+              >
+                {isStarting ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+                {isStarting ? 'GINAGAWA ANG DATASET...' : 'TRAIN LORA NGAYON'}
+              </button>
+            )}
+
+            {job && (
+              <div className="text-[10px] font-mono space-y-1">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`px-1.5 py-0.5 rounded border uppercase ${
+                      job.status === 'running'
+                        ? 'text-[#F6E076] border-[#F6E076]/40 bg-[#F6E076]/10'
+                        : job.status === 'done'
+                          ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10'
+                          : 'text-red-300 border-red-500/40 bg-red-500/10'
+                    }`}
+                  >
+                    {job.status}
+                  </span>
+                  <span className="text-gray-500 truncate">{job.trigger}</span>
+                </div>
+                {job.artifact && (
+                  <div className="text-emerald-300 break-all">✓ {job.artifact}</div>
+                )}
+                {job.error && <div className="text-red-300">{job.error}</div>}
+                <div className="text-gray-600 break-all">output: {job.outputDir}</div>
+              </div>
+            )}
+
+            {logLines.length > 0 && (
+              <div className="bg-black/60 border border-gray-800 rounded p-2 max-h-40 overflow-y-auto">
+                <div className="flex items-center gap-1 text-[9px] font-mono text-gray-500 uppercase mb-1">
+                  <Terminal size={9} /> training log
+                </div>
+                {logLines.map((l, i) => (
+                  <div key={i} className="text-[9px] font-mono text-gray-400 whitespace-pre-wrap break-all">
+                    {l}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {error && (

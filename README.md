@@ -169,6 +169,36 @@ Each caption leads with the trigger token, then the character's fixed look, then
 the shot description — the order LoRA trainers expect. The trigger must match
 `^[a-z][a-z0-9_]{2,39}$`; the API rejects anything else.
 
+## LoRA auto-training (kohya_ss)
+
+Direk can train the set it just generated, without leaving the app. The
+**LoRA Studio** tab has a TRAIN button; the API is:
+
+```
+GET  /api/direk/train/status    is a trainer installed? what is the current job?
+POST /api/direk/train/start     generate images, write the dataset, start training
+POST /api/direk/train/cancel    stop the running job
+GET  /api/direk/train/stream    live training log (SSE)
+```
+
+Training runs locally, so it needs kohya_ss / sd-scripts on the machine that
+runs the app. Nothing is faked: with no trainer installed the status endpoint
+says so and TRAIN stays disabled.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `KOHYA_DIR` | (unset) | Path to kohya_ss / sd-scripts (must contain `train_network.py`). Enables training |
+| `KOHYA_BASE_MODEL` | (unset) | Base model path or HuggingFace id. Required |
+| `KOHYA_PYTHON` | `python3` | Interpreter |
+| `KOHYA_ACCELERATE` | (unset) | `1` to launch via `accelerate launch` |
+| `KOHYA_OUTPUT_DIR` | `<cwd>/lora_runs` | Where runs and checkpoints are written |
+| `KOHYA_RUNS_ROOT` | `<cwd>/lora_runs` | Where each run's dataset + config are written |
+| `KOHYA_TIMEOUT_MS` | `21600000` (6 h) | Hard cap on a run |
+
+Each run writes a self-contained folder: `dataset/` (images + captions side by
+side), `kohya_config.toml` with absolute paths, the live log, and the trained
+`.safetensors` when it finishes.
+
 ## History
 
 Direk started as a Python/Kaggle prototype (`notebooks/direk_kaggle_prototype.ipynb`,
