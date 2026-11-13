@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
-from direk.config import Settings
-from direk.reference import BUNDLED_SAMPLE
-from direk.service import DirekService
+# Plain `pytest` does not add the repo root to sys.path (only `python -m pytest`
+# does), so make the package importable however the suite is invoked.
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from direk.config import Settings  # noqa: E402
+from direk.reference import BUNDLED_SAMPLE  # noqa: E402
+from direk.service import DirekService  # noqa: E402
 
 
 @pytest.fixture
