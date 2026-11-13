@@ -284,10 +284,26 @@ export interface DirekSettings {
   kohya_python?: string;
   kohya_accelerate?: boolean;
   kohya_output_dir?: string;
+  ollama_url?: string;
+  ollama_model?: string;
 }
 
 export interface SetupReport {
   config_path: string;
+  text: {
+    backend: 'gemini' | 'ollama' | 'none';
+    gemini_key: boolean;
+    model: string;
+    ready: boolean;
+    ollama: {
+      url: string;
+      model: string;
+      reachable: boolean;
+      model_present: boolean;
+      models: string[];
+      error?: string;
+    };
+  };
   comfyui: {
     url: string;
     reachable: boolean;

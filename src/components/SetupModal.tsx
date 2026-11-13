@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  X, Save, RefreshCw, CheckCircle2, AlertTriangle, Server, Cpu, FolderCog,
+  X, Save, RefreshCw, CheckCircle2, AlertTriangle, Server, Cpu, FolderCog, Brain,
 } from 'lucide-react';
 import {
   direkGetSettings, direkSaveSettings, direkSetup,
@@ -98,13 +98,25 @@ export const SetupModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {/* STATUS */}
           {report && (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
+              <StatusCard
+                icon={<Brain size={12} />}
+                title="AI (text)"
+                ok={report.text.ready}
+                detail={
+                  report.text.backend === 'gemini'
+                    ? 'Gemini'
+                    : report.text.backend === 'ollama'
+                      ? `Ollama · ${report.text.model}`
+                      : 'wala — kailangan ng Ollama o Gemini key'
+                }
+              />
               <StatusCard
                 icon={<Server size={12} />}
                 title="ComfyUI"
                 ok={report.comfyui.reachable}
                 detail={report.comfyui.reachable
-                  ? `${report.comfyui.checkpoints.length} checkpoints · ${report.comfyui.loras.length} LoRAs`
+                  ? `${report.comfyui.checkpoints.length} ckpt · ${report.comfyui.loras.length} LoRA`
                   : report.comfyui.error || 'hindi maabot'}
               />
               <StatusCard
@@ -115,6 +127,43 @@ export const SetupModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
               />
             </div>
           )}
+
+          {/* AI TEXT */}
+          <div className="border border-gray-800 rounded-lg p-3 space-y-3">
+            <div className="text-[10px] font-mono text-[#F6E076] uppercase tracking-wider">
+              AI utak (Direk + Battle Room) — libre
+            </div>
+            {report && !report.text.gemini_key && (
+              <div className="text-[10px] font-mono text-gray-400 leading-relaxed">
+                Walang Gemini key. Puwedeng gumamit ng <b className="text-gray-200">Ollama</b> —
+                libre at offline, walang signup:
+                <br />1. I-install ang Ollama (<span className="text-[#00E5FF]">ollama.com</span>)
+                <br />2. Patakbuhin: <code className="text-[#00E5FF]">ollama pull {settings.ollama_model || 'qwen2.5:7b'}</code>
+                <br />3. I-restart ang Ollama kung kailangan, tapos pindutin ang CHECK.
+              </div>
+            )}
+            {report?.text.gemini_key && (
+              <div className="text-[10px] font-mono text-emerald-300">
+                May GEMINI_API_KEY — Gemini ang ginagamit.
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Ollama URL">
+                <input value={settings.ollama_url || ''} onChange={set('ollama_url')}
+                  placeholder="http://127.0.0.1:11434" className={inputCls} />
+              </Field>
+              <Field label="Ollama model">
+                <input value={settings.ollama_model || ''} onChange={set('ollama_model')}
+                  placeholder="qwen2.5:7b" className={inputCls} />
+              </Field>
+            </div>
+            {report?.text.ollama.reachable && report.text.ollama.models.length > 0 && (
+              <div className="text-[9px] font-mono text-gray-600">
+                Naka-install: {report.text.ollama.models.slice(0, 8).join(', ')}
+                {report.text.ollama.models.length > 8 ? '…' : ''}
+              </div>
+            )}
+          </div>
 
           <p className="text-[10px] font-mono text-gray-500">
             Isang beses lang ito. I-type ang paths, pindutin ang SAVE — awtomatikong

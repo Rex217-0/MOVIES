@@ -197,6 +197,24 @@ folder automatically. From then on it appears in the **LoRA Studio** and
 generated in that style. The workflow gains a `LoraLoader` node wired between
 the checkpoint and the sampler.
 
+## The AI text model (free)
+
+Direk chat and the Battle Room directives need a text model. There are two free
+ways, and the app picks one automatically:
+
+- **Gemini** — set `GEMINI_API_KEY` (the free tier is enough). Get a key at
+  https://aistudio.google.com/apikey. This is the preferred path.
+- **Ollama** — fully local and offline, no account and no key. Install Ollama
+  from https://ollama.com, then `ollama pull qwen2.5:7b`. Used automatically
+  when no Gemini key is set.
+
+With neither, the AI endpoints return an honest `503 AI_UNAVAILABLE` — nothing
+is fabricated. `GET /api/health` reports which backend is live. Both paths and
+their settings are shown in the app's SETUP panel.
+
+Image and video generation are not on the Gemini free tier (they need billing),
+so the app leaves them unavailable and points image work at ComfyUI instead.
+
 ## LoRA auto-training (kohya_ss)
 
 Direk can train the set it just generated, without leaving the app. The

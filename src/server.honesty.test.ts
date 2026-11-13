@@ -15,8 +15,12 @@ function startServer(env: Record<string, string>) {
     env: {
       ...process.env,
       PORT: String(port),
+      // Blank beats a developer's .env, which dotenv would otherwise load.
       GEMINI_API_KEY: '',
       DIREK_CONFIG: path.join(repoRoot, '.no-such-config.json'),
+      // Force the no-backend path: this test is about what happens when no text
+      // model is configured, not about a developer's local Ollama.
+      OLLAMA_DISABLE: '1',
       ...env,
     },
     stdio: 'ignore',
@@ -51,7 +55,9 @@ test('without a Gemini key, AI endpoints return 503 AI_UNAVAILABLE instead of fa
   const commandBody: any = await command.json();
   assert.equal(commandBody.code, 'AI_UNAVAILABLE');
   assert.equal(commandBody.status, undefined);
-  assert.equal(commandBody.model, 'gemini-2.5-flash');
+  // The preferred model, whatever it currently is; the point is that a model
+  // is named and the response is an honest error, not fabricated output.
+  assert.match(commandBody.model, /^gemini-/);
 
   const video = await fetch(`http://127.0.0.1:${port}/api/pilot/video/generate`, {
     method: 'POST',

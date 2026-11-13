@@ -19,6 +19,8 @@ import {
   IMAGE_MODEL,
   IMAGE_MODEL_FREE,
   TEXT_MODEL,
+  TEXT_MODELS,
+  isRetryableModelError,
   VIDEO_MODEL,
   VIDEO_MODEL_FREE,
   aiUnavailable,
@@ -47,6 +49,9 @@ import {
   readSettings, writeSettings, applySettings, effectiveSettings,
   configPath, comfyModelOptions, type DirekSettings,
 } from './src/direk/settings.ts';
+import {
+  ollamaStatus, ollamaChat, preferredTextBackend, ollamaUrl, ollamaModel,
+} from './src/direk/llm.ts';
 
 dotenv.config();
 
@@ -102,8 +107,12 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
 app.use('/api', requireAuth);
 
 // Initialize GoogleGenAI server-side with telemetry header
+// The SDK defaults to the stable v1 endpoint, but the current flash models are
+// only served on v1beta; without this the calls 404 with "not found for API
+// version v1".
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
+  apiVersion: 'v1beta',
   httpOptions: {
     headers: {
       'User-Agent': 'aistudio-build',
@@ -274,16 +283,33 @@ app.get('/api/pilot/status', (_req: Request, res: Response) => {
 
 // 1b. Health / capability report. States plainly which features are real and
 // which are unavailable, so the UI never has to guess.
-app.get('/api/health', (_req: Request, res: Response) => {
+app.get('/api/health', async (_req: Request, res: Response) => {
   const keyConfigured = Boolean(process.env.GEMINI_API_KEY);
+  const ollama = await ollamaStatus();
+  const textAvailable = keyConfigured || (ollama.reachable && ollama.model_present);
+  const backend = keyConfigured ? 'gemini' : (ollama.reachable && ollama.model_present ? 'ollama' : 'none');
   res.json({
-    ok: keyConfigured,
+    ok: textAvailable,
     gemini_key_configured: keyConfigured,
-    text: { model: TEXT_MODEL, available: keyConfigured, free_tier: true },
-    direk: {
-      available: keyConfigured,
+    text: {
+      model: backend === 'ollama' ? ollama.model : TEXT_MODEL,
+      backend,
+      available: textAvailable,
       free_tier: true,
-      model: TEXT_MODEL,
+    },
+    ollama: {
+      url: ollama.url,
+      model: ollama.model,
+      reachable: ollama.reachable,
+      model_present: ollama.model_present,
+      models: ollama.models,
+      error: ollama.error,
+    },
+    direk: {
+      available: textAvailable,
+      free_tier: true,
+      model: backend === 'ollama' ? ollama.model : TEXT_MODEL,
+      backend,
       reference_available: referenceCatalog.available,
       reference_rows: referenceCatalog.size,
     },
@@ -347,24 +373,7 @@ app.post('/api/pilot/command', async (req: Request, res: Response) => {
 
   // Honest behaviour: if no usable model is available, say so. We never
   // fabricate a tactical "analysis" and present it as a model response.
-  if (!process.env.GEMINI_API_KEY) {
-    broadcastThought('[SYS] No GEMINI_API_KEY configured - directive not executed.');
-    res.status(503).json(
-      aiUnavailable(
-        TEXT_MODEL,
-        'Set GEMINI_API_KEY (free tier) to enable directive execution.',
-        'The Gemini API key is not configured'
-      )
-    );
-    return;
-  }
-
-  broadcastThought(`[TEXT REASONING] Calling ${TEXT_MODEL}...`);
-
-  try {
-    const response = await ai.models.generateContent({
-      model: TEXT_MODEL,
-      contents: `Commander Directive: "${cleanDirective}"
+  const directivePrompt = `Commander Directive: "${cleanDirective}"
 Analyze and execute this tactical command for the VIP Battle Room.
 Respond in strict JSON with:
 {
@@ -372,14 +381,25 @@ Respond in strict JSON with:
   "action": "Specific tactical action executed",
   "analysis": "Tactical assessment and reasoning (2-3 sentences)",
   "readiness": "OPTIMAL"
-}`,
-      config: {
-        systemInstruction: "You are the elite AI Pilot Tactical Core in a military sci-fi battle room. Execute directives with analytical rigor.",
-        responseMimeType: "application/json",
-      },
-    });
+}`;
+  const directiveSystem = 'You are the elite AI Pilot Tactical Core in a military sci-fi battle room. Execute directives with analytical rigor.';
 
-    const rawText = response.text || '';
+  if (!textBackendAvailable) {
+    broadcastThought('[SYS] No text model configured - directive not executed.');
+    res.status(503).json(
+      aiUnavailable(
+        TEXT_MODEL,
+        'Set GEMINI_API_KEY (free tier), or run a local Ollama model for free.',
+        'No text model backend is configured'
+      )
+    );
+    return;
+  }
+
+  broadcastThought(`[TEXT REASONING] Calling ${textModelName}...`);
+
+  try {
+    const rawText = await generateText(directiveSystem, directivePrompt, { json: true });
     const parsed = parsePilotResponse(rawText, 'TACTICAL_SYNTHESIS');
     const resultIntent = parsed.intent;
     const resultAction = parsed.action;
@@ -767,36 +787,111 @@ app.post('/api/assets/review', (req: Request, res: Response) => {
 const referenceCatalog = new ReferenceCatalog(path.join(__dirname, 'data'), 5);
 const marketIntel = new MarketIntel(path.join(__dirname, 'data'));
 
+// ---------------------------------------------------------------------------
+// Text backends: Gemini when a key is set, otherwise a local Ollama model.
+// Both are free; Ollama needs no account at all.
+// ---------------------------------------------------------------------------
+let textBackendCache: { backend: 'gemini' | 'ollama' | 'none'; at: number } | null = null;
+
+async function resolveTextBackend(): Promise<'gemini' | 'ollama' | 'none'> {
+  const preferred = preferredTextBackend();
+  if (preferred === 'gemini') return 'gemini';
+  if (preferred === 'none') return 'none';
+  // Cache the Ollama probe briefly so a server started later is picked up.
+  if (!textBackendCache || Date.now() - textBackendCache.at > 15000) {
+    const status = await ollamaStatus();
+    const usable = status.reachable && status.model_present;
+    textBackendCache = { backend: usable ? 'ollama' : 'none', at: Date.now() };
+  }
+  return textBackendCache.backend;
+}
+
+let textBackend: 'gemini' | 'ollama' | 'none' = preferredTextBackend();
+let textBackendAvailable = textBackend !== 'none';
+// Which Gemini model last answered; the list is tried in order.
+let geminiModelInUse: string = TEXT_MODEL;
+let textModelName = textBackend === 'gemini' ? TEXT_MODEL : ollamaModel();
+
+async function refreshTextBackend(): Promise<void> {
+  textBackend = await resolveTextBackend();
+  textBackendAvailable = textBackend !== 'none';
+  textModelName = textBackend === 'gemini' ? geminiModelInUse : ollamaModel();
+}
+
+/**
+ * One text completion, from whichever backend is available. `messages` are the
+ * plain conversation turns; the system prompt is passed separately.
+ */
+async function generateText(
+  system: string,
+  messages: ChatMessage[] | string,
+  opts: { json?: boolean; temperature?: number } = {},
+): Promise<string> {
+  await refreshTextBackend();
+  if (!textBackendAvailable) {
+    throw new Error('No text model is configured (set GEMINI_API_KEY, or run Ollama)');
+  }
+  if (textBackend === 'ollama') {
+    const turns: { role: 'user' | 'assistant'; content: string }[] =
+      typeof messages === 'string'
+        ? [{ role: 'user', content: messages }]
+        : messages
+            .filter(m => m.role !== 'system')
+            .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
+    return ollamaChat({
+      system,
+      messages: turns,
+      json: opts.json,
+      temperature: opts.temperature ?? 0.7,
+    });
+  }
+  // Gemini
+  const contents = typeof messages === 'string'
+    ? messages
+    : messages.map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
+  let lastError: any = null;
+  for (const model of TEXT_MODELS) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents,
+        config: {
+          systemInstruction: system,
+          temperature: opts.temperature ?? 0.7,
+          topP: 0.9,
+          maxOutputTokens: 1024,
+          ...(opts.json ? { responseMimeType: 'application/json' } : {}),
+        },
+      });
+      geminiModelInUse = model;
+      return response.text || '';
+    } catch (error: any) {
+      lastError = error;
+      // Retire/rate-limit errors: try the next model. Anything else is real.
+      if (!isRetryableModelError(error?.message || '')) throw error;
+    }
+  }
+  throw lastError || new Error('No Gemini text model was usable');
+}
+
 const direkService = new DirekService(
   referenceCatalog,
   async (systemPrompt, messages) => {
-    if (!process.env.GEMINI_API_KEY) {
-      throw new Error('GEMINI_API_KEY is not configured');
-    }
-    const contents = messages.map(m => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
-    }));
-    const response = await ai.models.generateContent({
-      model: TEXT_MODEL,
-      contents,
-      config: {
-        systemInstruction: systemPrompt,
-        temperature: 0.5,
-        topP: 0.9,
-        maxOutputTokens: 1024,
-      },
-    });
-    return response.text || '';
+    return generateText(systemPrompt, messages, { temperature: 0.5 });
   },
   () => marketIntel.brief(),
 );
 
 app.get('/api/direk/status', async (_req: Request, res: Response) => {
   const backend = await resolveImageBackend();
+  await refreshTextBackend();
   res.json({
-    ok: Boolean(process.env.GEMINI_API_KEY),
-    model: TEXT_MODEL,
+    ok: textBackendAvailable,
+    model: textModelName,
+    text_backend: textBackend,
     gemini_key_configured: Boolean(process.env.GEMINI_API_KEY),
     pipeline: PIPELINE,
     genres: Object.keys(GENRE_MAP),
@@ -1155,6 +1250,7 @@ app.put('/api/direk/settings', (req: Request, res: Response) => {
   const allowed: (keyof DirekSettings)[] = [
     'comfyui_url', 'comfyui_checkpoint', 'comfyui_workflow', 'comfyui_loras_dir',
     'kohya_dir', 'kohya_base_model', 'kohya_python', 'kohya_accelerate', 'kohya_output_dir',
+    'ollama_url', 'ollama_model',
   ];
   const clean: DirekSettings = {};
   for (const key of allowed) {
@@ -1164,6 +1260,7 @@ app.put('/api/direk/settings', (req: Request, res: Response) => {
   // Apply live so the next request already uses the new paths.
   applySettings(clean, true);
   comfyOk = null;
+  textBackendCache = null;
   res.json({ saved: true, config_path: configPath(), settings: clean });
 });
 
@@ -1171,8 +1268,25 @@ app.put('/api/direk/settings', (req: Request, res: Response) => {
 app.get('/api/direk/setup', async (_req: Request, res: Response) => {
   const comfy = await comfyModelOptions();
   const trainer = trainerStatus();
+  const ollama = await ollamaStatus();
+  const gemini = Boolean(process.env.GEMINI_API_KEY);
+  const textReady = gemini || (ollama.reachable && ollama.model_present);
   res.json({
     config_path: configPath(),
+    text: {
+      backend: gemini ? 'gemini' : (textReady ? 'ollama' : 'none'),
+      gemini_key: gemini,
+      model: gemini ? TEXT_MODEL : ollama.model,
+      ready: textReady,
+      ollama: {
+        url: ollama.url,
+        model: ollama.model,
+        reachable: ollama.reachable,
+        model_present: ollama.model_present,
+        models: ollama.models,
+        error: ollama.error,
+      },
+    },
     comfyui: {
       url: comfyUrl(),
       reachable: comfy.reachable,
@@ -1183,7 +1297,7 @@ app.get('/api/direk/setup', async (_req: Request, res: Response) => {
     trainer: { available: trainer.available, reason: trainer.reason, base_model: trainer.base_model },
     loras_dir: lorasDir(),
     published_loras: listLoras(),
-    ready: comfy.reachable && trainer.available,
+    ready: textReady && comfy.reachable && trainer.available,
   });
 });
 

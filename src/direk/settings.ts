@@ -33,6 +33,10 @@ export interface DirekSettings {
   kohya_accelerate?: boolean;
   /** Where training runs are written. */
   kohya_output_dir?: string;
+  /** Local Ollama URL for the free text backend. */
+  ollama_url?: string;
+  /** Ollama model name, e.g. qwen2.5:7b. */
+  ollama_model?: string;
 }
 
 /** Settings key -> environment variable. */
@@ -46,6 +50,8 @@ const ENV_MAP: Record<keyof DirekSettings, string> = {
   kohya_python: 'KOHYA_PYTHON',
   kohya_accelerate: 'KOHYA_ACCELERATE',
   kohya_output_dir: 'KOHYA_OUTPUT_DIR',
+  ollama_url: 'OLLAMA_URL',
+  ollama_model: 'OLLAMA_MODEL',
 };
 
 export function configPath(): string {
