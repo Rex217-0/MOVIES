@@ -7,15 +7,17 @@ import { RenderVault } from './components/RenderVault';
 import { CognitiveMatrixModal } from './components/CognitiveMatrixModal';
 import { DirectorsChair } from './components/DirectorsChair';
 import { LoraStudio } from './components/LoraStudio';
+import { MovieMaker } from './components/MovieMaker';
 import { SetupModal } from './components/SetupModal';
 import { direkStatus } from './api';
 import { Sparkles, Radio, Terminal, Video, Wand2, Film, Clapperboard, Boxes, FolderCog } from 'lucide-react';
 
-type TabId = 'direk' | 'lora' | 'cockpit' | 'radar' | 'video' | 'image' | 'vault';
+type TabId = 'movie' | 'direk' | 'lora' | 'cockpit' | 'radar' | 'video' | 'image' | 'vault';
 
 type Tab = { id: TabId; label: string; icon: React.ComponentType<{ size?: number; className?: string }> };
 
 const TABS: Tab[] = [
+  { id: 'movie', label: 'Movie Maker', icon: Film },
   { id: 'direk', label: 'Movie Robo', icon: Clapperboard },
   { id: 'lora', label: 'LoRA Studio', icon: Boxes },
   { id: 'cockpit', label: 'Battle Room', icon: Terminal },
@@ -26,7 +28,7 @@ const TABS: Tab[] = [
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<TabId>('direk');
+  const [activeTab, setActiveTab] = useState<TabId>('movie');
   const [isCognitiveModalOpen, setIsCognitiveModalOpen] = useState(false);
   const [isSetupOpen, setIsSetupOpen] = useState(false);
   const [textModel, setTextModel] = useState<string>('');
@@ -107,7 +109,9 @@ export default function App() {
       {/* MAIN VIEWPORT */}
       <main className="mx-auto flex min-h-0 w-full max-w-[1700px] flex-1 flex-col p-3 sm:p-4">
         <div className="flex-1 flex flex-col h-full min-h-[680px]">
-          {activeTab === 'direk' ? (
+          {activeTab === 'movie' ? (
+            <MovieMaker />
+          ) : activeTab === 'direk' ? (
             <DirectorsChair />
           ) : activeTab === 'lora' ? (
             <LoraStudio />

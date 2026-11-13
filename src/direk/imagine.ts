@@ -11,7 +11,7 @@ import { IMAGE_MODEL, IMAGE_MODEL_FREE } from '../config.ts';
 import { buildVeoStylePrompt, buildVeoStyleNegative } from '../tactical/rules.ts';
 import { generateWithComfy, comfyAvailable } from './comfyui.ts';
 
-export type ImageBackend = 'comfyui' | 'gemini' | 'none';
+export type ImageBackend = 'comfyui' | 'gemini' | 'pollinations' | 'none';
 
 let client: GoogleGenAI | null = null;
 
@@ -32,6 +32,8 @@ export async function imageBackend(): Promise<ImageBackend> {
     if (comfyCache.ok) return 'comfyui';
   }
   if (process.env.GEMINI_API_KEY && IMAGE_MODEL_FREE) return 'gemini';
+  // Pollinations needs no key and no GPU, so it is the free default.
+  if (process.env.POLLINATIONS_DISABLE !== '1') return 'pollinations';
   return 'none';
 }
 
@@ -77,6 +79,16 @@ export async function imagine(prompt: string): Promise<GeneratedImage> {
     });
     const data = extractImage(interaction);
     if (!data) throw new Error('Walang image na ibinalik ang model.');
+    return { data, ext: 'png', mime: 'image/png', backend };
+  }
+
+  if (backend === 'pollinations') {
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(enhanced)}` +
+      `?width=1024&height=1024&nologo=true&model=flux`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
+    if (!res.ok) throw new Error(`Pollinations returned ${res.status}`);
+    const data = Buffer.from(await res.arrayBuffer());
+    if (data.length < 1024) throw new Error('Pollinations returned an empty image.');
     return { data, ext: 'png', mime: 'image/png', backend };
   }
 

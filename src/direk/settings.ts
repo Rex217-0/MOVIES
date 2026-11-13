@@ -37,6 +37,10 @@ export interface DirekSettings {
   ollama_url?: string;
   /** Ollama model name, e.g. qwen2.5:7b. */
   ollama_model?: string;
+  /** Piper executable for the offline backup voice (defaults to `piper`). */
+  tts_piper_bin?: string;
+  /** Piper voice model file (.onnx) used by the offline backup voice. */
+  tts_piper_voice?: string;
 }
 
 /** Settings key -> environment variable. */
@@ -52,6 +56,8 @@ const ENV_MAP: Record<keyof DirekSettings, string> = {
   kohya_output_dir: 'KOHYA_OUTPUT_DIR',
   ollama_url: 'OLLAMA_URL',
   ollama_model: 'OLLAMA_MODEL',
+  tts_piper_bin: 'TTS_PIPER_BIN',
+  tts_piper_voice: 'TTS_PIPER_VOICE',
 };
 
 export function configPath(): string {
