@@ -215,6 +215,24 @@ their settings are shown in the app's SETUP panel.
 Image and video generation are not on the Gemini free tier (they need billing),
 so the app leaves them unavailable and points image work at ComfyUI instead.
 
+## Video generation (free, via ComfyUI)
+
+Video is not on the Gemini free tier, so the app renders video locally instead.
+Point `COMFYUI_VIDEO_WORKFLOW` at an AnimateDiff or SVD workflow exported in
+API format; the app fills `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`,
+`__HEIGHT__` and `__FRAMES__`. When ComfyUI is reachable and a video workflow is
+set, `/api/pilot/video/generate` renders there and saves the result into the
+Render Vault. Without it, the endpoint honestly returns `503` and tells you to
+run ComfyUI rather than returning a stock clip.
+
+## Veo-style prompts
+
+Google Veo's prompt guide builds a prompt from subject, action, camera, lighting
+and style. The app borrows that structure: `buildVeoStylePrompt` adds a camera
+move, dramatic lighting and a film look to an image or video prompt, but only
+the parts the user left out, so their own wording always wins. This lifts the
+output of both ComfyUI and Gemini toward Veo-grade results.
+
 ## LoRA auto-training (kohya_ss)
 
 Direk can train the set it just generated, without leaving the app. The

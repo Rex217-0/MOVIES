@@ -6,7 +6,7 @@ import {
   parsePilotResponse,
   validateVideoAspectRatio,
   validateImageEditInput,
-  buildTacticalVideoPrompt,
+  buildTacticalVideoPrompt, buildVeoStylePrompt, buildVeoStyleNegative,
   applyAssetReview,
   VideoAsset
 } from './rules';
@@ -74,6 +74,30 @@ test('buildTacticalVideoPrompt appends sci-fi style modifiers when missing', () 
   const enhanced = buildTacticalVideoPrompt('Drone flying through city');
   assert.ok(enhanced.includes('Drone flying through city'));
   assert.ok(enhanced.includes('cinematic tactical HUD'));
+});
+
+test('buildVeoStylePrompt adds camera, lighting and film look when missing', () => {
+  const out = buildVeoStylePrompt('A fisherman on a boat');
+  assert.ok(out.startsWith('A fisherman on a boat'));
+  assert.match(out, /camera/i);
+  assert.match(out, /light/i);
+  assert.match(out, /35mm|photoreal/i);
+});
+
+test('buildVeoStylePrompt leaves a prompt that already specifies everything alone', () => {
+  const given = 'A wide aerial shot of a city at sunset, neon lighting, cinematic 35mm film';
+  assert.equal(buildVeoStylePrompt(given), given);
+});
+
+test('buildVeoStylePrompt trims and collapses whitespace, and handles empty input', () => {
+  assert.equal(buildVeoStylePrompt('   '), '');
+  assert.ok(!buildVeoStylePrompt('  a cat  ').startsWith(' '));
+  assert.ok(!buildVeoStylePrompt('a cat.').includes('cat.'));
+});
+
+test('buildVeoStyleNegative names common artifacts', () => {
+  assert.match(buildVeoStyleNegative(), /blurry/);
+  assert.match(buildVeoStyleNegative(), /watermark/);
 });
 
 test('applyAssetReview properly updates reviewStatus', () => {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildWorkflow, defaultWorkflow, comfyUrl, DEFAULT_NEGATIVE,
   clampStrength, publishLora, listLoras, lorasDir,
+  buildVideoWorkflow, comfyVideoConfigured,
 } from './comfyui.ts';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -102,5 +103,49 @@ test('the workflow template receives the LoRA placeholders', () => {
   } finally {
     if (savedWf === undefined) delete process.env.COMFYUI_WORKFLOW;
     else process.env.COMFYUI_WORKFLOW = savedWf;
+  }
+});
+
+test('comfyVideoConfigured is false without a workflow, true with one', () => {
+  const saved = process.env.COMFYUI_VIDEO_WORKFLOW;
+  delete process.env.COMFYUI_VIDEO_WORKFLOW;
+  assert.equal(comfyVideoConfigured(), false);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vid-'));
+  const tpl = path.join(dir, 'vid.json');
+  fs.writeFileSync(tpl, JSON.stringify({ n: { p: '__PROMPT__', f: '__FRAMES__' } }));
+  process.env.COMFYUI_VIDEO_WORKFLOW = tpl;
+  try {
+    assert.equal(comfyVideoConfigured(), true);
+  } finally {
+    if (saved === undefined) delete process.env.COMFYUI_VIDEO_WORKFLOW;
+    else process.env.COMFYUI_VIDEO_WORKFLOW = saved;
+  }
+});
+
+test('buildVideoWorkflow fills the video placeholders', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vid-'));
+  const tpl = path.join(dir, 'vid.json');
+  fs.writeFileSync(tpl, JSON.stringify({ n: { p: '__PROMPT__', f: '__FRAMES__', w: '__WIDTH__' } }));
+  const saved = process.env.COMFYUI_VIDEO_WORKFLOW;
+  process.env.COMFYUI_VIDEO_WORKFLOW = tpl;
+  try {
+    const wf: any = buildVideoWorkflow('a sunset', { frames: 25, width: 512 });
+    assert.equal(wf.n.p, 'a sunset');
+    assert.equal(wf.n.f, '25');
+    assert.equal(wf.n.w, '512');
+  } finally {
+    if (saved === undefined) delete process.env.COMFYUI_VIDEO_WORKFLOW;
+    else process.env.COMFYUI_VIDEO_WORKFLOW = saved;
+  }
+});
+
+test('buildVideoWorkflow explains itself when no workflow is configured', () => {
+  const saved = process.env.COMFYUI_VIDEO_WORKFLOW;
+  delete process.env.COMFYUI_VIDEO_WORKFLOW;
+  try {
+    assert.throws(() => buildVideoWorkflow('x'), /COMFYUI_VIDEO_WORKFLOW/);
+  } finally {
+    if (saved === undefined) delete process.env.COMFYUI_VIDEO_WORKFLOW;
+    else process.env.COMFYUI_VIDEO_WORKFLOW = saved;
   }
 });

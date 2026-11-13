@@ -11,7 +11,7 @@ import {
   parsePilotResponse,
   validateVideoAspectRatio,
   validateImageEditInput,
-  buildTacticalVideoPrompt,
+  buildTacticalVideoPrompt, buildVeoStylePrompt, buildVeoStyleNegative,
   applyAssetReview,
   type VideoAsset
 } from './src/tactical/rules.ts';
@@ -39,7 +39,7 @@ import {
   numberedName, MAX_LORA_IMAGES,
 } from './src/direk/lora.ts';
 import {
-  comfyAvailable, generateWithComfy, comfyUrl,
+  comfyAvailable, generateWithComfy, comfyUrl, generateVideoWithComfy, comfyVideoConfigured,
   publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
 } from './src/direk/comfyui.ts';
 import {
@@ -468,6 +468,49 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
 
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
+  // Free path first: a local ComfyUI with an AnimateDiff/SVD workflow. This is
+  // the only free way to actually render video, so prefer it when configured.
+  if (process.env.COMFYUI_DISABLE !== '1' && comfyVideoConfigured() && (await comfyAvailable())) {
+    try {
+      const { data } = await generateVideoWithComfy(formattedPrompt, {
+        negative: buildVeoStyleNegative(),
+      });
+      const elapsedMs = Date.now() - startTime;
+      const dataUrl = `data:video/mp4;base64,${data.toString('base64')}`;
+      broadcastThought(`[VIDEO COMPLETE] ComfyUI video rendered (${elapsedMs}ms).`);
+      const mediaRecord: MediaItem = {
+        id: `VID-${Date.now()}`,
+        type: 'video',
+        url: dataUrl,
+        prompt: cleanPrompt(prompt),
+        aspect_ratio: validAspect,
+        timestamp: new Date().toLocaleTimeString(),
+        model: 'comfyui',
+        details: 'ComfyUI local render',
+      };
+      mediaGallery.unshift(mediaRecord);
+      if (mediaGallery.length > 40) mediaGallery.pop();
+      renderVaultAssets.unshift({
+        id: `ASSET-${Date.now()}`,
+        title: cleanPrompt(prompt),
+        url: dataUrl,
+        status: 'completed',
+        reviewStatus: 'pending',
+        createdAt: new Date().toISOString(),
+      });
+      res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
+      return;
+    } catch (error: any) {
+      const reason = error?.message || 'Unknown error';
+      console.error('[VIDEO ERROR] ComfyUI render failed:', reason);
+      broadcastThought(`[VIDEO ERROR] ComfyUI failed: ${reason}`);
+      res.status(503).json(
+        aiUnavailable('comfyui', 'Check that ComfyUI is running and the video workflow is valid.', reason)
+      );
+      return;
+    }
+  }
+
   // Honest behaviour: there is no video model on the Gemini free tier, so
   // report the feature as unavailable instead of returning a stock clip that
   // looks like a generated result.
@@ -476,7 +519,8 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
     res.status(503).json(
       aiUnavailable(
         VIDEO_MODEL,
-        NO_FREE_VIDEO_MODEL,
+        `${NO_FREE_VIDEO_MODEL} Libreng paraan: magpatakbo ng ComfyUI at itakda ang ` +
+          `COMFYUI_VIDEO_WORKFLOW sa isang AnimateDiff/SVD workflow.`,
         'Video generation is unavailable'
       )
     );
@@ -571,6 +615,9 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
 
   const validAspect = aspect_ratio || '1:1';
   const startTime = Date.now();
+  // Veo-grade scaffolding: adds camera, lighting and film look when the user
+  // did not specify them. Their own wording always wins.
+  const enhancedPrompt = buildVeoStylePrompt(prompt);
 
   broadcastThought(`[IMAGE PIPELINE] Image request: "${prompt.slice(0, 45)}..."`);
 
@@ -579,7 +626,8 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
   const backend = await resolveImageBackend();
   if (backend === 'comfyui') {
     try {
-      const png = await generateWithComfy(prompt, {
+      const png = await generateWithComfy(enhancedPrompt, {
+        negative: buildVeoStyleNegative(),
         width: 1024, height: 1024, lora: parseLoraChoice({ lora, loraStrength }),
       });
       const elapsedMs = Date.now() - startTime;
