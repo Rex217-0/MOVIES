@@ -105,290 +105,290 @@ export const VideoReconSuite: React.FC<{
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#05060A] border border-[#D4AF37]/50 rounded-lg overflow-hidden shadow-[0_0_30px_rgba(212,175,55,0.15)] relative">
-      {/* HEADER */}
-      <div className="bg-gradient-to-r from-[#0F1219] via-[#1A1C23] to-[#0F1219] border-b border-[#D4AF37]/30 p-3 flex flex-wrap gap-2 justify-between items-center">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-[#00E5FF]/10 rounded-md border border-[#00E5FF]/40 shadow-[0_0_12px_rgba(0,229,255,0.2)]">
-            <Video className="text-[#00E5FF] w-5 h-5 animate-pulse" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-sm font-bold text-white tracking-widest uppercase font-mono">
-                Video Reconnaissance Suite
-              </h2>
-              <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-mono font-bold">
-                OMNI FLASH · INTERACTIONS API
-              </span>
-            </div>
-            <p className="text-[10px] text-gray-400 font-mono">
-              Model: <code className="text-[#F6E076]">gemini-omni-1.2-flash</code> (paid tier only - currently unavailable)
-            </p>
-          </div>
-        </div>
+    <div className="flex flex-col h-full bg-sunken border border-primary rounded-card overflow-hidden shadow-none relative">
+ {/* HEADER */}
+ <div className="bg-page-soft border-b border-primary p-3 flex flex-wrap gap-2 justify-between items-center">
+ <div className="flex items-center gap-3">
+ <div className="p-2 bg-raised rounded-md border border-edge shadow-none">
+ <Video className="text-muted w-5 h-5 animate-pulse" />
+ </div>
+ <div>
+ <div className="flex items-center gap-2">
+ <h2 className="text-sm font-bold text-white tracking-widest uppercase">
+ Video Reconnaissance Suite
+ </h2>
+ <span className="text-[9px] px-1.5 py-0.5 rounded-card bg-raised text-muted border border-edge font-bold">
+ OMNI FLASH · INTERACTIONS API
+ </span>
+ </div>
+ <p className="text-[10px] text-muted">
+ Model: <code className="text-primary">gemini-omni-1.2-flash</code> (paid tier only - currently unavailable)
+ </p>
+ </div>
+ </div>
 
-        {onJumpToCockpit && (
-          <button
-            onClick={onJumpToCockpit}
-            className="px-2.5 py-1 rounded bg-[#0d1017] hover:bg-[#161d2d] border border-gray-800 text-xs font-mono text-[#F6E076] transition-colors"
-          >
-            ← BACK TO COCKPIT
-          </button>
-        )}
-      </div>
+ {onJumpToCockpit && (
+ <button
+ onClick={onJumpToCockpit}
+ className="px-2.5 py-1 rounded-card bg-surface hover:bg-raised border border-subtle text-xs text-primary transition-colors"
+ >
+ ← BACK TO COCKPIT
+ </button>
+ )}
+ </div>
 
-      {/* WORKSPACE */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 divide-y lg:divide-y-0 lg:divide-x divide-gray-800 min-h-0">
-        
-        {/* LEFT / CONTROLS (5 cols) */}
-        <div className="lg:col-span-5 p-4 bg-[#07090F] flex flex-col justify-between space-y-4 overflow-y-auto">
-          <div className="space-y-4">
-            
-            {/* ASPECT RATIO SELECTOR - MANDATORY FEATURE */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-mono font-bold text-gray-300 flex items-center justify-between">
-                <span>ASPECT RATIO (MANDATORY SPEC):</span>
-                <span className="text-[10px] text-[#00E5FF]">{aspectRatio === '16:9' ? '16:9 Landscape' : '9:16 Portrait'}</span>
-              </label>
-              
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setAspectRatio('16:9')}
-                  className={`p-2.5 rounded-lg border font-mono text-xs flex items-center justify-center gap-2 transition-all ${
-                    aspectRatio === '16:9'
-                      ? 'bg-[#121927] border-[#00E5FF] text-[#00E5FF] shadow-[0_0_12px_rgba(0,229,255,0.25)]'
-                      : 'bg-black/50 border-gray-800 text-gray-400 hover:border-gray-700'
-                  }`}
-                >
-                  <div className="w-5 h-3 border border-current rounded-sm"></div>
-                  <span className="font-bold">16:9 Landscape</span>
-                </button>
+ {/* WORKSPACE */}
+ <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 divide-y lg:divide-y-0 lg:divide-x divide-gray-800 min-h-0">
+ 
+ {/* LEFT / CONTROLS (5 cols) */}
+ <div className="lg:col-span-5 p-4 bg-sunken flex flex-col justify-between space-y-4 overflow-y-auto">
+ <div className="space-y-4">
+ 
+ {/* ASPECT RATIO SELECTOR - MANDATORY FEATURE */}
+ <div className="space-y-1.5">
+ <label className="text-xs font-bold text-ink flex items-center justify-between">
+ <span>ASPECT RATIO (MANDATORY SPEC):</span>
+ <span className="text-[10px] text-muted">{aspectRatio === '16:9' ? '16:9 Landscape' : '9:16 Portrait'}</span>
+ </label>
+ 
+ <div className="grid grid-cols-2 gap-2">
+ <button
+ type="button"
+ onClick={() => setAspectRatio('16:9')}
+ className={`p-2.5 rounded-card border text-xs flex items-center justify-center gap-2 transition-all ${
+ aspectRatio === '16:9'
+ ? 'bg-raised border-edge text-muted shadow-none'
+ : 'bg-black/50 border-subtle text-muted hover:border-edge'
+ }`}
+ >
+ <div className="w-5 h-3 border border-current rounded-sm"></div>
+ <span className="font-bold">16:9 Landscape</span>
+ </button>
 
-                <button
-                  type="button"
-                  onClick={() => setAspectRatio('9:16')}
-                  className={`p-2.5 rounded-lg border font-mono text-xs flex items-center justify-center gap-2 transition-all ${
-                    aspectRatio === '9:16'
-                      ? 'bg-[#121927] border-[#00E5FF] text-[#00E5FF] shadow-[0_0_12px_rgba(0,229,255,0.25)]'
-                      : 'bg-black/50 border-gray-800 text-gray-400 hover:border-gray-700'
-                  }`}
-                >
-                  <div className="w-3 h-5 border border-current rounded-sm"></div>
-                  <span className="font-bold">9:16 Portrait</span>
-                </button>
-              </div>
-            </div>
+ <button
+ type="button"
+ onClick={() => setAspectRatio('9:16')}
+ className={`p-2.5 rounded-card border text-xs flex items-center justify-center gap-2 transition-all ${
+ aspectRatio === '9:16'
+ ? 'bg-raised border-edge text-muted shadow-none'
+ : 'bg-black/50 border-subtle text-muted hover:border-edge'
+ }`}
+ >
+ <div className="w-3 h-5 border border-current rounded-sm"></div>
+ <span className="font-bold">9:16 Portrait</span>
+ </button>
+ </div>
+ </div>
 
-            {/* DURATION & RESOLUTION */}
-            <div className="grid grid-cols-2 gap-3 pt-1">
-              <div className="space-y-1">
-                <label className="text-[11px] font-mono text-gray-400">DURATION:</label>
-                <select
-                  value={duration}
-                  onChange={(e) => setDuration(e.target.value)}
-                  className="w-full bg-[#0a0d14] border border-gray-800 rounded p-2 text-xs font-mono text-white focus:outline-none focus:border-[#D4AF37]"
-                >
-                  <option value="5s">5 Seconds</option>
-                  <option value="10s">10 Seconds (Default)</option>
-                  <option value="15s">15 Seconds</option>
-                </select>
-              </div>
+ {/* DURATION & RESOLUTION */}
+ <div className="grid grid-cols-2 gap-3 pt-1">
+ <div className="space-y-1">
+ <label className="text-[11px] text-muted">DURATION:</label>
+ <select
+ value={duration}
+ onChange={(e) => setDuration(e.target.value)}
+ className="w-full bg-surface border border-subtle rounded-card p-2 text-xs text-white focus:outline-none focus:border-primary"
+ >
+ <option value="5s">5 Seconds</option>
+ <option value="10s">10 Seconds (Default)</option>
+ <option value="15s">15 Seconds</option>
+ </select>
+ </div>
 
-              <div className="space-y-1">
-                <label className="text-[11px] font-mono text-gray-400">RESOLUTION:</label>
-                <select
-                  value={resolution}
-                  onChange={(e) => setResolution(e.target.value)}
-                  className="w-full bg-[#0a0d14] border border-gray-800 rounded p-2 text-xs font-mono text-white focus:outline-none focus:border-[#D4AF37]"
-                >
-                  <option value="720p">720p HD (Default)</option>
-                  <option value="1080p">1080p Full HD</option>
-                  <option value="4k">4K Ultra</option>
-                </select>
-              </div>
-            </div>
+ <div className="space-y-1">
+ <label className="text-[11px] text-muted">RESOLUTION:</label>
+ <select
+ value={resolution}
+ onChange={(e) => setResolution(e.target.value)}
+ className="w-full bg-surface border border-subtle rounded-card p-2 text-xs text-white focus:outline-none focus:border-primary"
+ >
+ <option value="720p">720p HD (Default)</option>
+ <option value="1080p">1080p Full HD</option>
+ <option value="4k">4K Ultra</option>
+ </select>
+ </div>
+ </div>
 
-            {/* PROMPT TEXTAREA */}
-            <div className="space-y-1.5">
-              <div className="flex justify-between items-center">
-                <label htmlFor="video-prompt-input" className="text-xs font-mono font-bold text-gray-300">
-                  RECONNAISSANCE DIRECTIVE PROMPT:
-                </label>
-                <span className="text-[10px] text-gray-500 font-mono">{prompt.length} chars</span>
-              </div>
-              <textarea
-                id="video-prompt-input"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Describe a cinematic video scene (video generation is currently unavailable)..."
-                disabled={isGenerating}
-                rows={4}
-                className="w-full bg-black/80 border border-gray-800 focus:border-[#00E5FF] focus:ring-1 focus:ring-[#00E5FF]/40 rounded-lg p-2.5 text-xs font-mono text-gray-200 resize-none disabled:opacity-50 transition-colors"
-              />
-            </div>
+ {/* PROMPT TEXTAREA */}
+ <div className="space-y-1.5">
+ <div className="flex justify-between items-center">
+ <label htmlFor="video-prompt-input" className="text-xs font-bold text-ink">
+ RECONNAISSANCE DIRECTIVE PROMPT:
+ </label>
+ <span className="text-[10px] text-muted">{prompt.length} chars</span>
+ </div>
+ <textarea
+ id="video-prompt-input"
+ value={prompt}
+ onChange={(e) => setPrompt(e.target.value)}
+ placeholder="Describe a cinematic video scene (video generation is currently unavailable)..."
+ disabled={isGenerating}
+ rows={4}
+ className="w-full bg-black/80 border border-subtle focus:border-edge focus:ring-1 focus:ring-edge rounded-card p-2.5 text-xs text-ink resize-none disabled:opacity-50 transition-colors"
+ />
+ </div>
 
-            {/* QUICK PRESETS */}
-            <div className="space-y-1.5">
-              <span className="text-[10px] text-gray-500 font-mono font-bold tracking-wider">
-                TACTICAL MISSION PRESETS:
-              </span>
-              <div className="space-y-1">
-                {VIDEO_PRESETS.map((p, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => {
-                      setPrompt(p.prompt);
-                      setAspectRatio(p.aspect);
-                    }}
-                    className="w-full text-left p-2 rounded bg-[#0c1018] hover:bg-[#141b29] border border-gray-800/80 text-[11px] font-mono text-gray-300 hover:text-white transition-colors flex justify-between items-center group"
-                  >
-                    <span className="truncate pr-2">{p.title}</span>
-                    <span className="text-[9px] px-1 py-0.5 rounded bg-black/60 text-cyan-400 shrink-0 font-bold">
-                      {p.aspect}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
+ {/* QUICK PRESETS */}
+ <div className="space-y-1.5">
+ <span className="text-[10px] text-muted font-bold tracking-wider">
+ TACTICAL MISSION PRESETS:
+ </span>
+ <div className="space-y-1">
+ {VIDEO_PRESETS.map((p, idx) => (
+ <button
+ key={idx}
+ type="button"
+ onClick={() => {
+ setPrompt(p.prompt);
+ setAspectRatio(p.aspect);
+ }}
+ className="w-full text-left p-2 rounded-card bg-surface hover:bg-raised border border-subtle text-[11px] text-ink hover:text-white transition-colors flex justify-between items-center group"
+ >
+ <span className="truncate pr-2">{p.title}</span>
+ <span className="text-[9px] px-1 py-0.5 rounded-card bg-black/60 text-muted shrink-0 font-bold">
+ {p.aspect}
+ </span>
+ </button>
+ ))}
+ </div>
+ </div>
 
-            {errorMsg && (
-              <div className="p-2.5 bg-red-950/40 border border-red-500/60 rounded text-red-300 text-xs font-mono">
-                {errorMsg}
-              </div>
-            )}
-          </div>
+ {errorMsg && (
+ <div className="p-2.5 bg-red-500/10 border border-red-500/40/40 rounded-card text-red-300 text-xs">
+ {errorMsg}
+ </div>
+ )}
+ </div>
 
-          {/* GENERATE BUTTON */}
-          <div className="pt-2">
-            <button
-              type="button"
-              onClick={handleGenerateVideo}
-              disabled={isGenerating || !prompt.trim()}
-              className="w-full py-3.5 bg-gradient-to-r from-[#00E5FF] via-cyan-400 to-[#00E5FF] text-black font-mono font-bold text-xs tracking-widest uppercase rounded-lg hover:brightness-110 active:brightness-95 transition-all flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(0,229,255,0.4)] disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {isGenerating ? (
-                <>
-                  <RefreshCw size={15} className="animate-spin" />
-                  <span>SYNTHESIZING VIDEO WITH OMNI FLASH...</span>
-                </>
-              ) : (
-                <>
-                  <Film size={15} />
-                  <span>GENERATE VIDEO</span>
-                </>
-              )}
-            </button>
-            <div className="text-[9px] text-gray-500 text-center font-mono mt-1.5">
-              Video generation requires a paid Gemini tier and is currently unavailable.
-            </div>
-          </div>
-        </div>
+ {/* GENERATE BUTTON */}
+ <div className="pt-2">
+ <button
+ type="button"
+ onClick={handleGenerateVideo}
+ disabled={isGenerating || !prompt.trim()}
+ className="w-full py-3.5 bg-raised text-primary-ink font-bold text-xs tracking-widest uppercase rounded-card hover:brightness-110 active:brightness-95 transition-all flex items-center justify-center gap-2 shadow-none disabled:opacity-40 disabled:cursor-not-allowed"
+ >
+ {isGenerating ? (
+ <>
+ <RefreshCw size={15} className="animate-spin" />
+ <span>SYNTHESIZING VIDEO WITH OMNI FLASH...</span>
+ </>
+ ) : (
+ <>
+ <Film size={15} />
+ <span>GENERATE VIDEO</span>
+ </>
+ )}
+ </button>
+ <div className="text-[9px] text-muted text-center mt-1.5">
+ Video generation requires a paid Gemini tier and is currently unavailable.
+ </div>
+ </div>
+ </div>
 
-        {/* RIGHT / VIEWER & GALLERY (7 cols) */}
-        <div className="lg:col-span-7 p-4 bg-[#05070C] flex flex-col justify-between space-y-4">
-          {/* VIDEO SCREEN / PLAYER */}
-          <div className="space-y-2">
-            <div className="flex justify-between items-center">
-              <h3 className="text-xs font-bold text-gray-300 uppercase tracking-wider font-mono flex items-center gap-2">
-                <Radio size={14} className="text-[#00E5FF]" /> Reconnaissance Visual Feed
-              </h3>
-              {currentVideo && (
-                <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/40 px-2 py-0.5 rounded border border-cyan-800/40">
-                  {currentVideo.aspect_ratio} · {currentVideo.model}
-                </span>
-              )}
-            </div>
+ {/* RIGHT / VIEWER & GALLERY (7 cols) */}
+ <div className="lg:col-span-7 p-4 bg-sunken flex flex-col justify-between space-y-4">
+ {/* VIDEO SCREEN / PLAYER */}
+ <div className="space-y-2">
+ <div className="flex justify-between items-center">
+ <h3 className="text-xs font-bold text-ink uppercase tracking-wider flex items-center gap-2">
+ <Radio size={14} className="text-muted" /> Reconnaissance Visual Feed
+ </h3>
+ {currentVideo && (
+ <span className="text-[10px] text-muted bg-raised px-2 py-0.5 rounded-card border border-edge">
+ {currentVideo.aspect_ratio} · {currentVideo.model}
+ </span>
+ )}
+ </div>
 
-            <div className="w-full bg-black/90 border border-gray-800 rounded-xl overflow-hidden flex items-center justify-center min-h-[300px] max-h-[460px] relative shadow-[0_0_30px_rgba(0,0,0,0.8)]">
-              {isGenerating ? (
-                <div className="p-8 text-center space-y-3 z-10">
-                  <div className="relative w-16 h-16 mx-auto">
-                    <div className="absolute inset-0 rounded-full border-2 border-cyan-500/20"></div>
-                    <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-cyan-400 animate-spin"></div>
-                    <Film className="absolute inset-0 m-auto text-cyan-400 w-6 h-6 animate-pulse" />
-                  </div>
-                  <div className="text-sm font-bold text-white font-mono">
-                    GENERATING TACTICAL VIDEO
-                  </div>
-                  <p className="text-xs text-gray-400 max-w-sm font-mono">
-                    Omni Flash neural pipeline formulating spatial temporal vectors ({aspectRatio})...
-                  </p>
-                </div>
-              ) : currentVideo?.url ? (
-                <div className={`relative flex items-center justify-center w-full h-full p-2 ${
-                  currentVideo.aspect_ratio === '9:16' ? 'max-w-[280px] mx-auto' : ''
-                }`}>
-                  <video
-                    src={currentVideo.url}
-                    controls
-                    autoPlay
-                    loop
-                    playsInline
-                    className={`rounded-lg object-contain bg-black shadow-lg ${
-                      currentVideo.aspect_ratio === '9:16' ? 'max-h-[430px] aspect-[9/16]' : 'w-full max-h-[430px] aspect-[16/9]'
-                    }`}
-                  />
-                </div>
-              ) : (
-                <div className="p-8 text-center text-gray-500 font-mono text-xs space-y-2">
-                  <Film size={28} className="mx-auto text-gray-600 mb-1" />
-                  <div>No video feed loaded yet.</div>
-                  <div className="text-[10px] text-gray-600">
-                    Choose a preset or type a prompt on the left and click Generate.
-                  </div>
-                </div>
-              )}
-            </div>
+ <div className="w-full bg-black/90 border border-subtle rounded-panel overflow-hidden flex items-center justify-center min-h-[300px] max-h-[460px] relative shadow-lg">
+ {isGenerating ? (
+ <div className="p-8 text-center space-y-3 z-10">
+ <div className="relative w-16 h-16 mx-auto">
+ <div className="absolute inset-0 rounded-full border-2 border-edge"></div>
+ <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-cyan-400 animate-spin"></div>
+ <Film className="absolute inset-0 m-auto text-muted w-6 h-6 animate-pulse" />
+ </div>
+ <div className="text-sm font-bold text-white">
+ GENERATING TACTICAL VIDEO
+ </div>
+ <p className="text-xs text-muted max-w-sm">
+ Omni Flash neural pipeline formulating spatial temporal vectors ({aspectRatio})...
+ </p>
+ </div>
+ ) : currentVideo?.url ? (
+ <div className={`relative flex items-center justify-center w-full h-full p-2 ${
+ currentVideo.aspect_ratio === '9:16' ? 'max-w-[280px] mx-auto' : ''
+ }`}>
+ <video
+ src={currentVideo.url}
+ controls
+ autoPlay
+ loop
+ playsInline
+ className={`rounded-card object-contain bg-black shadow-lg ${
+ currentVideo.aspect_ratio === '9:16' ? 'max-h-[430px] aspect-[9/16]' : 'w-full max-h-[430px] aspect-[16/9]'
+ }`}
+ />
+ </div>
+ ) : (
+ <div className="p-8 text-center text-muted text-xs space-y-2">
+ <Film size={28} className="mx-auto text-dim mb-1" />
+ <div>No video feed loaded yet.</div>
+ <div className="text-[10px] text-dim">
+ Choose a preset or type a prompt on the left and click Generate.
+ </div>
+ </div>
+ )}
+ </div>
 
-            {currentVideo && (
-              <div className="p-2.5 bg-[#0A0D15] rounded-lg border border-gray-800/80 text-[11px] font-mono text-gray-300 flex justify-between items-center gap-2">
-                <div className="truncate">
-                  <span className="text-[#F6E076] font-bold">PROMPT: </span>
-                  <span>"{currentVideo.prompt}"</span>
-                </div>
-                {currentVideo.url && (
-                  <a
-                    href={currentVideo.url}
-                    download={`recon-${currentVideo.id}.mp4`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="p-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white shrink-0"
-                    title="Download video"
-                  >
-                    <Download size={13} />
-                  </a>
-                )}
-              </div>
-            )}
-          </div>
+ {currentVideo && (
+ <div className="p-2.5 bg-surface rounded-card border border-subtle text-[11px] text-ink flex justify-between items-center gap-2">
+ <div className="truncate">
+ <span className="text-primary font-bold">PROMPT: </span>
+ <span>"{currentVideo.prompt}"</span>
+ </div>
+ {currentVideo.url && (
+ <a
+ href={currentVideo.url}
+ download={`recon-${currentVideo.id}.mp4`}
+ target="_blank"
+ rel="noreferrer"
+ className="p-1.5 rounded-card bg-raised hover:bg-raised text-ink hover:text-white shrink-0"
+ title="Download video"
+ >
+ <Download size={13} />
+ </a>
+ )}
+ </div>
+ )}
+ </div>
 
-          {/* RECON GALLERY */}
-          <div className="space-y-2 pt-2 border-t border-gray-800">
-            <div className="flex justify-between items-center text-xs font-mono">
-              <span className="text-gray-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
-                <Layers size={13} /> Mission Video Archives
-              </span>
-              <span className="text-[10px] text-gray-500">{videoList.length} items</span>
-            </div>
+ {/* RECON GALLERY */}
+ <div className="space-y-2 pt-2 border-t border-subtle">
+ <div className="flex justify-between items-center text-xs">
+ <span className="text-muted font-bold uppercase tracking-wider flex items-center gap-1.5">
+ <Layers size={13} /> Mission Video Archives
+ </span>
+ <span className="text-[10px] text-muted">{videoList.length} items</span>
+ </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-[140px] overflow-y-auto pr-1">
-              {videoList.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => setCurrentVideo(item)}
-                  className={`p-2 rounded-lg border text-left font-mono transition-all ${
-                    currentVideo?.id === item.id
-                      ? 'bg-cyan-950/40 border-cyan-500 text-cyan-200'
-                      : 'bg-black/40 border-gray-800 hover:border-gray-700 text-gray-400'
-                  }`}
-                >
-                  <div className="flex justify-between items-center text-[10px]">
-                    <span className="font-bold text-[#F6E076]">{item.aspect_ratio}</span>
-                    <span className="text-[9px] text-gray-500">{item.timestamp}</span>
-                  </div>
-                  <div className="text-[10px] truncate text-gray-300 mt-1">
+ <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-[140px] overflow-y-auto pr-1">
+ {videoList.map((item) => (
+ <button
+ key={item.id}
+ onClick={() => setCurrentVideo(item)}
+ className={`p-2 rounded-card border text-left transition-all ${
+ currentVideo?.id === item.id
+ ? 'bg-raised border-edge text-muted'
+ : 'bg-black/40 border-subtle hover:border-edge text-muted'
+ }`}
+ >
+ <div className="flex justify-between items-center text-[10px]">
+ <span className="font-bold text-primary">{item.aspect_ratio}</span>
+ <span className="text-[9px] text-muted">{item.timestamp}</span>
+ </div>
+ <div className="text-[10px] truncate text-ink mt-1">
                     {item.prompt}
                   </div>
                 </button>

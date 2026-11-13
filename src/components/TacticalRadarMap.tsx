@@ -32,141 +32,141 @@ export const TacticalRadarMap: React.FC = () => {
   }, []);
 
   return (
-    <div className="flex flex-col h-full bg-[#05060A] border border-[#D4AF37]/50 rounded-lg overflow-hidden shadow-[0_0_30px_rgba(212,175,55,0.15)] relative">
-      {/* Header */}
-      <div className="bg-gradient-to-r from-[#0F1219] via-[#1A1C23] to-[#0F1219] border-b border-[#D4AF37]/30 p-3 flex justify-between items-center">
-        <div className="flex items-center gap-2">
-          <Radio className="text-[#00E5FF] w-4 h-4 animate-pulse" />
-          <h2 className="text-xs font-bold text-white tracking-widest uppercase">
-            Holographic Tactical Radar · Sector 7-Delta
-          </h2>
-        </div>
-        <div className="flex items-center gap-3 text-[10px] font-mono text-gray-400">
-          <span className="flex items-center gap-1"><Compass size={12} className="text-[#F6E076]" /> BEARING: {sweepAngle}°</span>
-          <span className="text-green-400">LIDAR: ACTIVE</span>
-        </div>
-      </div>
+    <div className="flex flex-col h-full bg-sunken border border-primary rounded-card overflow-hidden shadow-none relative">
+ {/* Header */}
+ <div className="bg-page-soft border-b border-primary p-3 flex justify-between items-center">
+ <div className="flex items-center gap-2">
+ <Radio className="text-muted w-4 h-4 animate-pulse" />
+ <h2 className="text-xs font-bold text-white tracking-widest uppercase">
+ Holographic Tactical Radar · Sector 7-Delta
+ </h2>
+ </div>
+ <div className="flex items-center gap-3 text-[10px] text-muted">
+ <span className="flex items-center gap-1"><Compass size={12} className="text-primary" /> BEARING: {sweepAngle}°</span>
+ <span className="text-growth">LIDAR: ACTIVE</span>
+ </div>
+ </div>
 
-      <div className="flex-1 grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-gray-800">
-        
-        {/* RADAR CANVAS DISPLAY */}
-        <div className="md:col-span-2 relative p-4 flex items-center justify-center bg-[#07090E] min-h-[340px] overflow-hidden">
-          {/* Grid Background */}
-          <div className="absolute inset-0 bg-[linear-gradient(rgba(0,229,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(0,229,255,0.03)_1px,transparent_1px)] bg-[size:25px_25px]"></div>
+ <div className="flex-1 grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-gray-800">
+ 
+ {/* RADAR CANVAS DISPLAY */}
+ <div className="md:col-span-2 relative p-4 flex items-center justify-center bg-sunken min-h-[340px] overflow-hidden">
+ {/* Grid Background */}
+ <div className="absolute inset-0 bg-[linear-gradient(rgba(0,229,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(0,229,255,0.03)_1px,transparent_1px)] bg-[size:25px_25px]"></div>
 
-          {/* Radar Circles */}
-          <div className="relative w-72 h-72 rounded-full border border-cyan-500/30 flex items-center justify-center shadow-[0_0_30px_rgba(0,229,255,0.05)]">
-            <div className="absolute w-56 h-56 rounded-full border border-cyan-500/20"></div>
-            <div className="absolute w-40 h-40 rounded-full border border-cyan-500/20"></div>
-            <div className="absolute w-24 h-24 rounded-full border border-cyan-500/25"></div>
-            <div className="absolute w-8 h-8 rounded-full border border-[#D4AF37]/50 bg-[#D4AF37]/10 flex items-center justify-center">
-              <div className="w-2 h-2 rounded-full bg-[#F6E076]"></div>
-            </div>
+ {/* Radar Circles */}
+ <div className="relative w-72 h-72 rounded-full border border-edge flex items-center justify-center shadow-none">
+ <div className="absolute w-56 h-56 rounded-full border border-edge"></div>
+ <div className="absolute w-40 h-40 rounded-full border border-edge"></div>
+ <div className="absolute w-24 h-24 rounded-full border border-edge"></div>
+ <div className="absolute w-8 h-8 rounded-full bg-primary flex items-center justify-center">
+ <div className="w-2 h-2 rounded-full bg-primary"></div>
+ </div>
 
-            {/* Crosshairs */}
-            <div className="absolute w-full h-[1px] bg-cyan-500/20"></div>
-            <div className="absolute h-full w-[1px] bg-cyan-500/20"></div>
+ {/* Crosshairs */}
+ <div className="absolute w-full h-[1px] bg-raised"></div>
+ <div className="absolute h-full w-[1px] bg-raised"></div>
 
-            {/* Radar Sweep Ray */}
-            <div
-              className="absolute w-36 h-36 top-0 right-0 origin-bottom-left pointer-events-none"
-              style={{
-                transform: `rotate(${sweepAngle}deg)`,
-                background: 'conic-gradient(from 180deg at 0% 100%, rgba(0, 229, 255, 0.25) 0deg, transparent 45deg)',
-              }}
-            ></div>
+ {/* Radar Sweep Ray */}
+ <div
+ className="absolute w-36 h-36 top-0 right-0 origin-bottom-left pointer-events-none"
+ style={{
+ transform: `rotate(${sweepAngle}deg)`,
+ background: 'conic-gradient(from 180deg at 0% 100%, rgba(0, 229, 255, 0.25) 0deg, transparent 45deg)',
+ }}
+ ></div>
 
-            {/* Contacts Plotted */}
-            {contacts.map((c) => {
-              const isSelected = selectedContact?.id === c.id;
-              const colorClass = 
-                c.type === 'friendly' ? 'bg-green-400 border-green-300 shadow-[0_0_8px_rgba(74,222,128,0.8)]' :
-                c.type === 'hostile' ? 'bg-red-500 border-red-400 shadow-[0_0_8px_rgba(239,68,68,0.8)]' :
-                c.type === 'anomaly' ? 'bg-[#F6E076] border-yellow-300 shadow-[0_0_8px_rgba(246,224,118,0.8)]' :
-                'bg-gray-400 border-gray-300';
+ {/* Contacts Plotted */}
+ {contacts.map((c) => {
+ const isSelected = selectedContact?.id === c.id;
+ const colorClass = 
+ c.type === 'friendly' ? 'bg-growth-soft border-growth-soft shadow-none' :
+ c.type === 'hostile' ? 'bg-red-500 border-red-500/40 shadow-none' :
+ c.type === 'anomaly' ? 'bg-primary shadow-none' :
+ 'bg-edge border-edge-strong';
 
-              return (
-                <button
-                  key={c.id}
-                  onClick={() => setSelectedContact(c)}
-                  className={`absolute w-3.5 h-3.5 rounded-full border transform -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-transform hover:scale-150 ${colorClass} ${isSelected ? 'ring-2 ring-white scale-125' : ''}`}
-                  style={{ left: `${c.x}%`, top: `${c.y}%` }}
-                  title={`${c.name} (${c.type.toUpperCase()})`}
-                  aria-label={`Contact ${c.name}`}
-                />
-              );
-            })}
-          </div>
+ return (
+ <button
+ key={c.id}
+ onClick={() => setSelectedContact(c)}
+ className={`absolute w-3.5 h-3.5 rounded-full border transform -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-transform hover:scale-150 ${colorClass} ${isSelected ? 'ring-2 ring-white scale-125' : ''}`}
+ style={{ left: `${c.x}%`, top: `${c.y}%` }}
+ title={`${c.name} (${c.type.toUpperCase()})`}
+ aria-label={`Contact ${c.name}`}
+ />
+ );
+ })}
+ </div>
 
-          <div className="absolute bottom-3 left-3 text-[10px] font-mono text-gray-500">
-            RANGE: 5,000 KM · AZIMUTH ZERO ALIGNED
-          </div>
-        </div>
+ <div className="absolute bottom-3 left-3 text-[10px] text-muted">
+ RANGE: 5,000 KM · AZIMUTH ZERO ALIGNED
+ </div>
+ </div>
 
-        {/* CONTACT INSPECTOR & TELEMETRY */}
-        <div className="p-4 bg-[#080B12] flex flex-col justify-between space-y-4">
-          <div className="space-y-4">
-            <h3 className="text-xs font-bold text-gray-300 tracking-wider uppercase flex items-center gap-2">
-              <Crosshair size={14} className="text-[#00E5FF]" /> Telemetry & Target Vector
-            </h3>
+ {/* CONTACT INSPECTOR & TELEMETRY */}
+ <div className="p-4 bg-sunken flex flex-col justify-between space-y-4">
+ <div className="space-y-4">
+ <h3 className="text-xs font-bold text-ink tracking-wider uppercase flex items-center gap-2">
+ <Crosshair size={14} className="text-muted" /> Telemetry & Target Vector
+ </h3>
 
-            {selectedContact ? (
-              <div className="p-3 bg-[#0F131E] rounded-lg border border-gray-800 space-y-2.5 font-mono text-xs">
-                <div className="flex justify-between items-center">
-                  <span className="text-white font-bold">{selectedContact.name}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ${
-                    selectedContact.type === 'friendly' ? 'bg-green-950 text-green-400 border border-green-800' :
-                    selectedContact.type === 'anomaly' ? 'bg-amber-950 text-[#F6E076] border border-amber-800' :
-                    'bg-gray-800 text-gray-300'
-                  }`}>
-                    {selectedContact.type}
-                  </span>
-                </div>
+ {selectedContact ? (
+ <div className="p-3 bg-page-soft rounded-card border border-subtle space-y-2.5 text-xs">
+ <div className="flex justify-between items-center">
+ <span className="text-white font-bold">{selectedContact.name}</span>
+ <span className={`text-[10px] px-1.5 py-0.5 rounded-card font-bold uppercase ${
+ selectedContact.type === 'friendly' ? 'bg-growth-soft text-growth border border-growth-soft' :
+ selectedContact.type === 'anomaly' ? 'bg-primary-soft text-primary border border-primary' :
+ 'bg-raised text-ink'
+ }`}>
+ {selectedContact.type}
+ </span>
+ </div>
 
-                <div className="grid grid-cols-2 gap-2 text-[11px] pt-1 border-t border-gray-800 text-gray-400">
-                  <div>
-                    <span className="block text-gray-600">DISTANCE</span>
-                    <span className="text-white font-bold">{selectedContact.distance_km} km</span>
-                  </div>
-                  <div>
-                    <span className="block text-gray-600">BEARING</span>
-                    <span className="text-white font-bold">{selectedContact.bearing}°</span>
-                  </div>
-                  <div>
-                    <span className="block text-gray-600">VECTOR</span>
-                    <span className="text-cyan-400">STATIONARY</span>
-                  </div>
-                  <div>
-                    <span className="block text-gray-600">IFF CODE</span>
-                    <span className="text-amber-400">{selectedContact.id}</span>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="text-gray-500 text-xs font-mono">Select a blip on radar to inspect.</div>
-            )}
+ <div className="grid grid-cols-2 gap-2 text-[11px] pt-1 border-t border-subtle text-muted">
+ <div>
+ <span className="block text-dim">DISTANCE</span>
+ <span className="text-white font-bold">{selectedContact.distance_km} km</span>
+ </div>
+ <div>
+ <span className="block text-dim">BEARING</span>
+ <span className="text-white font-bold">{selectedContact.bearing}°</span>
+ </div>
+ <div>
+ <span className="block text-dim">VECTOR</span>
+ <span className="text-muted">STATIONARY</span>
+ </div>
+ <div>
+ <span className="block text-dim">IFF CODE</span>
+ <span className="text-primary">{selectedContact.id}</span>
+ </div>
+ </div>
+ </div>
+ ) : (
+ <div className="text-muted text-xs">Select a blip on radar to inspect.</div>
+ )}
 
-            {/* Quick Tactical Command from Radar */}
-            <div className="space-y-2">
-              <div className="text-[10px] text-gray-500 font-mono">RADAR LOCK DIRECTIVE</div>
-              <button
-                onClick={() => {
-                  if (selectedContact) {
-                    const event = new CustomEvent('tactical-preset', {
-                      detail: `Target lock on ${selectedContact.name} (${selectedContact.id}) at bearing ${selectedContact.bearing} deg. Calculate trajectory.`,
-                    });
-                    window.dispatchEvent(event);
-                  }
-                }}
-                className="w-full py-2 bg-[#171D2B] hover:bg-[#20293D] border border-cyan-500/40 text-cyan-300 text-xs font-mono font-bold rounded transition-colors flex items-center justify-center gap-2"
-              >
-                <Crosshair size={13} /> LOCK TARGET VECTOR
-              </button>
-            </div>
-          </div>
+ {/* Quick Tactical Command from Radar */}
+ <div className="space-y-2">
+ <div className="text-[10px] text-muted">RADAR LOCK DIRECTIVE</div>
+ <button
+ onClick={() => {
+ if (selectedContact) {
+ const event = new CustomEvent('tactical-preset', {
+ detail: `Target lock on ${selectedContact.name} (${selectedContact.id}) at bearing ${selectedContact.bearing} deg. Calculate trajectory.`,
+ });
+ window.dispatchEvent(event);
+ }
+ }}
+ className="w-full py-2 bg-raised hover:bg-raised border border-edge text-muted text-xs font-bold rounded-card transition-colors flex items-center justify-center gap-2"
+ >
+ <Crosshair size={13} /> LOCK TARGET VECTOR
+ </button>
+ </div>
+ </div>
 
-          <div className="p-2.5 bg-black/40 rounded border border-gray-800 text-[10px] text-gray-400 font-mono flex items-center gap-2">
-            <Shield size={14} className="text-green-400 shrink-0" />
+ <div className="p-2.5 bg-black/40 rounded-card border border-subtle text-[10px] text-muted flex items-center gap-2">
+ <Shield size={14} className="text-growth shrink-0" />
             <span>Moccasin signature dampener active: ship blip masked from hostile sensors.</span>
           </div>
         </div>
