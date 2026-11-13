@@ -1044,10 +1044,13 @@ app.get('/api/direk/movie/status', (_req: Request, res: Response) => {
   const backends = narrationBackends();
   res.json({
     available: true,
-    narration: backends.cloud || backends.offline,
+    narration: backends.fish || backends.cloud || backends.tagalog || backends.offline,
+    narration_fish: backends.fish,
     narration_cloud: backends.cloud,
+    narration_tagalog: backends.tagalog,
     narration_offline: backends.offline,
     piper_voice: backends.piper_voice,
+    tagalog_model: backends.tagalog_model,
     tts_model: TTS_MODEL,
     voices: TTS_VOICES,
     moods: MOODS,

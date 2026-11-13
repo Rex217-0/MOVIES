@@ -2,10 +2,12 @@
  * Movie Creator: turn a one-line brief into a real, downloadable short film.
  *
  * Everything here runs locally with ffmpeg except the two things that need a
- * model: the screenplay (a text model) and the narration (Gemini TTS, which is
- * available on the free tier). The pictures are drawn procedurally from the
- * scene's mood, so no image model and no ComfyUI are required for a movie to
- * come out. When ComfyUI *is* running the shots use its images instead.
+ * model: the screenplay (a text model) and the narration. Narration tries, in
+ * order, Fish Audio (best Tagalog, needs a key), the cloud voice, Meta's offline
+ * Tagalog voice (free, CPU, real Tagalog) and Piper. The pictures are drawn
+ * procedurally from the scene's mood, so no image model and no ComfyUI are
+ * required for a movie to come out. When ComfyUI *is* running the shots use its
+ * images instead.
  *
  * The output is a normal MP4 with narration, a music bed, titles and credits,
  * saved into the asset store so it can be downloaded from the UI.
@@ -301,14 +303,87 @@ async function geminiSpeech(text: string, voice: TtsVoice): Promise<Buffer> {
 }
 
 // ---------------------------------------------------------------------------
-// Offline backup voice (Piper)
+// Fish Audio (cloud, real Tagalog and voice cloning)
 //
-// The cloud voice has a daily cap. Piper runs on the machine, has no quota and
-// needs no network, so it is the second voice in the chain. It only kicks in
-// when the cloud voice refuses, and the film says which one spoke.
+// Fish Audio is the best-sounding Tagalog voice: it is trained on Filipino and
+// can clone a reference voice from a `reference_id`. It needs an API key, so it
+// is optional; when the key is absent the offline Tagalog voice takes over.
 // ---------------------------------------------------------------------------
 
-export type NarrationSource = 'gemini' | 'piper' | 'none';
+const FISH_API = process.env.FISH_AUDIO_API_URL || 'https://api.fish.audio';
+
+export function fishConfigured(): boolean {
+  return Boolean(process.env.FISH_AUDIO_API_KEY) && process.env.FISH_AUDIO_DISABLE !== '1';
+}
+
+/** One line of narration from Fish Audio, as a WAV. */
+export async function fishSpeech(text: string): Promise<Buffer> {
+  if (!process.env.FISH_AUDIO_API_KEY) throw new Error('Kailangan ng FISH_AUDIO_API_KEY.');
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${process.env.FISH_AUDIO_API_KEY}`,
+    'Content-Type': 'application/json',
+  };
+  const body: Record<string, unknown> = {
+    text,
+    format: 'wav',
+    latency: process.env.FISH_AUDIO_LATENCY || 'normal',
+  };
+  if (process.env.FISH_AUDIO_REFERENCE_ID) body.reference_id = process.env.FISH_AUDIO_REFERENCE_ID;
+  if (process.env.FISH_AUDIO_MODEL) body.model = process.env.FISH_AUDIO_MODEL;
+
+  let lastError: any = null;
+  for (const wait of [0, 4000, 12000]) {
+    if (wait) await sleep(wait);
+    try {
+      const res = await fetch(`${FISH_API}/v1/tts`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(120000),
+      });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '');
+        const error: any = new Error(`Fish Audio ${res.status}: ${detail.slice(0, 200)}`);
+        if (res.status === 429 || res.status >= 500) {
+          lastError = error;
+          continue;
+        }
+        throw error;
+      }
+      const audio = Buffer.from(await res.arrayBuffer());
+      if (audio.length < 256) throw new Error('Walang audio na ibinalik ang Fish Audio.');
+      return audio;
+    } catch (error: any) {
+      lastError = error;
+      if (!retryableTts(error?.message || '')) throw error;
+    }
+  }
+  throw lastError || new Error('Fish Audio failed');
+}
+
+// ---------------------------------------------------------------------------
+// Offline Tagalog voice (Meta MMS VITS)
+//
+// Meta's MMS text-to-speech is a small VITS model with a Filipino (Tagalog)
+// checkpoint. It runs on the CPU several times faster than real time, needs no
+// key and no network once cached, and speaks actual Tagalog — unlike Piper, which
+// only has English voices and reads Tagalog with English phonemes.
+// ---------------------------------------------------------------------------
+
+export type NarrationSource = 'fish' | 'gemini' | 'tagalog' | 'piper' | 'none';
+
+const TAGALOG_VOICES: Record<string, string> = {
+  tagalog: 'facebook/mms-tts-tgl',
+  filipino: 'facebook/mms-tts-tgl',
+};
+
+/** The Tagalog model id, when the offline Tagalog voice is usable. */
+export function tagalogVoice(): string | null {
+  if (process.env.TTS_TAGALOG_DISABLE === '1') return null;
+  const script = process.env.TTS_TAGALOG_SCRIPT || path.join(process.cwd(), 'scripts', 'tagalog_tts.py');
+  if (!fs.existsSync(script)) return null;
+  return TAGALOG_VOICES[(process.env.TTS_TAGALOG_MODEL || 'tagalog').toLowerCase()] || process.env.TTS_TAGALOG_MODEL!;
+}
 
 /** The Piper binary and voice file, when one is configured and present. */
 export function piperCommand(): { bin: string; voice: string } | null {
@@ -319,7 +394,7 @@ export function piperCommand(): { bin: string; voice: string } | null {
   return { bin, voice };
 }
 
-// Once the cloud voice reports a quota error it will keep reporting it for the
+// Once a cloud voice reports a quota error it will keep reporting it for the
 // rest of the day, so remember that and go straight to the offline voice for
 // the remaining lines instead of paying the retry delay on every one.
 let cloudExhausted = false;
@@ -327,6 +402,39 @@ let cloudExhausted = false;
 /** Forget the cloud-voice circuit breaker; called at the start of a render. */
 export function resetNarration(): void {
   cloudExhausted = false;
+}
+
+/** One line of narration from the offline Tagalog voice. */
+export async function tagalogSpeech(text: string): Promise<Buffer> {
+  const model = tagalogVoice();
+  if (!model) throw new Error('Walang available na offline na Tagalog na boses.');
+  const python = process.env.TTS_PYTHON || 'python3';
+  const script = process.env.TTS_TAGALOG_SCRIPT || path.join(process.cwd(), 'scripts', 'tagalog_tts.py');
+  const out = path.join(os.tmpdir(), `direk-tgl-${Date.now()}-${Math.random().toString(36).slice(2)}.wav`);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = execFile(
+        python,
+        [script, out],
+        { maxBuffer: 1 << 24, timeout: 600000, env: { ...process.env, TTS_TAGALOG_MODEL: model } },
+        (error, _stdout, stderr) => {
+          if (error) {
+            reject(new Error(String(stderr || error.message || 'tagalog tts failed').trim().split('\n').slice(-1)[0]));
+            return;
+          }
+          resolve();
+        },
+      );
+      child.stdin?.end(text);
+    });
+    return fs.readFileSync(out);
+  } finally {
+    try {
+      fs.rmSync(out, { force: true });
+    } catch {
+      /* the temp file is disposable */
+    }
+  }
 }
 
 /** One line of narration from the offline voice. */
@@ -361,11 +469,28 @@ export interface NarrationLine {
 }
 
 /**
- * Narration for one line, from the first voice that answers: the cloud voice,
- * then the offline one. Returns null when neither works, and the shot then
- * carries the line as a caption instead.
+ * Narration for one line, from the first voice that answers. The order is:
+ * Fish Audio (best Tagalog, needs a key), then Meta's offline Tagalog voice
+ * (free, real Tagalog, no quota), then the cloud voice, then Piper. The Tagalog
+ * voice comes before the cloud voice because the film is in Tagalog and the
+ * cloud voice is a general-purpose one with a daily cap. Returns null when none
+ * works, and the shot then carries the line as a caption instead.
  */
 export async function narrate(text: string, voice: TtsVoice = 'Kore'): Promise<NarrationLine | null> {
+  if (fishConfigured()) {
+    try {
+      return { buffer: await fishSpeech(text), source: 'fish' };
+    } catch (error: any) {
+      if (retryableTts(error?.message || '')) cloudExhausted = true;
+    }
+  }
+  if (tagalogVoice()) {
+    try {
+      return { buffer: await tagalogSpeech(text), source: 'tagalog' };
+    } catch {
+      /* fall through to the cloud voice */
+    }
+  }
   if (ttsConfigured() && !cloudExhausted) {
     try {
       return { buffer: await geminiSpeech(text, voice), source: 'gemini' };
@@ -380,10 +505,24 @@ export async function narrate(text: string, voice: TtsVoice = 'Kore'): Promise<N
   }
 }
 
-/** The backup voice the app will use, for the status endpoint. */
-export function narrationBackends(): { cloud: boolean; offline: boolean; piper_voice?: string } {
+/** The voices the app can use, for the status endpoint. */
+export function narrationBackends(): {
+  fish: boolean;
+  cloud: boolean;
+  tagalog: boolean;
+  offline: boolean;
+  piper_voice?: string;
+  tagalog_model?: string;
+} {
   const cmd = piperCommand();
-  return { cloud: ttsConfigured(), offline: Boolean(cmd), piper_voice: cmd?.voice };
+  return {
+    fish: fishConfigured(),
+    cloud: ttsConfigured(),
+    tagalog: Boolean(tagalogVoice()),
+    offline: Boolean(cmd),
+    piper_voice: cmd?.voice,
+    tagalog_model: tagalogVoice() || undefined,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -704,7 +843,12 @@ export async function renderMovie(
     });
 
     onProgress({ stage: 'Tapos', percent: 100 });
-    const voiceLabel = used === 'gemini' ? 'Gemini TTS' : used === 'piper' ? 'offline na boses (Piper)' : 'wala';
+    const voiceLabel =
+      used === 'fish' ? 'Fish Audio (Tagalog)'
+        : used === 'tagalog' ? 'Tagalog na boses (MMS, offline)'
+          : used === 'gemini' ? 'Gemini TTS'
+            : used === 'piper' ? 'offline na boses (Piper)'
+              : 'wala';
     return {
       asset,
       file: finalFile,

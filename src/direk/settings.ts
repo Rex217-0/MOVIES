@@ -41,6 +41,14 @@ export interface DirekSettings {
   tts_piper_bin?: string;
   /** Piper voice model file (.onnx) used by the offline backup voice. */
   tts_piper_voice?: string;
+  /** Fish Audio API key (cloud Tagalog voice, best quality). */
+  fish_audio_api_key?: string;
+  /** Fish Audio reference voice id, for a cloned voice. */
+  fish_audio_reference_id?: string;
+  /** Fish Audio model id (defaults to the provider default). */
+  fish_audio_model?: string;
+  /** Offline Tagalog model id (defaults to facebook/mms-tts-tgl). */
+  tts_tagalog_model?: string;
 }
 
 /** Settings key -> environment variable. */
@@ -58,6 +66,10 @@ const ENV_MAP: Record<keyof DirekSettings, string> = {
   ollama_model: 'OLLAMA_MODEL',
   tts_piper_bin: 'TTS_PIPER_BIN',
   tts_piper_voice: 'TTS_PIPER_VOICE',
+  fish_audio_api_key: 'FISH_AUDIO_API_KEY',
+  fish_audio_reference_id: 'FISH_AUDIO_REFERENCE_ID',
+  fish_audio_model: 'FISH_AUDIO_MODEL',
+  tts_tagalog_model: 'TTS_TAGALOG_MODEL',
 };
 
 export function configPath(): string {

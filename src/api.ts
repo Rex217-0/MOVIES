@@ -393,7 +393,7 @@ export interface MovieJobView {
   scenes?: number;
   seconds?: number;
   narrated?: boolean;
-  voiceSource?: 'gemini' | 'piper' | 'none';
+  voiceSource?: 'fish' | 'gemini' | 'tagalog' | 'piper' | 'none';
   note?: string;
   asset?: { name: string; bytes: number; kind: string; title: string };
   error?: string;
@@ -404,9 +404,12 @@ export interface MovieJobView {
 export interface MovieStatus {
   available: boolean;
   narration: boolean;
+  narration_fish: boolean;
   narration_cloud: boolean;
+  narration_tagalog: boolean;
   narration_offline: boolean;
   piper_voice?: string;
+  tagalog_model?: string;
   tts_model: string;
   voices: string[];
   moods: string[];

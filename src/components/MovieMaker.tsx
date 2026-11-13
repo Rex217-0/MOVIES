@@ -90,13 +90,17 @@ export function MovieMaker() {
           </div>
         </div>
         <div className="mt-4 flex flex-wrap gap-2 text-[11px]">
-          <span className={`rounded-pill border px-2.5 py-1 font-medium ${status?.narration_cloud ? 'border-growth-soft bg-growth-soft/15 text-growth' : 'border-subtle bg-raised text-muted'}`}>
+          <span className={`rounded-pill border px-2.5 py-1 font-medium ${status?.narration_tagalog ? 'border-growth-soft bg-growth-soft/15 text-growth' : 'border-subtle bg-raised text-muted'}`}>
+            <Mic className="mr-1 inline h-3 w-3" />
+            {status?.narration_tagalog ? 'Tagalog na boses (libre, offline)' : 'Tagalog na boses: hindi aktibo'}
+          </span>
+          <span className={`rounded-pill border px-2.5 py-1 font-medium ${status?.narration_fish ? 'border-growth-soft bg-growth-soft/15 text-growth' : 'border-subtle bg-raised text-muted'}`}>
+            <Mic className="mr-1 inline h-3 w-3" />
+            {status?.narration_fish ? 'Fish Audio: aktibo' : 'Fish Audio: kailangan ng key'}
+          </span>
+          <span className={`rounded-pill border px-2.5 py-1 font-medium ${status?.narration_cloud ? 'border-primary-soft bg-primary-soft/20 text-primary' : 'border-subtle bg-raised text-muted'}`}>
             <Mic className="mr-1 inline h-3 w-3" />
             {status?.narration_cloud ? `Cloud na boses: ${status.tts_model}` : 'Cloud na boses: hindi aktibo'}
-          </span>
-          <span className={`rounded-pill border px-2.5 py-1 font-medium ${status?.narration_offline ? 'border-primary-soft bg-primary-soft/20 text-primary' : 'border-subtle bg-raised text-muted'}`}>
-            <Mic className="mr-1 inline h-3 w-3" />
-            {status?.narration_offline ? 'Backup: offline na boses (walang quota)' : 'Backup: wala pang naka-set na offline na boses'}
           </span>
           <span className="rounded-pill border border-subtle bg-raised px-2.5 py-1 text-muted">
             <Film className="mr-1 inline h-3 w-3" />
@@ -104,8 +108,9 @@ export function MovieMaker() {
           </span>
         </div>
         <p className="mt-2 text-[11px] text-dim">
-          Kapag nauubos ang cloud quota, awtomatikong lilipat sa offline na boses.
-          Kapag wala ang dalawa, nakasulat pa rin ang kuwento sa video (captions) — hindi tumitigil ang pelikula.
+          Ang Tagalog na boses ay libre at tumatakbo sa CPU — hindi ito nauubos. Kung may Fish Audio key, iyon ang
+          mauuna. Susunod ang cloud na boses at Piper. Kapag wala ang lahat, nakasulat pa rin ang kuwento sa video
+          (captions) — hindi tumitigil ang pelikula.
         </p>
       </header>
 
@@ -164,7 +169,7 @@ export function MovieMaker() {
             </select>
           </div>
           <div>
-            <label className="text-xs font-medium text-muted" htmlFor="voice">Boses (cloud)</label>
+            <label className="text-xs font-medium text-muted" htmlFor="voice">Boses (cloud; ang Tagalog ay awtomatiko)</label>
             <select
               id="voice"
               value={voice}

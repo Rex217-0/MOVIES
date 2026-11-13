@@ -141,3 +141,33 @@ test('wrapText never returns more than four lines', () => {
   const long = Array.from({ length: 120 }, (_, i) => `salita${i}`).join(' ');
   assert.ok(wrapText(long, 20).split('\n').length <= 4);
 });
+
+test('the offline Tagalog voice is on by default and names a Filipino model', async () => {
+  const { tagalogVoice, narrationBackends } = await import('./movie.ts');
+  assert.equal(tagalogVoice(), 'facebook/mms-tts-tgl');
+  assert.equal(narrationBackends().tagalog, true);
+});
+
+test('the offline Tagalog voice can be turned off', async () => {
+  const { tagalogVoice } = await import('./movie.ts');
+  const before = process.env.TTS_TAGALOG_DISABLE;
+  process.env.TTS_TAGALOG_DISABLE = '1';
+  try {
+    assert.equal(tagalogVoice(), null);
+  } finally {
+    if (before === undefined) delete process.env.TTS_TAGALOG_DISABLE;
+    else process.env.TTS_TAGALOG_DISABLE = before;
+  }
+});
+
+test('Fish Audio is only offered when a key is present', async () => {
+  const { fishConfigured, narrationBackends } = await import('./movie.ts');
+  const before = process.env.FISH_AUDIO_API_KEY;
+  delete process.env.FISH_AUDIO_API_KEY;
+  try {
+    assert.equal(fishConfigured(), false);
+    assert.equal(narrationBackends().fish, false);
+  } finally {
+    if (before !== undefined) process.env.FISH_AUDIO_API_KEY = before;
+  }
+});
