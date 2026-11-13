@@ -9,13 +9,24 @@ import { DirectorsChair } from './components/DirectorsChair';
 import { LoraStudio } from './components/LoraStudio';
 import { SetupModal } from './components/SetupModal';
 import { direkStatus } from './api';
-import { 
-  ShieldAlert, Sparkles, Radio, BrainCircuit, 
-  Layers, Terminal, Award, Video, Wand2, Film, Clapperboard, Boxes, FolderCog
-} from 'lucide-react';
+import { Sparkles, Radio, Terminal, Video, Wand2, Film, Clapperboard, Boxes, FolderCog } from 'lucide-react';
+
+type TabId = 'direk' | 'lora' | 'cockpit' | 'radar' | 'video' | 'image' | 'vault';
+
+type Tab = { id: TabId; label: string; icon: React.ComponentType<{ size?: number; className?: string }> };
+
+const TABS: Tab[] = [
+  { id: 'direk', label: 'Movie Robo', icon: Clapperboard },
+  { id: 'lora', label: 'LoRA Studio', icon: Boxes },
+  { id: 'cockpit', label: 'Battle Room', icon: Terminal },
+  { id: 'radar', label: 'Radar', icon: Radio },
+  { id: 'video', label: 'Video', icon: Video },
+  { id: 'image', label: 'Image', icon: Wand2 },
+  { id: 'vault', label: 'Vault', icon: Film },
+];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'direk' | 'lora' | 'cockpit' | 'radar' | 'video' | 'image' | 'vault'>('direk');
+  const [activeTab, setActiveTab] = useState<TabId>('direk');
   const [isCognitiveModalOpen, setIsCognitiveModalOpen] = useState(false);
   const [isSetupOpen, setIsSetupOpen] = useState(false);
   const [textModel, setTextModel] = useState<string>('');
@@ -38,136 +49,63 @@ export default function App() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#020306] text-gray-200 flex flex-col font-sans selection:bg-[#D4AF37]/30 selection:text-white">
+    <div className="flex min-h-screen flex-col bg-page text-ink">
       {/* TOP COMMAND DECK BAR */}
-      <header className="border-b border-gray-800/80 bg-[#07090F]/90 backdrop-blur-md px-4 py-2.5 flex flex-wrap gap-3 justify-between items-center z-20">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#D4AF37] to-[#F6E076] p-[1px] shadow-[0_0_15px_rgba(212,175,55,0.3)]">
-            <div className="w-full h-full bg-[#07080C] rounded-lg flex items-center justify-center">
-              <Clapperboard className="w-4 h-4 text-[#F6E076]" />
+      <header className="panel-blur sticky top-0 z-20 border-b border-subtle">
+        <div className="mx-auto flex max-w-[1700px] flex-wrap items-center justify-between gap-3 px-4 py-2.5">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-primary text-primary-ink">
+              <Clapperboard className="h-4 w-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-[15px] font-bold tracking-tight text-ink">MOVIE CREATOR</h1>
+                <span className="rounded-pill bg-primary-soft px-2 py-0.5 text-[10px] font-semibold text-primary">
+                  Free suite
+                </span>
+              </div>
+              <p className="text-[11px] text-dim">
+                AI director · ideya hanggang publish
+              </p>
             </div>
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-sm font-bold text-white tracking-wider uppercase font-mono">
-                MOVIE CREATOR
-              </h1>
-              <span className="flex items-center gap-1 text-[10px] font-mono font-bold text-[#F6E076] bg-[#D4AF37]/15 px-2 py-0.5 rounded border border-[#D4AF37]/40">
-                <Award size={11} /> VIP SUITE
-              </span>
-            </div>
-            <p className="text-[10px] text-gray-400 font-mono">
-              AI Movie Director · Pilot Cockpit · Ideya hanggang Publish
-            </p>
+
+          <nav className="flex flex-wrap items-center gap-1">
+            {TABS.map(t => {
+              const Icon = t.icon;
+              const active = activeTab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setActiveTab(t.id)}
+                  className={`flex items-center gap-1.5 rounded-pill px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    active
+                      ? 'bg-primary text-primary-ink'
+                      : 'text-muted hover:bg-raised hover:text-ink'
+                  }`}
+                >
+                  <Icon size={13} />
+                  <span>{t.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="flex items-center gap-2">
+            <button onClick={() => setIsSetupOpen(true)} className="btn-ghost flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold">
+              <FolderCog size={13} />
+              <span>Setup</span>
+            </button>
+            <button onClick={() => setIsCognitiveModalOpen(true)} className="btn-primary flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold">
+              <Sparkles size={13} />
+              <span>Matrix</span>
+            </button>
           </div>
-        </div>
-
-        {/* NAVIGATION & MODE TABS */}
-        <div className="flex items-center gap-1 bg-[#0c101a] p-1 rounded-lg border border-gray-800 flex-wrap">
-          <button
-            onClick={() => setActiveTab('direk')}
-            className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all flex items-center gap-1.5 ${
-              activeTab === 'direk'
-                ? 'bg-[#241a0b] text-[#F6E076] shadow-[0_0_10px_rgba(246,224,118,0.25)] border border-[#F6E076]/40'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <Clapperboard size={13} />
-            <span>DIRECTOR'S CHAIR</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('lora')}
-            className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all flex items-center gap-1.5 ${
-              activeTab === 'lora'
-                ? 'bg-[#241a0b] text-[#F6E076] shadow-[0_0_10px_rgba(246,224,118,0.25)] border border-[#F6E076]/40'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <Boxes size={13} />
-            <span>LORA STUDIO</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('cockpit')}
-            className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all flex items-center gap-1.5 ${
-              activeTab === 'cockpit'
-                ? 'bg-[#182030] text-[#00E5FF] shadow-[0_0_10px_rgba(0,229,255,0.2)] border border-[#00E5FF]/40'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <Terminal size={13} />
-            <span>VIP BATTLE ROOM</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('radar')}
-            className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all flex items-center gap-1.5 ${
-              activeTab === 'radar'
-                ? 'bg-[#182030] text-[#00E5FF] shadow-[0_0_10px_rgba(0,229,255,0.2)] border border-[#00E5FF]/40'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <Radio size={13} />
-            <span>TACTICAL RADAR</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('video')}
-            className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all flex items-center gap-1.5 ${
-              activeTab === 'video'
-                ? 'bg-cyan-950/70 text-cyan-300 shadow-[0_0_10px_rgba(0,229,255,0.25)] border border-cyan-400/50'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <Video size={13} />
-            <span>VIDEO RECON</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('image')}
-            className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all flex items-center gap-1.5 ${
-              activeTab === 'image'
-                ? 'bg-amber-950/70 text-[#F6E076] shadow-[0_0_10px_rgba(246,224,118,0.25)] border border-amber-400/50'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <Wand2 size={13} />
-            <span>IMAGE MATRIX</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('vault')}
-            className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all flex items-center gap-1.5 ${
-              activeTab === 'vault'
-                ? 'bg-emerald-950/70 text-emerald-300 shadow-[0_0_10px_rgba(52,211,153,0.25)] border border-emerald-400/50'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <Film size={13} />
-            <span>RENDER VAULT (CINESTREAM)</span>
-          </button>
-
-          <button
-            onClick={() => setIsSetupOpen(true)}
-            className="px-3 py-1.5 rounded-md text-xs font-mono font-semibold text-gray-300 hover:bg-gray-800 border border-gray-700 transition-all flex items-center gap-1.5"
-          >
-            <FolderCog size={13} />
-            <span>SETUP</span>
-          </button>
-
-          <button
-            onClick={() => setIsCognitiveModalOpen(true)}
-            className="px-3 py-1.5 rounded-md text-xs font-mono font-semibold text-[#F6E076] hover:bg-[#D4AF37]/20 border border-[#D4AF37]/30 transition-all flex items-center gap-1.5"
-          >
-            <Sparkles size={13} />
-            <span>COGNITIVE MATRIX</span>
-          </button>
         </div>
       </header>
 
       {/* MAIN VIEWPORT */}
-      <main className="flex-1 p-2 sm:p-4 flex flex-col max-w-[1700px] w-full mx-auto min-h-0">
+      <main className="mx-auto flex min-h-0 w-full max-w-[1700px] flex-1 flex-col p-3 sm:p-4">
         <div className="flex-1 flex flex-col h-full min-h-[680px]">
           {activeTab === 'direk' ? (
             <DirectorsChair />
@@ -192,21 +130,16 @@ export default function App() {
       </main>
 
       {/* FOOTER BAR */}
-      <footer className="border-t border-gray-900 bg-[#05060A] px-4 py-2 text-[10px] font-mono text-gray-500 flex flex-wrap justify-between items-center gap-2">
-        <div className="flex items-center gap-4">
-          <span className="flex items-center gap-1.5 text-gray-400">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-            NEURAL PROTOCOL: {textBackend ? textBackend.toUpperCase() : 'CHECKING…'}
-          </span>
-          <span className="hidden sm:inline text-gray-600">|</span>
-          <span className="hidden sm:inline">
-            TEXT MODEL: {textModel ? textModel.toUpperCase() : '—'}
-          </span>
-          <span className="hidden sm:inline text-gray-600">|</span>
-          <span className="hidden sm:inline">SAFEMED: ACTIVE</span>
-        </div>
-        <div className="text-gray-400">
-          MOVIE CREATOR v1.0 · DIREK + PILOT SUITE
+      <footer className="border-t border-subtle px-4 py-3 text-[11px] text-dim">
+        <div className="mx-auto flex max-w-[1700px] flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-4">
+            <span className="flex items-center gap-1.5 text-muted">
+              <span className="h-1.5 w-1.5 rounded-full bg-growth"></span>
+              Model: {textBackend ? textBackend : 'checking…'}
+            </span>
+            <span className="hidden sm:inline">Text: {textModel || '—'}</span>
+          </div>
+          <div>Movie Creator v1.0 · Movie Robo + Pilot Suite</div>
         </div>
       </footer>
 

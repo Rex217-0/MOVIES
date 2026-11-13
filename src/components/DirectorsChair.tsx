@@ -83,7 +83,7 @@ export const DirectorsChair: React.FC = () => {
       const message =
         e instanceof AiUnavailableError
           ? `${e.message} (${e.code})`
-          : e?.message || 'Hindi maabot ang Direk service.';
+          : e?.message || 'Hindi maabot ang Movie Robo service.';
       setTurns(prev => [...prev, { role: 'assistant', content: message, error: message }]);
     } finally {
       setIsSending(false);
@@ -93,38 +93,36 @@ export const DirectorsChair: React.FC = () => {
   const available = status?.ok ?? false;
 
   return (
-    <div className="flex flex-col h-full bg-[#0A0C10] border border-gray-800 rounded-lg overflow-hidden shadow-[0_0_30px_rgba(212,175,55,0.15)]">
+    <div className="flex h-full flex-col overflow-hidden rounded-panel border border-subtle bg-surface">
       {/* HEADER */}
-      <div className="flex flex-wrap gap-3 justify-between items-center p-3 border-b border-gray-800 bg-[#0F1219]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-subtle bg-page-soft p-3">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#D4AF37] to-[#F6E076] p-[1px]">
-            <div className="w-full h-full bg-[#07080C] rounded-lg flex items-center justify-center">
-              <Clapperboard className="w-4 h-4 text-[#F6E076]" />
+          <div className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-primary text-primary-ink">
+              <Clapperboard className="h-4 w-4" />
             </div>
-          </div>
           <div>
-            <h2 className="text-sm font-bold text-white tracking-wider uppercase font-mono">
-              Director's Chair · Direk
+            <h2 className="text-sm font-bold text-ink">
+              Movie Robo
             </h2>
-            <p className="text-[10px] text-gray-400 font-mono">
+            <p className="text-[11px] text-dim">
               AI Movie Director · IDEYA → SCRIPT → KARAKTER → SHOT LIST → VISUAL → EDIT → PUBLISH
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 text-[10px] font-mono">
-          <span className="flex items-center gap-1.5 text-gray-400">
-            <BookOpen size={12} className="text-[#F6E076]" />
+        <div className="flex items-center gap-3 text-[11px]">
+          <span className="flex items-center gap-1.5 text-muted">
+            <BookOpen size={12} className="text-primary" />
             {status ? `${status.reference_rows.toLocaleString()} titles` : '…'}
           </span>
           <span
-            className={`flex items-center gap-1.5 px-2 py-0.5 rounded border ${
+            className={`flex items-center gap-1.5 rounded-pill border px-2 py-0.5 ${
               available
-                ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10'
-                : 'text-amber-300 border-amber-500/40 bg-amber-500/10'
+                ? 'border-growth-soft/50 bg-growth-soft/15 text-growth'
+                : 'border-primary/40 bg-primary-soft text-primary'
             }`}
           >
-            <span className={`w-1.5 h-1.5 rounded-full ${available ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+            <span className={`h-1.5 w-1.5 rounded-full ${available ? 'bg-growth' : 'bg-primary'}`} />
             {status ? (available ? status.model.toUpperCase() : 'AI UNAVAILABLE') : 'CHECKING…'}
           </span>
         </div>
@@ -132,16 +130,16 @@ export const DirectorsChair: React.FC = () => {
 
       {/* PIPELINE STRIP */}
       {status && (
-        <div className="flex flex-wrap items-center gap-1 px-3 py-2 border-b border-gray-800 bg-[#080A0E]">
+        <div className="flex flex-wrap items-center gap-1 border-b border-subtle bg-sunken px-3 py-2">
           {status.pipeline.map((stage, i) => (
             <React.Fragment key={stage.id}>
               <span
-                className="text-[9px] font-mono font-bold tracking-wider px-2 py-0.5 rounded border border-[#D4AF37]/30 text-[#F6E076]/90 bg-[#D4AF37]/5"
+                className="rounded-pill border border-edge bg-raised px-2 py-0.5 text-[10px] font-semibold tracking-wide text-muted"
                 title={stage.description}
               >
                 {stage.id}
               </span>
-              {i < status.pipeline.length - 1 && <span className="text-gray-700 text-[10px]">›</span>}
+              {i < status.pipeline.length - 1 && <span className="text-faint">›</span>}
             </React.Fragment>
           ))}
         </div>
@@ -161,16 +159,16 @@ export const DirectorsChair: React.FC = () => {
 
         {turns.length === 0 && !statusError && (
           <div className="max-w-2xl mx-auto mt-8 text-center space-y-4">
-            <Sparkles className="w-8 h-8 text-[#F6E076] mx-auto" />
-            <p className="text-sm text-gray-300 font-mono">
-              Sabihin mo kay Direk ang ideya mo. Magtatanong muna siya kung kulang ang haba o mood.
+            <Sparkles className="mx-auto h-7 w-7 text-primary" />
+            <p className="text-sm text-muted">
+              Sabihin mo kay Movie Robo ang ideya mo. Magtatanong muna siya kung kulang ang haba o mood.
             </p>
             <div className="grid sm:grid-cols-2 gap-2 pt-2">
               {STARTERS.map(s => (
                 <button
                   key={s}
                   onClick={() => send(s)}
-                  className="text-left text-[11px] font-mono text-gray-300 hover:text-white bg-[#0F1219] hover:bg-[#141926] border border-gray-800 hover:border-[#D4AF37]/40 rounded p-2.5 transition-all"
+                  className="rounded-card border border-subtle bg-page-soft p-2.5 text-left text-xs text-muted transition-colors hover:border-edge hover:text-ink"
                 >
                   {s}
                 </button>
@@ -184,15 +182,15 @@ export const DirectorsChair: React.FC = () => {
         ))}
 
         {isSending && (
-          <div className="flex items-center gap-2 text-xs font-mono text-gray-400">
-            <Loader2 size={14} className="animate-spin text-[#F6E076]" />
-            Nag-iisip si Direk…
+          <div className="flex items-center gap-2 text-xs text-dim">
+            <Loader2 size={14} className="animate-spin text-primary" />
+            Nag-iisip si Movie Robo…
           </div>
         )}
       </div>
 
       {/* COMPOSER */}
-      <div className="border-t border-gray-800 bg-[#0F1219] p-3">
+      <div className="border-t border-subtle bg-page-soft p-3">
         <div className="flex gap-2">
           <input
             value={input}
@@ -204,12 +202,12 @@ export const DirectorsChair: React.FC = () => {
               }
             }}
             placeholder="Halimbawa: Gumawa ka ng horror na kwento sa probinsya, 3 minuto, nakakakaba."
-            className="flex-1 bg-[#07080C] border border-gray-800 focus:border-[#D4AF37]/50 rounded px-3 py-2 text-sm font-mono text-gray-200 placeholder-gray-600 outline-none"
+            className="flex-1 rounded-pill border border-edge bg-sunken px-4 py-2 text-sm text-ink placeholder-faint outline-none focus:border-primary"
           />
           <button
             onClick={() => send(input)}
             disabled={isSending || !input.trim()}
-            className="px-4 py-2 rounded bg-gradient-to-br from-[#D4AF37] to-[#F6E076] text-black text-xs font-mono font-bold disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+            className="btn-primary flex items-center gap-1.5 px-4 py-2 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Send size={13} />
             SEND
@@ -228,44 +226,44 @@ const TurnBubble: React.FC<{ turn: Turn }> = ({ turn }) => {
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-[85%] rounded-lg border p-3 space-y-2 ${
+        className={`max-w-[85%] space-y-2 rounded-card border p-3 ${
           isUser
-            ? 'bg-[#141926] border-[#00E5FF]/20'
+            ? 'border-edge bg-raised'
             : turn.error
-              ? 'bg-red-500/10 border-red-500/30'
-              : 'bg-[#0F1219] border-gray-800'
+              ? 'border-red-500/40 bg-red-500/10'
+              : 'border-subtle bg-page-soft'
         }`}
       >
-        <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider">
+        <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider">
           {isUser ? (
-            <span className="text-[#00E5FF]">COMMANDER</span>
+            <span className="text-muted">You</span>
           ) : (
-            <span className="flex items-center gap-1.5 text-[#F6E076]">
-              <Clapperboard size={11} /> DIREK
+            <span className="flex items-center gap-1.5 text-primary">
+              <Clapperboard size={11} /> Movie Robo
             </span>
           )}
           {turn.genre && (
-            <span className="text-gray-500 normal-case">· genre: {turn.genre}</span>
+            <span className="text-dim normal-case">· genre: {turn.genre}</span>
           )}
         </div>
 
-        <p className={`text-sm font-mono whitespace-pre-wrap ${turn.error ? 'text-red-200' : 'text-gray-200'}`}>
+        <p className={`whitespace-pre-wrap text-sm ${turn.error ? 'text-red-200' : 'text-ink'}`}>
           {turn.content}
         </p>
 
         {turn.gate && (
-          <div className="flex items-center gap-1.5 text-[10px] font-mono text-amber-300">
+          <div className="flex items-center gap-1.5 text-[11px] text-primary">
             <ShieldAlert size={11} />
             Naghihintay ng detalye: <span className="font-bold">{turn.gate}</span>
           </div>
         )}
 
         {turn.actionError && (
-          <div className="text-[10px] font-mono text-red-300">action: {turn.actionError}</div>
+          <div className="text-[11px] text-red-300">action: {turn.actionError}</div>
         )}
 
         {turn.action && (
-          <div className="space-y-1.5 text-[10px] font-mono text-sky-300 bg-sky-500/5 border border-sky-500/20 rounded p-2">
+          <div className="space-y-1.5 rounded-card border border-subtle bg-sunken p-2 text-[11px] text-muted">
             <div className="flex items-start gap-1.5">
               <Link2 size={11} className="mt-0.5 shrink-0" />
               <span>
@@ -282,7 +280,7 @@ const TurnBubble: React.FC<{ turn: Turn }> = ({ turn }) => {
               <a
                 href={assetDownloadUrl(turn.connector.download.name)}
                 download
-                className="inline-flex items-center gap-1 text-sky-200 underline hover:text-white"
+                className="inline-flex items-center gap-1 text-primary underline hover:opacity-80"
               >
                 <Download size={11} /> {turn.connector.download.name}
               </a>
@@ -292,7 +290,7 @@ const TurnBubble: React.FC<{ turn: Turn }> = ({ turn }) => {
                 key={a.id}
                 href={assetDownloadUrl(a.name)}
                 download
-                className="block text-gray-300 underline hover:text-white"
+                className="block text-muted underline hover:text-ink"
               >
                 {a.kind} · {a.title}
               </a>
@@ -301,16 +299,16 @@ const TurnBubble: React.FC<{ turn: Turn }> = ({ turn }) => {
         )}
 
         {turn.references && turn.references.length > 0 && (
-          <div className="border-t border-gray-800 pt-2 space-y-1">
-            <div className="flex items-center gap-1.5 text-[9px] font-mono text-gray-500 uppercase tracking-wider">
+          <div className="space-y-1 border-t border-subtle pt-2">
+            <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-dim">
               <Film size={10} /> Reference titles
             </div>
             {turn.references.map((r, i) => (
-              <div key={i} className="text-[10px] font-mono text-gray-400">
-                <span className="text-gray-300">{r.title}</span>
+              <div key={i} className="text-[11px] text-muted">
+                <span className="text-ink">{r.title}</span>
                 {r.release_year ? ` (${r.release_year})` : ''} · {r.listed_in}
                 {typeof r.rating === 'number' ? ` · ★ ${r.rating.toFixed(1)}` : ''}
-                <span className="text-gray-600"> · {r.source}</span>
+                <span className="text-faint"> · {r.source}</span>
               </div>
             ))}
           </div>
@@ -321,12 +319,12 @@ const TurnBubble: React.FC<{ turn: Turn }> = ({ turn }) => {
 };
 
 const MarketSidebar: React.FC<{ market: MarketIntel }> = ({ market }) => (
-  <aside className="hidden lg:flex w-64 shrink-0 flex-col border-l border-gray-800 bg-[#080A0E] overflow-y-auto">
-    <div className="p-3 border-b border-gray-800">
-      <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold text-[#F6E076] uppercase tracking-wider">
+  <aside className="hidden w-64 shrink-0 flex-col overflow-y-auto border-l border-subtle bg-sunken lg:flex">
+    <div className="border-b border-subtle p-3">
+      <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-primary">
         <TrendingUp size={12} /> Market Intel
       </div>
-      <p className="text-[9px] font-mono text-gray-500 mt-1">Totoong box-office stats</p>
+      <p className="mt-1 text-[10px] text-dim">Totoong box-office stats</p>
     </div>
 
     <MarketSection title="Top Genres" rows={market.top_genres} />
@@ -341,20 +339,20 @@ const MarketSection: React.FC<{ title: string; rows: ShareStat[]; icon?: React.R
 }) => {
   if (!rows.length) return null;
   return (
-    <div className="p-3 border-b border-gray-800/60">
-      <div className="flex items-center gap-1.5 text-[9px] font-mono text-gray-500 uppercase tracking-wider mb-2">
+    <div className="border-b border-subtle/60 p-3">
+      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-dim">
         {icon} {title}
       </div>
       <div className="space-y-1.5">
         {rows.map((r, i) => (
-          <div key={i} className="text-[10px] font-mono">
-            <div className="flex justify-between text-gray-300">
+          <div key={i} className="text-[11px]">
+            <div className="flex justify-between text-muted">
               <span className="truncate">{r.name}</span>
-              <span className="text-[#F6E076] ml-2 shrink-0">{r.marketShare}</span>
+              <span className="ml-2 shrink-0 text-primary">{r.marketShare}</span>
             </div>
-            <div className="h-1 mt-0.5 bg-gray-800 rounded overflow-hidden">
+            <div className="mt-1 h-1 overflow-hidden rounded-pill bg-raised">
               <div
-                className="h-full bg-gradient-to-r from-[#D4AF37] to-[#F6E076]"
+                className="h-full bg-primary"
                 style={{ width: r.marketShare }}
               />
             </div>

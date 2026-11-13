@@ -131,7 +131,7 @@ export const SetupModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
           {/* AI TEXT */}
           <div className="border border-gray-800 rounded-lg p-3 space-y-3">
             <div className="text-[10px] font-mono text-[#F6E076] uppercase tracking-wider">
-              AI utak (Direk + Battle Room) — libre
+              AI utak (Movie Robo + Battle Room) — libre
             </div>
             {report && !report.text.gemini_key && (
               <div className="text-[10px] font-mono text-gray-400 leading-relaxed">
