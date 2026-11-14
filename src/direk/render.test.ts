@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isPng, toPng, ffmpegPath, concatCopy, probe } from './render.ts';
+import { isPng, toPng, ffmpegPath, concatCopy, probe, filterPath, concatListPath } from './render.ts';
 
 /** A 1x1 PNG, base64 — the smallest valid image the app ships in its tests. */
 const PNG_1x1 = Buffer.from(
@@ -81,4 +81,41 @@ test('concatCopy stitches clips with -c copy and preserves their total length', 
 
 test('concatCopy needs at least two clips', async () => {
   await assert.rejects(() => concatCopy(['one.mp4']), /dalawa/);
+});
+
+test('filterPath escapes the characters that break an ffmpeg filtergraph', () => {
+  // An unescaped drive colon makes ffmpeg read the value as a key/value pair
+  // ("Both text and text file provided"), and backslashes start escapes.
+  assert.equal(filterPath('C:\\Users\\rex\\font.ttf'), 'C\\:\\\\Users\\\\rex\\\\font.ttf');
+  assert.equal(filterPath('/usr/share/fonts/a.ttf'), '/usr/share/fonts/a.ttf');
+  assert.equal(filterPath("a'b.ttf"), "a\\'b.ttf");
+});
+
+test('concatListPath turns a Windows path into a forward-slash path', () => {
+  // The concat demuxer treats `\` as an escape, so `C:\...\clip.mp4` fails with
+  // "Impossible to open". Forward slashes work on every platform.
+  assert.equal(concatListPath('C:\\renders\\scene-1.mp4'), 'C:/renders/scene-1.mp4');
+  assert.equal(concatListPath('/tmp/renders/scene-1.mp4'), '/tmp/renders/scene-1.mp4');
+  assert.equal(concatListPath("/tmp/a'b.mp4"), "/tmp/a'\\''b.mp4");
+});
+
+test('concatCopy joins clips whose list entries use forward slashes', async () => {
+  // Emulates the Windows case: the file paths the factory holds contain
+  // backslashes, and concatCopy must normalise them before ffmpeg reads them.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concatwin-'));
+  const clip = (name: string, color: string) => {
+    const out = path.join(dir, name);
+    execFileSync(ffmpegPath(), [
+      '-y', '-loglevel', 'error',
+      '-f', 'lavfi', '-i', `color=c=${color}:s=320x240:r=30:d=1`,
+      '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+      '-shortest', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2',
+      '-t', '1', out,
+    ]);
+    // Hand back a backslash-separated path, exactly as a Windows build would.
+    return out.replace(/\//g, '\\');
+  };
+  const joined = await concatCopy([clip('a.mp4', 'red'), clip('b.mp4', 'blue')]);
+  assert.equal(joined.ext, 'mp4');
+  fs.rmSync(dir, { recursive: true, force: true });
 });

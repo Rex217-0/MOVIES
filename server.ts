@@ -59,6 +59,7 @@ import {
 } from './src/direk/llm.ts';
 import {
   renderMovie, renderFeatureScene, scriptPrompt, parseScript, fallbackScript, narrationBackends,
+  videoBackendReady, videoBackendDetail,
   TTS_MODEL, TTS_VOICES, MOODS,
   type MovieProgress, type MovieScript, type MovieOptions, type Mood, type TtsVoice,
   type NarrationSource,
@@ -83,6 +84,10 @@ import {
   routingTable, t3LocalAllowed, TIER_LABELS,
 } from './src/direk/taskRouter.ts';
 import type { AssetMeta } from './src/direk/assets.ts';
+import {
+  pilotStatus, writeScreenplay,
+  PilotUnavailable, PILOT_UNAVAILABLE, PILOT_MODEL,
+} from './src/services/pilotService.ts';
 
 dotenv.config();
 
@@ -1197,22 +1202,14 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 const featureDb = new FactoryDb();
 const featureFactory = new FeatureFactory({
-  // FEATURE_MOCK_RENDER=1 swaps in a stand-in renderer so the batch can be
-  // exercised end to end (tests, demos) without spending GPU time on 18 clips.
-  renderScene: process.env.FEATURE_MOCK_RENDER === '1'
-    ? async ({ scene, index }) => ({
-        data: Buffer.from(`mock-scene-${index}-${scene.mood}`),
-        seconds: FEATURE_SCENE_SECONDS,
-        voiced: false,
-      })
-    : async ({ scene, index }) => {
-        const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS });
-        return { data: result.data, seconds: result.seconds, voiced: result.voiced };
-      },
+  // Every scene is a real ComfyUI render. When ComfyUI cannot render the shot
+  // (unreachable, no video workflow) the scene fails with AI_UNAVAILABLE; the
+  // factory never fabricates a placeholder clip.
+  renderScene: async ({ scene, index }) => {
+    const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS });
+    return { data: result.data, seconds: result.seconds, voiced: result.voiced };
+  },
   ffmpegAvailable,
-  concat: process.env.FEATURE_MOCK_RENDER === '1'
-    ? async (files: string[]) => ({ data: Buffer.from(`mock-feature:${files.length}`) })
-    : undefined,
   // Local SQLite store for MovieJobs and SceneJobs (factory.db).
   db: featureDb,
 });
@@ -1226,10 +1223,11 @@ function featureView(job: ReturnType<FeatureFactory['create']>) {
   };
 }
 
-app.get('/api/direk/feature/status', (req: Request, res: Response) => {
+app.get('/api/direk/feature/status', async (req: Request, res: Response) => {
   const id = typeof req.query.id === 'string' ? req.query.id : '';
   const job = id ? featureFactory.refresh(id) : featureFactory.latest();
   const backends = narrationBackends();
+  const pilot = await pilotStatus();
   res.json({
     available: true,
     scenes: FEATURE_SCENES,
@@ -1241,6 +1239,14 @@ app.get('/api/direk/feature/status', (req: Request, res: Response) => {
     formats: FORMATS,
     narration_order: backends.order,
     ffmpeg: Boolean(ffmpegPath()),
+    pilot: {
+      configured: pilot.configured,
+      reachable: pilot.reachable,
+      url: pilot.url,
+      detail: pilot.detail,
+      preferred: pilot.preferred,
+      local: pilot.local,
+    },
     job: job ? featureView(job) : null,
   });
 });
@@ -1275,15 +1281,105 @@ app.post('/api/direk/feature/create', async (req: Request, res: Response) => {
   res.status(201).json({ job: featureView(job) });
 });
 
-app.post('/api/direk/feature/start', (req: Request, res: Response) => {
+// ---------------------------------------------------------------------------
+// Kaggle Pilot bridge: the external cloud worker (Qwen 2.5 3B on Kaggle) writes
+// the screenplay, the character bible and the 18-scene breakdown. It is reached
+// over a Cloudflare tunnel (KAGGLE_PILOT_URL). When the worker is down the call
+// answers an honest 503 PILOT_UNAVAILABLE — the factory never invents a script.
+// ---------------------------------------------------------------------------
+function pilotUnavailableBody(detail: string) {
+  return {
+    error: `Walang Kaggle Pilot. ${detail}`,
+    code: PILOT_UNAVAILABLE,
+    model: PILOT_MODEL,
+    detail,
+  };
+}
+
+app.get('/api/direk/feature/pilot', async (_req: Request, res: Response) => {
+  const status = await pilotStatus();
+  res.json(status);
+});
+
+app.post('/api/direk/feature/pilot', async (req: Request, res: Response) => {
   const id = typeof req.body?.id === 'string' ? req.body.id : '';
-  const job = id ? featureFactory.start(id) : undefined;
+  const job = id ? featureFactory.get(id) : undefined;
   if (!job) {
     res.status(404).json({ error: 'Walang ganoong pelikula. Gumawa muna ng concept.' });
     return;
   }
-  broadcastThought(`[FILM] Batch START · ${job.concept.title} · ${job.total} eksena`);
-  res.json({ job: featureView(job) });
+  const brief = job.concept.brief;
+  try {
+    broadcastThought(`[PILOT] Hinihingi ang script (Kaggle, o local Ollama kung wala)…`);
+    const result = await writeScreenplay(brief);
+    const updated = featureFactory.applyScript(job.id, result.script, {
+      bible: result.bible,
+      scenes: result.scenes ? { scenes: result.scenes } : undefined,
+    })!;
+    broadcastThought(`[PILOT] Script + ${result.scenes?.length ?? 0} eksena mula sa ${result.model}, nai-save sa SQLite.`);
+    res.json({
+      job: featureView(updated),
+      script_chars: result.script.length,
+      bible: Boolean(result.bible),
+      scenes: updated.scenes.length,
+      source: result.source,
+      model: result.model,
+      pilot: await pilotStatus(),
+    });
+  } catch (error: any) {
+    const detail = error instanceof PilotUnavailable ? error.detail : error?.message || 'error';
+    broadcastThought(`[PILOT] Hindi available: ${detail}`);
+    res.status(503).json(pilotUnavailableBody(detail));
+  }
+});
+
+app.post('/api/direk/feature/start', async (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : '';
+  const job = id ? featureFactory.get(id) : undefined;
+  if (!job) {
+    res.status(404).json({ error: 'Walang ganoong pelikula. Gumawa muna ng concept.' });
+    return;
+  }
+
+  // Step 1 — the screenplay. START BATCH asks the Kaggle Pilot (T3 heavy
+  // batch) for the 18-scene script and stores it in SQLite; when Kaggle is
+  // unset or down it falls back to the local Ollama (T1, real time). A Pilot
+  // that is expected (configured, or a reachable local model) but fails is a
+  // real failure, so this answers 503 PILOT_UNAVAILABLE rather than quietly
+  // switching sources. With no Pilot at all, the built-in 18-beat plan is used
+  // so the factory still runs offline.
+  try {
+    broadcastThought(`[PILOT] Hinihingi ang 18-scene script (Kaggle, o local Ollama kung wala)…`);
+    const result = await writeScreenplay(job.concept.brief);
+    featureFactory.applyScript(job.id, result.script, {
+      bible: result.bible,
+      scenes: result.scenes ? { scenes: result.scenes } : undefined,
+    });
+    broadcastThought(`[PILOT] Script + ${result.scenes?.length ?? 0} eksena mula sa ${result.model}, nai-save sa SQLite.`);
+  } catch (error: any) {
+    const detail = error instanceof PilotUnavailable ? error.detail : error?.message || 'error';
+    const status = await pilotStatus();
+    if (status.configured || status.local.reachable) {
+      broadcastThought(`[PILOT] Hindi available: ${detail}`);
+      res.status(503).json(pilotUnavailableBody(detail));
+      return;
+    }
+    broadcastThought(`[PILOT] Walang Pilot (Kaggle o local Ollama) — built-in 18-beat breakdown ang gagamitin.`);
+  }
+
+  // Step 2 — a real video backend, or every scene would fail. Answer 503 up
+  // front instead of starting 18 doomed renders.
+  if (!(await videoBackendReady())) {
+    broadcastThought(`[FILM] Batch START tinanggihan: walang video backend.`);
+    res.status(503).json({
+      ...aiUnavailable('comfyui', videoBackendDetail(), 'Walang video backend'),
+      route: classifyTask('video_render'),
+    });
+    return;
+  }
+  const started = featureFactory.start(id)!;
+  broadcastThought(`[FILM] Batch START · ${started.concept.title} · ${started.total} eksena`);
+  res.json({ job: featureView(started), pilot: await pilotStatus() });
 });
 
 app.post('/api/direk/feature/pause', (req: Request, res: Response) => {

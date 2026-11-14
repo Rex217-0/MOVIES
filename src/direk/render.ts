@@ -166,6 +166,32 @@ export async function toPng(data: Buffer): Promise<Buffer> {
   }
 }
 
+/**
+ * Escape a filesystem path for use inside an ffmpeg filtergraph value.
+ *
+ * A filtergraph is not a shell string: ffmpeg splits options on `:`, treats
+ * `\` as its own escape and quotes with `'`. A Windows path such as
+ * `C:\Windows\Fonts\arial.ttf` would otherwise be cut at the drive colon and
+ * break drawtext, so escape the backslash, the colon and the single quote
+ * before wrapping the value in single quotes. Verified against a real ffmpeg:
+ * an unescaped colon yields "Both text and text file provided".
+ */
+export function filterPath(p: string): string {
+  return p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
+}
+
+/**
+ * A filesystem path for the ffmpeg concat demuxer's list file.
+ *
+ * Unlike a filtergraph, the demuxer treats `\` as an escape, so a Windows path
+ * like `C:\Users\...\clip.mp4` fails with "Impossible to open". ffmpeg accepts
+ * forward slashes on every platform, so swap the separators and escape the
+ * single quote. Verified against a real ffmpeg.
+ */
+export function concatListPath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/'/g, "'\\''");
+}
+
 /** Write text to a file so drawtext never has to escape it. */
 function textFile(dir: string, text: string): string {
   const file = path.join(dir, 'text.txt');
@@ -236,7 +262,7 @@ export async function concatVideos(inputs: string[], width = 1280, height = 720)
     const clips: string[] = [];
     for (let i = 0; i < inputs.length; i++) clips.push(await normalize(inputs[i], dir, i, width, height, 30));
     const list = path.join(dir, 'list.txt');
-    fs.writeFileSync(list, clips.map(c => `file '${c.replace(/'/g, "'\\''")}'`).join('\n'), 'utf8');
+    fs.writeFileSync(list, clips.map(c => `file '${concatListPath(c)}'`).join('\n'), 'utf8');
     const out = path.join(dir, 'out.mp4');
     await run(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', out]);
     return await readResult(out, MP4);
@@ -260,7 +286,7 @@ export async function concatCopy(inputs: string[], dir?: string): Promise<Render
   const ownsDir = !dir;
   try {
     const list = path.join(work, 'concat-list.txt');
-    fs.writeFileSync(list, inputs.map(c => `file '${c.replace(/'/g, "'\\''")}'`).join('\n'), 'utf8');
+    fs.writeFileSync(list, inputs.map(c => `file '${concatListPath(c)}'`).join('\n'), 'utf8');
     const out = path.join(work, 'feature.mp4');
     await run(['-y', '-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-movflags', '+faststart', out]);
     return await readResult(out, MP4);
@@ -299,7 +325,7 @@ export async function imageToVideo(
     for (const image of images) clips.push(await kenBurnsClip(image, seconds, width, height));
     if (clips.length === 1) return await readResult(clips[0], MP4);
     const list = path.join(dir, 'list.txt');
-    fs.writeFileSync(list, clips.map(c => `file '${c.replace(/'/g, "'\\''")}'`).join('\n'), 'utf8');
+    fs.writeFileSync(list, clips.map(c => `file '${concatListPath(c)}'`).join('\n'), 'utf8');
     const out = path.join(dir, 'out.mp4');
     await run(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', out]);
     return await readResult(out, MP4);
@@ -354,7 +380,7 @@ export async function addText(
     const y = Y_EXPR[opts.placement ?? 'bottom'];
     const size = opts.fontSize ?? 48;
     const draw =
-      `drawtext=textfile='${file.replace(/'/g, "'\\''")}':fontfile='${fontPath().replace(/'/g, "'\\''")}':` +
+      `drawtext=textfile='${filterPath(file)}':fontfile='${filterPath(fontPath())}':` +
       `fontcolor=white:fontsize=${size}:line_spacing=10:box=1:boxcolor=black@0.45:boxborderw=18:` +
       `x=(w-text_w)/2:y=${y}`;
     await run(['-y', '-i', input, '-vf', draw, ...ENCODE, '-c:a', 'copy', out]);
@@ -390,7 +416,7 @@ export async function poster(
     const height = opts.height ?? 720;
     const titleFile = textFile(dir, title);
     const draw = (file: string, size: number, y: string, color: string) =>
-      `drawtext=textfile='${file.replace(/'/g, "'\\''")}':fontfile='${fontPath().replace(/'/g, "'\\''")}':` +
+      `drawtext=textfile='${filterPath(file)}':fontfile='${filterPath(fontPath())}':` +
       `fontcolor=${color}:fontsize=${size}:line_spacing=12:box=1:boxcolor=black@0.5:boxborderw=22:x=(w-text_w)/2:y=${y}`;
 
     const filters: string[] = [];

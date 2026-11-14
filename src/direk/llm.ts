@@ -14,7 +14,8 @@
  *
  * Configuration (environment variables):
  *   GEMINI_API_KEY   Enables the Gemini backend
- *   OLLAMA_URL       Ollama base URL, default http://127.0.0.1:11434
+ *   LOCAL_OLLAMA_URL Ollama base URL, default http://127.0.0.1:11434
+ *                    (OLLAMA_URL is accepted as an alias)
  *   OLLAMA_MODEL     Model to use, default qwen2.5:7b
  *   OLLAMA_DISABLE   Set to 1 to ignore Ollama even when it is running
  */
@@ -22,7 +23,7 @@
 export type TextBackend = 'gemini' | 'ollama' | 'none';
 
 export function ollamaUrl(): string {
-  return (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+  return (process.env.LOCAL_OLLAMA_URL || process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '');
 }
 
 export function ollamaModel(): string {

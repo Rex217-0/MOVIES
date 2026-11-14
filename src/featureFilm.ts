@@ -14,8 +14,16 @@ import type { Mood } from './movieMeta';
 /** Scenes in one feature film. */
 export const FEATURE_SCENES = 18;
 
-/** Seconds in one scene: five minutes, exactly. */
-export const FEATURE_SCENE_SECONDS = 300;
+/**
+ * Seconds in one scene: five minutes, exactly.
+ *
+ * `DIREK_SCENE_SECONDS` shortens it for tests and demos so a full 18-scene run
+ * does not spend minutes of CPU on the audio track. Production leaves it unset,
+ * so a scene is always the planned 300 seconds and the film is 90 minutes.
+ */
+const OVERRIDE = typeof process !== 'undefined' ? Number(process.env?.DIREK_SCENE_SECONDS) : NaN;
+export const FEATURE_SCENE_SECONDS =
+  Number.isFinite(OVERRIDE) && OVERRIDE > 0 ? OVERRIDE : 300;
 
 /** Seconds in the finished film: 90 minutes. */
 export const FEATURE_TOTAL_SECONDS = FEATURE_SCENES * FEATURE_SCENE_SECONDS;

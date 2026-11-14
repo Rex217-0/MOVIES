@@ -132,6 +132,24 @@ npm run lint    # tsc --noEmit
 
 Open http://localhost:3000.
 
+### Running on Windows 11 (Server-2)
+
+The target host is Windows 11 (Ryzen 7 7800X3D, 64 GB, Radeon RX 9070, Ollama on
+`http://127.0.0.1:11434`). The app runs there unchanged; the platform differences
+it already handles are:
+
+- **Ollama** — `LOCAL_OLLAMA_URL` defaults to `http://127.0.0.1:11434`, so a local
+  Ollama is the T1 Pilot fallback and the free text backend with no key. `ollama
+  pull qwen2.5:7b` once and the factory can write a screenplay offline.
+- **Python** — `TTS_PYTHON` / `KOHYA_PYTHON` default to `python` on Windows and
+  `python3` on POSIX (`src/direk/platform.ts`). Override either to point at a
+  specific interpreter or virtualenv.
+- **Paths in ffmpeg** — filtergraph values escape `:` and `\` (`filterPath`), and
+  the concat demuxer gets forward-slash paths (`concatListPath`), because
+  `C:\...\clip.mp4` otherwise fails with "Impossible to open".
+- **Signals** — the trainer stops child processes with `SIGTERM` on Windows
+  instead of `SIGKILL`.
+
 ## Authentication
 
 Every `/api` route requires a bearer token when `APP_AUTH_TOKEN` is set. In
@@ -291,6 +309,75 @@ API format; the app fills `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`,
 set, `/api/pilot/video/generate` renders there and saves the result into the
 Render Vault. Without it, the endpoint honestly returns `503` and tells you to
 run ComfyUI rather than returning a stock clip.
+
+## Feature Film Factory (18 scenes → one 90-minute film)
+
+One brief in, an 18-scene feature out. Each scene is a full five minutes and is
+rendered **alone** through the same ComfyUI path as the single-shot video above,
+so a bad scene can be re-rendered without touching the rest. Scenes come out at
+a fixed size, frame rate and audio layout, so the approved ones join with
+`ffmpeg -c copy` into the finished film.
+
+```
+POST /api/direk/feature/create    brief -> an 18-scene concept (no render)
+POST /api/direk/feature/start     ask the Pilot for the script, then render 18 scenes
+POST /api/direk/feature/pause     stop the batch; finished scenes are kept
+POST /api/direk/feature/rerender  re-render one scene by index
+POST /api/direk/feature/assemble  stitch the approved scenes into one film
+GET  /api/direk/feature/status    job, scene list, tiers, progress, Dual-Pilot status
+GET  /api/direk/feature/pilot     the Dual-Pilot status (Kaggle + local Ollama)
+POST /api/direk/feature/pilot     fetch the script + bible + 18-scene breakdown
+```
+
+A scene needs a real video backend: ComfyUI reachable and `COMFYUI_VIDEO_WORKFLOW`
+set. When it is not, `start` answers `503 AI_UNAVAILABLE` up front and a scene
+that fails mid-batch is marked **failed** — the factory never writes a
+placeholder clip to pretend a scene rendered.
+
+### The Dual-Pilot: Kaggle (T3) and the local Ollama (T1)
+
+The screenplay is written by a **Dual-Pilot**. The heavy batch worker is the
+**Kaggle Pilot**: a Qwen 2.5 3B notebook that runs on Kaggle's GPU. It is an
+**external cloud worker** — it is not part of this repository and not on this
+machine. The app reaches it over the internet through a Cloudflare tunnel whose
+public URL is set in `KAGGLE_PILOT_URL` (`src/services/pilotService.ts` is the
+only bridge).
+
+When Kaggle is unset or times out, the factory falls back to the **local Ollama**
+instance (T1, real time) at `LOCAL_OLLAMA_URL`, so a batch still gets a real
+screenplay on a machine with no tunnel. `START BATCH` stores the script in SQLite
+(`movie_jobs.script`), then renders every scene for real. When a Pilot is
+expected (Kaggle configured, or a reachable local model) but fails, the call
+answers an honest `503 PILOT_UNAVAILABLE` and **nothing is fabricated**. With no
+Pilot at all, the built-in 18-beat breakdown is used so the app still works
+offline.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DIREK_SCENE_SECONDS` | `300` | Seconds per scene. Lower it for tests/demos; production keeps 300 so the film is 90 minutes |
+| `KAGGLE_PILOT_URL` | _(empty)_ | Cloudflare tunnel URL of the Kaggle Notebook. Empty = no Kaggle Pilot |
+| `KAGGLE_PILOT_TOKEN` | _(empty)_ | Optional bearer token for the tunnel |
+| `KAGGLE_PILOT_TIMEOUT_MS` | `120000` | Per-call timeout for the Pilot |
+| `KAGGLE_PILOT_SCRIPT_PATH` | `/generate_script` | Screenplay endpoint |
+| `KAGGLE_PILOT_BIBLE_PATH` | `/generate_character_bible` | Character-bible endpoint |
+| `KAGGLE_PILOT_SCENES_PATH` | `/breakdown_scenes` | 18-scene breakdown endpoint |
+| `LOCAL_OLLAMA_URL` | `http://127.0.0.1:11434` | Local Ollama used as the T1 Pilot fallback (`OLLAMA_URL` is accepted as an alias) |
+| `OLLAMA_MODEL` | `qwen2.5:7b` | Model the local Pilot uses |
+
+### The database mirrors Firestore
+
+`factory.db` (local SQLite) keeps two tables whose canonical columns match the
+hosted Firestore documents field for field, so a migration is a copy, not a
+rename. `FactoryDb.movieDoc(id)` and `FactoryDb.sceneDocs(id)` return exactly
+these shapes:
+
+| `MovieJobs` | `SceneJobs` |
+| --- | --- |
+| `id`, `title`, `genre`, `rating`, `format`, `status`, `created_at` | `id`, `movie_id`, `scene_number` (1-18), `status`, `video_path` |
+
+Engine-only columns (progress, routing, timings, the stored script) ride
+alongside. A `factory.db` written before this alignment is migrated and
+backfilled on open, so no existing render is lost.
 
 ## Veo-style prompts
 

@@ -69,6 +69,10 @@ export interface FeatureJobView {
   scenes: SceneState[];
   /** The stitched film, once the batch is done and scenes were approved. */
   film?: { assetName: string; bytes: number; seconds: number; renderName?: string; renderUrl?: string };
+  /** The Kaggle Pilot screenplay this film was built from, when one was fetched. */
+  script?: string;
+  /** The character bible the Pilot produced for the screenplay. */
+  bible?: string;
   error?: string;
   startedAt: number;
   endedAt?: number;
@@ -182,6 +186,25 @@ export class FeatureFactory {
     const fallback = buildScenes(job.concept);
     const merged = mergeScenes(model, fallback, job.concept);
     job.scenes = merged.map(s => ({ ...this.sceneState(s), status: 'pending' as SceneStatus }));
+    this.persist(job);
+    return job;
+  }
+
+  /**
+   * Attach the screenplay and character bible the Kaggle Pilot produced, and
+   * fold the Pilot's scene breakdown onto the 18-beat plan. The Pilot only
+   * supplies the text half; the factory still renders every scene for real.
+   */
+  applyScript(
+    id: string,
+    script: string,
+    opts: { bible?: string; scenes?: unknown } = {},
+  ): FeatureJobView | undefined {
+    const job = this.jobs.get(id);
+    if (!job) return undefined;
+    job.script = script;
+    if (opts.bible) job.bible = opts.bible;
+    if (opts.scenes) this.applyBreakdown(id, opts.scenes);
     this.persist(job);
     return job;
   }

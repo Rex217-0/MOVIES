@@ -9,7 +9,19 @@
  * deliberately small and self-contained so they can be swapped for a managed
  * backend later without touching the batch engine. It uses the built-in
  * `node:sqlite`, so there is no extra dependency to install.
+ *
+ * Firestore alignment: the hosted database (see `src/firebase.ts`) keeps a
+ * `MovieJobs` document per film and a `SceneJobs` document per scene. So the
+ * local tables carry the same canonical columns, with the same names, and the
+ * extra engine columns (progress, routing, timings) ride alongside:
+ *
+ *   MovieJobs  id, title, genre, rating, format, status, created_at
+ *   SceneJobs  id, movie_id, scene_number [1-18], status, video_path
+ *
+ * `movieDoc(id)` and `sceneDocs(id)` return exactly those shapes, so a switch to
+ * Firestore moves the data across without a field rename.
  */
+
 
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -24,6 +36,11 @@ export function factoryDbPath(): string {
 
 interface MovieRow {
   id: string;
+  title: string;
+  genre: string;
+  rating: string;
+  format: string;
+  created_at: number;
   concept: string;
   status: string;
   percent: number;
@@ -37,12 +54,17 @@ interface MovieRow {
   rendered_seconds: number;
   film: string | null;
   error: string | null;
+  script: string | null;
+  bible: string | null;
   started_at: number;
   ended_at: number | null;
 }
 
 interface SceneRow {
+  id: string;
   movie_id: string;
+  scene_number: number;
+  video_path: string | null;
   idx: number;
   act: number;
   heading: string;
@@ -61,9 +83,42 @@ interface SceneRow {
   ended_at: number | null;
 }
 
+/**
+ * The canonical `MovieJobs` columns the hosted Firestore keeps, in order. The
+ * local `movie_jobs` table carries these first, then the engine columns.
+ */
+export interface MovieDoc {
+  id: string;
+  title: string;
+  genre: string;
+  rating: string;
+  format: string;
+  status: string;
+  created_at: number;
+}
+
+/** The canonical `SceneJobs` columns the hosted Firestore keeps. */
+export interface SceneDoc {
+  id: string;
+  movie_id: string;
+  scene_number: number;
+  status: string;
+  video_path: string | null;
+}
+
+/** A scene row's stable id, e.g. `FILM-123-S07`. */
+export function sceneId(movieId: string, sceneNumber: number): string {
+  return `${movieId}-S${String(sceneNumber).padStart(2, '0')}`;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS movie_jobs (
   id TEXT PRIMARY KEY,
+  title TEXT NOT NULL DEFAULT '',
+  genre TEXT NOT NULL DEFAULT '',
+  rating TEXT NOT NULL DEFAULT '',
+  format TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0,
   concept TEXT NOT NULL,
   status TEXT NOT NULL,
   percent INTEGER NOT NULL DEFAULT 0,
@@ -77,11 +132,16 @@ CREATE TABLE IF NOT EXISTS movie_jobs (
   rendered_seconds INTEGER NOT NULL DEFAULT 0,
   film TEXT,
   error TEXT,
+  script TEXT,
+  bible TEXT,
   started_at INTEGER NOT NULL,
   ended_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS scene_jobs (
+  id TEXT NOT NULL DEFAULT '',
   movie_id TEXT NOT NULL,
+  scene_number INTEGER NOT NULL DEFAULT 0,
+  video_path TEXT,
   idx INTEGER NOT NULL,
   act INTEGER NOT NULL,
   heading TEXT NOT NULL,
@@ -103,6 +163,58 @@ CREATE TABLE IF NOT EXISTS scene_jobs (
 CREATE INDEX IF NOT EXISTS scene_jobs_movie ON scene_jobs (movie_id);
 `;
 
+/**
+ * Bring an existing `factory.db` up to the Firestore-aligned shape. `CREATE
+ * TABLE IF NOT EXISTS` never adds columns to a table that already exists, so a
+ * database written before this change would be missing them; add each one that
+ * is absent. Values are backfilled from the engine columns.
+ */
+function migrate(db: DatabaseSync): void {
+  const columns = (table: string): Set<string> =>
+    new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(c => c.name));
+
+  const movieCols = columns('movie_jobs');
+  const addMovie: [string, string][] = [
+    ['title', "TEXT NOT NULL DEFAULT ''"],
+    ['genre', "TEXT NOT NULL DEFAULT ''"],
+    ['rating', "TEXT NOT NULL DEFAULT ''"],
+    ['format', "TEXT NOT NULL DEFAULT ''"],
+    ['created_at', 'INTEGER NOT NULL DEFAULT 0'],
+    ['script', 'TEXT'],
+    ['bible', 'TEXT'],
+  ];
+  for (const [name, type] of addMovie) {
+    if (!movieCols.has(name)) db.exec(`ALTER TABLE movie_jobs ADD COLUMN ${name} ${type}`);
+  }
+  // Backfill the canonical columns from the stored concept and start time.
+  db.exec(`
+    UPDATE movie_jobs SET
+      title = COALESCE(NULLIF(title, ''), json_extract(concept, '$.title'), ''),
+      genre = COALESCE(NULLIF(genre, ''), json_extract(concept, '$.genre'), ''),
+      rating = COALESCE(NULLIF(rating, ''), json_extract(concept, '$.rating'), ''),
+      format = COALESCE(NULLIF(format, ''), json_extract(concept, '$.format'), ''),
+      created_at = CASE WHEN created_at = 0 THEN started_at ELSE created_at END
+    WHERE title = '' OR genre = '' OR rating = '' OR format = '' OR created_at = 0
+  `);
+
+  const sceneCols = columns('scene_jobs');
+  const addScene: [string, string][] = [
+    ['id', "TEXT NOT NULL DEFAULT ''"],
+    ['scene_number', 'INTEGER NOT NULL DEFAULT 0'],
+    ['video_path', 'TEXT'],
+  ];
+  for (const [name, type] of addScene) {
+    if (!sceneCols.has(name)) db.exec(`ALTER TABLE scene_jobs ADD COLUMN ${name} ${type}`);
+  }
+  db.exec(`
+    UPDATE scene_jobs SET
+      scene_number = CASE WHEN scene_number = 0 THEN idx ELSE scene_number END,
+      id = CASE WHEN id = '' THEN movie_id || '-S' || substr('0' || idx, -2) ELSE id END,
+      video_path = COALESCE(video_path, asset_name)
+    WHERE scene_number = 0 OR id = '' OR video_path IS NULL
+  `);
+}
+
 export class FactoryDb {
   private db: DatabaseSync;
 
@@ -110,26 +222,36 @@ export class FactoryDb {
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec(SCHEMA);
+    migrate(this.db);
   }
 
   /** Write one film and all of its scenes, replacing whatever was there. */
   save(job: FeatureJobView): void {
+    const created = job.startedAt;
     this.db
       .prepare(
         `INSERT INTO movie_jobs
-           (id, concept, status, percent, rendered, failed, approved, rejected, total,
-            total_seconds, current_scene, rendered_seconds, film, error, started_at, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (id, title, genre, rating, format, created_at, concept, status, percent, rendered,
+            failed, approved, rejected, total, total_seconds, current_scene, rendered_seconds,
+            film, error, script, bible, started_at, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-           concept=excluded.concept, status=excluded.status, percent=excluded.percent,
-           rendered=excluded.rendered, failed=excluded.failed, approved=excluded.approved,
-           rejected=excluded.rejected, total=excluded.total, total_seconds=excluded.total_seconds,
+           title=excluded.title, genre=excluded.genre, rating=excluded.rating,
+           format=excluded.format, created_at=excluded.created_at, concept=excluded.concept,
+           status=excluded.status, percent=excluded.percent, rendered=excluded.rendered,
+           failed=excluded.failed, approved=excluded.approved, rejected=excluded.rejected,
+           total=excluded.total, total_seconds=excluded.total_seconds,
            current_scene=excluded.current_scene, rendered_seconds=excluded.rendered_seconds,
-           film=excluded.film, error=excluded.error, started_at=excluded.started_at,
-           ended_at=excluded.ended_at`,
+           film=excluded.film, error=excluded.error, script=excluded.script, bible=excluded.bible,
+           started_at=excluded.started_at, ended_at=excluded.ended_at`,
       )
       .run(
         job.id,
+        job.concept.title,
+        job.concept.genre,
+        job.concept.rating,
+        job.concept.format,
+        created,
         JSON.stringify(job.concept),
         job.status,
         job.percent,
@@ -143,16 +265,19 @@ export class FactoryDb {
         job.renderedSeconds,
         job.film ? JSON.stringify(job.film) : null,
         job.error ?? null,
+        job.script ?? null,
+        job.bible ?? null,
         job.startedAt,
         job.endedAt ?? null,
       );
 
     const scene = this.db.prepare(
       `INSERT INTO scene_jobs
-         (movie_id, idx, act, heading, beat, narration, visual, mood, status, percent,
-          seconds, asset_id, asset_name, error, route, started_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, movie_id, scene_number, video_path, idx, act, heading, beat, narration, visual,
+          mood, status, percent, seconds, asset_id, asset_name, error, route, started_at, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(movie_id, idx) DO UPDATE SET
+         id=excluded.id, scene_number=excluded.scene_number, video_path=excluded.video_path,
          act=excluded.act, heading=excluded.heading, beat=excluded.beat,
          narration=excluded.narration, visual=excluded.visual, mood=excluded.mood,
          status=excluded.status, percent=excluded.percent, seconds=excluded.seconds,
@@ -161,9 +286,10 @@ export class FactoryDb {
     );
     for (const s of job.scenes) {
       scene.run(
-        job.id, s.index, s.act, s.heading, s.beat, s.narration, s.visual, s.mood,
-        s.status, s.percent, s.seconds, s.assetId ?? null, s.assetName ?? null,
-        s.error ?? null, JSON.stringify(s.route), s.startedAt ?? null, s.endedAt ?? null,
+        sceneId(job.id, s.index), job.id, s.index, s.assetName ?? null, s.index, s.act, s.heading,
+        s.beat, s.narration, s.visual, s.mood, s.status, s.percent, s.seconds,
+        s.assetId ?? null, s.assetName ?? null, s.error ?? null, JSON.stringify(s.route),
+        s.startedAt ?? null, s.endedAt ?? null,
       );
     }
   }
@@ -213,6 +339,8 @@ export class FactoryDb {
     };
     if (movie.film) job.film = JSON.parse(movie.film);
     if (movie.error) job.error = movie.error;
+    if (movie.script) job.script = movie.script;
+    if (movie.bible) job.bible = movie.bible;
     if (movie.ended_at) job.endedAt = movie.ended_at;
     return job;
   }
@@ -223,6 +351,41 @@ export class FactoryDb {
       .prepare('SELECT id FROM movie_jobs ORDER BY started_at DESC LIMIT ?')
       .all(limit) as { id: string }[];
     return rows.map(r => this.load(r.id)).filter((j): j is FeatureJobView => Boolean(j));
+  }
+
+  /**
+   * One film in the canonical `MovieJobs` shape the hosted Firestore uses. This
+   * is the row a Firestore migration writes to `MovieJobs/<id>`.
+   */
+  movieDoc(id: string): MovieDoc | undefined {
+    const row = this.db.prepare('SELECT * FROM movie_jobs WHERE id = ?').get(id) as unknown as MovieRow | undefined;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      title: row.title,
+      genre: row.genre,
+      rating: row.rating,
+      format: row.format,
+      status: row.status,
+      created_at: row.created_at,
+    };
+  }
+
+  /**
+   * One film's scenes in the canonical `SceneJobs` shape, ordered by scene
+   * number (1-18). Each entry is a document for `SceneJobs/<id>`.
+   */
+  sceneDocs(movieId: string): SceneDoc[] {
+    const rows = this.db
+      .prepare('SELECT * FROM scene_jobs WHERE movie_id = ? ORDER BY scene_number')
+      .all(movieId) as unknown as SceneRow[];
+    return rows.map(row => ({
+      id: row.id,
+      movie_id: row.movie_id,
+      scene_number: row.scene_number,
+      status: row.status,
+      video_path: row.video_path,
+    }));
   }
 
   count(): number {

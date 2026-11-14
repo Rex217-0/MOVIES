@@ -571,6 +571,10 @@ export interface FeatureJobView {
   totalClock: string;
   scenes: FeatureSceneView[];
   film?: { assetName: string; bytes: number; seconds: number; renderName?: string; renderUrl?: string };
+  /** The Kaggle Pilot screenplay this film was built from, when one was fetched. */
+  script?: string;
+  /** The character bible the Pilot produced for the screenplay. */
+  bible?: string;
   error?: string;
   startedAt: number;
   endedAt?: number;
@@ -587,6 +591,15 @@ export interface FeatureStatus {
   formats: string[];
   narration_order: string[];
   ffmpeg: boolean;
+  /** The Dual-Pilot: Kaggle (T3 batch) and the local Ollama (T1 fallback). */
+  pilot: {
+    configured: boolean;
+    reachable: boolean;
+    url: string;
+    detail: string;
+    preferred: 'kaggle' | 'local-ollama' | 'none';
+    local: { url: string; model: string; reachable: boolean; model_present: boolean; detail: string };
+  };
   job: FeatureJobView | null;
 }
 
@@ -621,3 +634,25 @@ export const featureStart = (id: string) => featureAction('start', { id });
 export const featurePause = (id: string) => featureAction('pause', { id });
 export const featureRerender = (id: string, scene: number) => featureAction('rerender', { id, scene });
 export const featureAssemble = (id: string) => featureAction('assemble', { id });
+
+/**
+ * Ask the Dual-Pilot for the screenplay, character bible and 18-scene
+ * breakdown, and store them on the job. Kaggle (T3 heavy batch) is tried
+ * first; when it is unset or down the local Ollama (T1) writes the script.
+ * Answers an honest `503 PILOT_UNAVAILABLE` only when both are down.
+ */
+export async function featurePilot(id: string): Promise<{
+  job: FeatureJobView;
+  script_chars: number;
+  bible: boolean;
+  scenes: number;
+  source: 'kaggle' | 'local-ollama';
+  model: string;
+}> {
+  const res = await apiFetch('/api/direk/feature/pilot', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Pilot failed (${res.status})`);
+  return body;
+}

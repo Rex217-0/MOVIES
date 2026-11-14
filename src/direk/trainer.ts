@@ -13,7 +13,8 @@
  * Configuration (environment variables):
  *   KOHYA_DIR           Path to kohya_ss or sd-scripts (must contain
  *                       train_network.py). Enables training.
- *   KOHYA_PYTHON        Python interpreter, default `python3`
+ *   KOHYA_PYTHON        Python interpreter, default `python3` (POSIX) or
+ *                       `python` on Windows
  *   KOHYA_BASE_MODEL    Base model path or HuggingFace id. Required to train.
  *   KOHYA_ACCELERATE    Set to `1` to launch via `accelerate launch`
  *   KOHYA_OUTPUT_DIR    Where runs are written, default `<cwd>/lora_runs`
@@ -23,6 +24,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { defaultPython, killSignal } from './platform.ts';
 
 export interface TrainerStatus {
   available: boolean;
@@ -59,7 +61,7 @@ export function trainerScript(dir: string): string | null {
 /** Report whether training can run on this machine. */
 export function trainerStatus(): TrainerStatus {
   const dir = process.env.KOHYA_DIR || '';
-  const python = process.env.KOHYA_PYTHON || 'python3';
+  const python = process.env.KOHYA_PYTHON || defaultPython();
   const baseModel = process.env.KOHYA_BASE_MODEL || null;
   const outputDir = process.env.KOHYA_OUTPUT_DIR || path.join(process.cwd(), 'lora_runs');
 
@@ -310,7 +312,7 @@ export class LoRATrainer {
       push(`error: lumampas sa timeout (${Math.round(timeoutMs / 60000)} min)`);
       job.status = 'failed';
       job.error = 'Training timed out.';
-      child.kill('SIGKILL');
+      child.kill(killSignal());
     }, timeoutMs);
 
     child.stdout?.on('data', (b: Buffer) => b.toString().split('\n').forEach(push));

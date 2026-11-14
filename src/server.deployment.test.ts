@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ffmpegPath, isPng } from './direk/render.ts';
+import { startMockComfyUI, writeVideoWorkflow } from './testing/comfyuiMock.ts';
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -49,6 +50,7 @@ function startServer(env: Record<string, string>) {
       DIREK_RENDERS_DIR: rendersDir,
       DIREK_FACTORY_DB: path.join(assetsDir, 'factory.db'),
       DIREK_CONFIG: path.join(repoRoot, '.no-such-config.json'),
+      KAGGLE_PILOT_URL: '',
       ...env,
     },
     stdio: 'ignore',
@@ -57,7 +59,9 @@ function startServer(env: Record<string, string>) {
 }
 
 async function waitForServer(port: number) {
-  for (let i = 0; i < 80; i++) {
+  // A cold Vite start can re-optimise dependencies and take a while, so allow
+  // a generous ceiling.
+  for (let i = 0; i < 300; i++) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/api/health`);
       if (res.ok) return;
@@ -260,8 +264,10 @@ test('the LoRA plan reports where its text, image and training work will run', a
 
 // ---------------------------------------------------------------------------
 // Feature Film Factory (18 scenes -> one 90-minute feature)
-// The batch renderer is mocked (FEATURE_MOCK_RENDER=1) so the full flow runs
-// end to end without spending GPU time on 18 real clips.
+// ComfyUI is stood in for by a mock HTTP server (src/testing/comfyuiMock.ts)
+// that answers the real endpoints with a genuinely valid MP4, so the batch runs
+// end to end through the real orchestration instead of a fabricated buffer.
+// DIREK_SCENE_SECONDS keeps each scene short so the run stays quick.
 // ---------------------------------------------------------------------------
 
 async function featureJob(port: number, id: string): Promise<any> {
@@ -269,7 +275,7 @@ async function featureJob(port: number, id: string): Promise<any> {
   return (await res.json()).job;
 }
 
-async function waitFeature(port: number, id: string, timeoutMs = 20000): Promise<any> {
+async function waitFeature(port: number, id: string, timeoutMs = 60000): Promise<any> {
   const deadline = Date.now() + timeoutMs;
   let job: any = null;
   while (Date.now() < deadline) {
@@ -280,8 +286,59 @@ async function waitFeature(port: number, id: string, timeoutMs = 20000): Promise
   throw new Error('feature batch did not finish');
 }
 
+/** A workflow file for the mock; the app only needs the path to exist. */
+function comfyWorkflow(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'comfy-wf-'));
+  return writeVideoWorkflow(dir);
+}
+
+/** Point a spawned server at a mock ComfyUI and keep scenes short. */
+function comfyEnv(mock: { url: string }, workflow: string): Record<string, string> {
+  return {
+    // startServer disables ComfyUI by default; the mock needs it on.
+    COMFYUI_DISABLE: '',
+    COMFYUI_URL: mock.url,
+    COMFYUI_VIDEO_WORKFLOW: workflow,
+    DIREK_SCENE_SECONDS: '2',
+    TTS_DISABLE: '1',
+    TTS_TAGALOG_DISABLE: '1',
+  };
+}
+
+/** A stand-in for the Kaggle Pilot cloud worker, over a real HTTP server. */
+async function startMockPilot(): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      const json = (payload: unknown) => {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.url === '/health') return json({ ok: true });
+      if (req.url === '/generate_script') return json({ script: 'ANG HULING TALA — screenplay mula sa Pilot.' });
+      if (req.url === '/generate_character_bible') return json({ bible: 'Ramon — mangingisda.' });
+      if (req.url === '/breakdown_scenes') {
+        return json({
+          scenes: Array.from({ length: 18 }, (_, i) => ({
+            heading: `PILOT SCENE ${i + 1}`,
+            narration: `Narration ${i + 1} mula sa Kaggle Pilot.`,
+            visual: `Pilot shot ${i + 1}`,
+            mood: 'warm',
+          })),
+        });
+      }
+      res.statusCode = 404;
+      res.end('{}');
+    });
+  });
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as any).port;
+  return { url: `http://127.0.0.1:${port}`, close: () => new Promise<void>(r => server.close(() => r())) };
+}
+
 test('the factory builds an 18-scene concept from one brief', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -304,8 +361,118 @@ test('the factory builds an 18-scene concept from one brief', async (t) => {
   assert.ok(job.scenes.every((s: any) => s.route.tier === 'T3'));
 });
 
+test('starting a batch without a video backend answers 503 AI_UNAVAILABLE', async (t) => {
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '1' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang horror sa gubat, SPG.' }),
+  })).json() as any;
+
+  const res = await fetch(`http://127.0.0.1:${port}/api/direk/feature/start`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: created.job.id }),
+  });
+  assert.equal(res.status, 503);
+  const body = await res.json() as any;
+  assert.equal(body.code, 'AI_UNAVAILABLE');
+});
+
+test('the pilot status reports not-configured and the bridge answers 503 without a URL', async (t) => {
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', KAGGLE_PILOT_URL: '' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const status = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/status`)).json() as any;
+  assert.equal(status.pilot.configured, false);
+  assert.equal(status.pilot.reachable, false);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang drama sa probinsya.' }),
+  })).json() as any;
+
+  // Asking the Pilot for a script with no URL is an honest failure, not a fake.
+  const pilot = await fetch(`http://127.0.0.1:${port}/api/direk/feature/pilot`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: created.job.id }),
+  });
+  assert.equal(pilot.status, 503);
+  const pilotBody = await pilot.json() as any;
+  assert.equal(pilotBody.code, 'PILOT_UNAVAILABLE');
+  assert.equal(pilotBody.model, 'kaggle-pilot');
+
+  // With no Pilot configured at all, START BATCH still runs on the built-in plan.
+  const noJob = await fetch(`http://127.0.0.1:${port}/api/direk/feature/pilot`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'FILM-wala' }),
+  });
+  assert.equal(noJob.status, 404);
+});
+
+test('a reachable Kaggle Pilot writes the script and 18 scenes onto the job', async (t) => {
+  const pilot = await startMockPilot();
+  t.after(() => pilot.close());
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', KAGGLE_PILOT_URL: pilot.url });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const status = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/status`)).json() as any;
+  assert.equal(status.pilot.configured, true);
+  assert.equal(status.pilot.reachable, true);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang horror sa gubat, SPG.' }),
+  })).json() as any;
+
+  const res = await fetch(`http://127.0.0.1:${port}/api/direk/feature/pilot`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: created.job.id }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json() as any;
+  assert.match(body.job.script, /screenplay mula sa Pilot/);
+  assert.equal(body.job.bible, 'Ramon — mangingisda.');
+  assert.equal(body.job.scenes.length, 18);
+  assert.match(body.job.scenes[0].heading, /PILOT SCENE 1/);
+  assert.equal(body.script_chars > 0, true);
+  assert.equal(body.bible, true);
+
+  // The script survives a reload, because it is stored in SQLite.
+  const reloaded = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/status?id=${created.job.id}`)).json() as any;
+  assert.match(reloaded.job.script, /screenplay mula sa Pilot/);
+});
+
+test('a configured-but-unreachable Pilot fails START BATCH with 503, never a fake script', async (t) => {
+  const pilot = await startMockPilot();
+  const deadUrl = pilot.url;
+  await pilot.close();
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', KAGGLE_PILOT_URL: deadUrl });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang aksyon sa Maynila.' }),
+  })).json() as any;
+
+  const res = await fetch(`http://127.0.0.1:${port}/api/direk/feature/start`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: created.job.id }),
+  });
+  assert.equal(res.status, 503);
+  const body = await res.json() as any;
+  assert.equal(body.code, 'PILOT_UNAVAILABLE');
+
+  // Nothing was fabricated: the job carries no script.
+  const job = await featureJob(port, created.job.id);
+  assert.equal(job.script ?? null, null);
+});
+
 test('the batch renders all 18 scenes and stitches the approved ones with -c copy', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  const mock = await startMockComfyUI();
+  t.after(mock.close);
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', ...comfyEnv(mock, comfyWorkflow()) });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -344,12 +511,12 @@ test('the batch renders all 18 scenes and stitches the approved ones with -c cop
   assert.equal(assembled.status, 200);
   const body = await assembled.json() as any;
   assert.ok(body.film, 'the stitched film should be reported');
-  assert.equal(body.film.seconds, 2 * 300);
+  assert.equal(body.film.seconds, 2 * 2);
   assert.equal(body.job.approved, 2);
 });
 
 test('assemble without two approved scenes returns a clear 400', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -365,7 +532,7 @@ test('assemble without two approved scenes returns a clear 400', async (t) => {
 });
 
 test('create needs a brief, and start needs a real job', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -381,7 +548,7 @@ test('create needs a brief, and start needs a real job', async (t) => {
 });
 
 test('the factory writes MovieJobs and SceneJobs to factory.db', async (t) => {
-  const { child, port, assetsDir } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  const { child, port, assetsDir } = startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -398,7 +565,9 @@ test('the factory writes MovieJobs and SceneJobs to factory.db', async (t) => {
 });
 
 test('stitchMovie joins the approved scenes and serves the file from /renders/', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  const mock = await startMockComfyUI();
+  t.after(mock.close);
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', ...comfyEnv(mock, comfyWorkflow()) });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -428,7 +597,7 @@ test('stitchMovie joins the approved scenes and serves the file from /renders/',
   });
   assert.equal(stitched.status, 200);
   const body = await stitched.json() as any;
-  assert.equal(body.film.seconds, 2 * 300);
+  assert.equal(body.film.seconds, 2 * 2);
   assert.ok(body.film.renderUrl?.startsWith('/renders/'));
 
   // The stitched file is really served from the local render store.
