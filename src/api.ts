@@ -378,6 +378,71 @@ export function assetDownloadUrl(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Render Vault (staging review)
+// ---------------------------------------------------------------------------
+
+export type ReviewStatus = 'pending' | 'approved' | 'rejected';
+
+export interface AssetItem {
+  id: string;
+  name: string;
+  ext: string;
+  mime: string;
+  bytes: number;
+  kind: 'video' | 'image' | 'audio' | 'other';
+  title: string;
+  prompt?: string;
+  source: string;
+  createdAt: string;
+  reviewStatus?: ReviewStatus;
+}
+
+export async function direkAssets(): Promise<AssetItem[]> {
+  const res = await apiFetch('/api/direk/assets');
+  if (!res.ok) throw new Error(`Assets request failed (${res.status})`);
+  const data = await res.json();
+  return data.assets ?? [];
+}
+
+export async function direkReviewAsset(
+  id: string,
+  action: 'approve' | 'reject' | 'pending',
+): Promise<AssetItem> {
+  const res = await apiFetch('/api/direk/assets/review', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, action }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Review failed (${res.status})`);
+  return body.asset as AssetItem;
+}
+
+// ---------------------------------------------------------------------------
+// Task routing (T1/T2/T3)
+// ---------------------------------------------------------------------------
+
+export interface TaskRoute {
+  task: string;
+  tier: 'T1' | 'T2' | 'T3';
+  placement: 'local' | 'cloud';
+  reason: string;
+}
+
+export interface RoutingReport {
+  tiers: Record<string, string>;
+  t3_allow_local: boolean;
+  cloud_configured: boolean;
+  table: { task: string; tier: 'T1' | 'T2' | 'T3'; placement: 'local' | 'cloud' }[];
+}
+
+export async function direkRouting(): Promise<RoutingReport | null> {
+  const res = await apiFetch('/api/direk/routing');
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
 // Movie Creator
 // ---------------------------------------------------------------------------
 

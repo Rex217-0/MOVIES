@@ -21,7 +21,12 @@ export interface AssetMeta {
   prompt?: string;
   source: string;
   createdAt: string;
+  /** Review state for the Staging Vault. Absent means it was never reviewed. */
+  reviewStatus?: ReviewStatus;
 }
+
+/** A render's place in the review flow: staging, published, or thrown out. */
+export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 
 /** Sidecars carry this suffix so a `.json` asset is never mistaken for one. */
 export const SIDECAR_SUFFIX = '.asset.json';
@@ -92,12 +97,32 @@ export function listAssets(): AssetMeta[] {
   const out: AssetMeta[] = [];
   for (const meta of names) {
     try {
-      out.push(JSON.parse(fs.readFileSync(path.join(dir, meta), 'utf8')) as AssetMeta);
+      const parsed = JSON.parse(fs.readFileSync(path.join(dir, meta), 'utf8')) as AssetMeta;
+      // A render saved before the vault existed is waiting for review.
+      out.push({ ...parsed, reviewStatus: parsed.reviewStatus ?? 'pending' });
     } catch {
       /* skip a corrupt sidecar rather than fail the listing */
     }
   }
   return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/**
+ * Set the review state of one asset and rewrite its sidecar.
+ *
+ * Returns the updated metadata, or null when no asset carries that id (or name),
+ * so the caller can answer 404 instead of pretending it worked.
+ */
+export function reviewAsset(idOrName: string, status: ReviewStatus): AssetMeta | null {
+  const target = listAssets().find(a => a.id === idOrName || a.name === idOrName);
+  if (!target) return null;
+  const updated: AssetMeta = { ...target, reviewStatus: status };
+  fs.writeFileSync(
+    path.join(assetsDir(), `${target.name}${SIDECAR_SUFFIX}`),
+    JSON.stringify(updated, null, 2),
+    'utf8',
+  );
+  return updated;
 }
 
 /** Resolve an asset name to an absolute path, refusing to leave the store. */

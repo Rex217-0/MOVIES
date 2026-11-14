@@ -171,3 +171,81 @@ test('Fish Audio is only offered when a key is present', async () => {
     if (before !== undefined) process.env.FISH_AUDIO_API_KEY = before;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Narration fallback chain
+// ---------------------------------------------------------------------------
+
+async function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void> | void) {
+  const saved: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(vars)) {
+    saved[k] = process.env[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+test('narrationOrder defaults to Fish, Tagalog, Gemini, then Piper', async () => {
+  const { narrationOrder } = await import('./movie.ts');
+  await withEnv({ TTS_ORDER: undefined }, () => {
+    assert.deepEqual(narrationOrder(), ['fish', 'tagalog', 'gemini', 'piper']);
+  });
+});
+
+test('TTS_ORDER overrides the chain and drops unknown voices', async () => {
+  const { narrationOrder } = await import('./movie.ts');
+  await withEnv({ TTS_ORDER: 'fish,piper,captions,bogus' }, () => {
+    assert.deepEqual(narrationOrder(), ['fish', 'piper']);
+  });
+  // A TTS_ORDER that names nothing usable falls back to the default chain.
+  await withEnv({ TTS_ORDER: 'nonsense' }, () => {
+    assert.deepEqual(narrationOrder(), ['fish', 'tagalog', 'gemini', 'piper']);
+  });
+});
+
+test('voiceReady reports a voice as usable only when it is configured', async () => {
+  const { voiceReady } = await import('./movie.ts');
+  await withEnv({ FISH_AUDIO_API_KEY: undefined, TTS_TAGALOG_DISABLE: '1' }, () => {
+    assert.equal(voiceReady('fish'), false);
+    assert.equal(voiceReady('tagalog'), false);
+    assert.equal(voiceReady('piper'), false);
+  });
+  await withEnv({ FISH_AUDIO_API_KEY: 'test-key' }, () => {
+    assert.equal(voiceReady('fish'), true);
+  });
+  await withEnv({ FISH_AUDIO_API_KEY: undefined, TTS_TAGALOG_DISABLE: undefined }, () => {
+    // The offline Tagalog voice is on by default (the script ships with the app).
+    assert.equal(voiceReady('tagalog'), true);
+  });
+});
+
+test('narrationBackendOrder lists only the ready voices, in order', async () => {
+  const { narrationBackendOrder } = await import('./movie.ts');
+  await withEnv(
+    { FISH_AUDIO_API_KEY: undefined, TTS_TAGALOG_DISABLE: '1', TTS_PIPER_VOICE: undefined, GEMINI_API_KEY: undefined },
+    () => {
+      assert.deepEqual(narrationBackendOrder(), [], 'nothing ready means captions');
+    },
+  );
+  await withEnv({ FISH_AUDIO_API_KEY: 'k', TTS_TAGALOG_DISABLE: undefined }, () => {
+    const order = narrationBackendOrder();
+    assert.equal(order[0], 'fish', 'Fish is first when a key is present');
+    assert.ok(order.includes('tagalog'));
+  });
+});
+
+test('narrationBackends exposes the chain for the status endpoint', async () => {
+  const { narrationBackends } = await import('./movie.ts');
+  const backends = narrationBackends();
+  assert.ok(Array.isArray(backends.order));
+  assert.deepEqual(backends.order, (await import('./movie.ts')).narrationBackendOrder());
+});
+

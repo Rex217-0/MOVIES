@@ -468,41 +468,73 @@ export interface NarrationLine {
   source: NarrationSource;
 }
 
+/** The voices that can actually be tried, in the order they are tried. */
+const KNOWN_VOICES: NarrationSource[] = ['fish', 'tagalog', 'piper', 'gemini'];
+
 /**
- * Narration for one line, from the first voice that answers. The order is:
- * Fish Audio (best Tagalog, needs a key), then Meta's offline Tagalog voice
- * (free, real Tagalog, no quota), then the cloud voice, then Piper. The Tagalog
- * voice comes before the cloud voice because the film is in Tagalog and the
- * cloud voice is a general-purpose one with a daily cap. Returns null when none
- * works, and the shot then carries the line as a caption instead.
+ * The narration fallback order.
+ *
+ * Fish Audio comes first: it is the best-sounding Tagalog voice and can clone a
+ * reference voice, but it needs a key, so it is optional. The offline Tagalog
+ * voice is next (free, real Tagalog, no quota); Piper is the last real voice
+ * because it only has English phonemes. When none of them answers the shot
+ * carries the line as a burned-in caption instead.
+ *
+ * `TTS_ORDER=fish,piper,captions` overrides this when a deployment wants the
+ * plain Fish → Piper → captions chain and nothing else.
+ */
+export function narrationOrder(): NarrationSource[] {
+  const raw = process.env.TTS_ORDER;
+  if (raw) {
+    const parsed = raw
+      .split(',')
+      .map(s => s.trim().toLowerCase())
+      .filter((s): s is NarrationSource => (KNOWN_VOICES as string[]).includes(s));
+    if (parsed.length) return parsed;
+  }
+  return ['fish', 'tagalog', 'gemini', 'piper'];
+}
+
+/** Whether a voice in the order can actually speak right now. */
+export function voiceReady(source: NarrationSource): boolean {
+  if (source === 'fish') return fishConfigured();
+  if (source === 'tagalog') return Boolean(tagalogVoice());
+  if (source === 'piper') return Boolean(piperCommand());
+  if (source === 'gemini') return ttsConfigured();
+  return false;
+}
+
+/** The voices that are ready, in the configured order. */
+export function narrationBackendOrder(): NarrationSource[] {
+  return narrationOrder().filter(voiceReady);
+}
+
+/** Speak one line with one named voice. Throws when that voice cannot. */
+async function speakWith(source: NarrationSource, text: string, voice: TtsVoice): Promise<Buffer> {
+  if (source === 'fish') return fishSpeech(text);
+  if (source === 'tagalog') return tagalogSpeech(text);
+  if (source === 'piper') return piperSpeech(text);
+  if (source === 'gemini') return geminiSpeech(text, voice);
+  throw new Error(`Walang boses na '${source}'.`);
+}
+
+/**
+ * Narration for one line, from the first voice that answers. The order is
+ * `narrationOrder()` (Fish Audio, then the offline Tagalog voice, then the cloud
+ * voice, then Piper). Returns null when none works, and the shot then carries
+ * the line as a caption instead.
  */
 export async function narrate(text: string, voice: TtsVoice = 'Kore'): Promise<NarrationLine | null> {
-  if (fishConfigured()) {
+  for (const source of narrationOrder()) {
+    if (!voiceReady(source)) continue;
+    if (source === 'gemini' && cloudExhausted) continue;
     try {
-      return { buffer: await fishSpeech(text), source: 'fish' };
+      return { buffer: await speakWith(source, text, voice), source };
     } catch (error: any) {
-      if (retryableTts(error?.message || '')) cloudExhausted = true;
+      if (source !== 'piper' && retryableTts(error?.message || '')) cloudExhausted = true;
     }
   }
-  if (tagalogVoice()) {
-    try {
-      return { buffer: await tagalogSpeech(text), source: 'tagalog' };
-    } catch {
-      /* fall through to the cloud voice */
-    }
-  }
-  if (ttsConfigured() && !cloudExhausted) {
-    try {
-      return { buffer: await geminiSpeech(text, voice), source: 'gemini' };
-    } catch (error: any) {
-      if (retryableTts(error?.message || '')) cloudExhausted = true;
-    }
-  }
-  try {
-    return { buffer: await piperSpeech(text), source: 'piper' };
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 /** The voices the app can use, for the status endpoint. */
@@ -513,6 +545,7 @@ export function narrationBackends(): {
   offline: boolean;
   piper_voice?: string;
   tagalog_model?: string;
+  order: NarrationSource[];
 } {
   const cmd = piperCommand();
   return {
@@ -522,6 +555,7 @@ export function narrationBackends(): {
     offline: Boolean(cmd),
     piper_voice: cmd?.voice,
     tagalog_model: tagalogVoice() || undefined,
+    order: narrationBackendOrder(),
   };
 }
 
