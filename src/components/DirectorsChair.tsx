@@ -105,7 +105,7 @@ export const DirectorsChair: React.FC = () => {
  Movie Robo
  </h2>
  <p className="text-[11px] text-dim">
- AI Movie Director · IDEYA → SCRIPT → KARAKTER → SHOT LIST → VISUAL → EDIT → PUBLISH
+ AI Movie Creator ng Moviecity · LJR Group · IDEYA → SCRIPT → KARAKTER → SHOT LIST → VISUAL → EDIT → PUBLISH
  </p>
  </div>
  </div>

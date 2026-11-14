@@ -139,7 +139,7 @@ export default function App() {
             </span>
             <span className="hidden sm:inline">Text: {textModel || '—'}</span>
           </div>
-          <div>Movie Creator v1.0 · Movie Robo + Pilot Suite</div>
+          <div>Moviecity · Movie Robo v1.0 (LJR Group) + Pilot Suite</div>
         </div>
       </footer>
 
