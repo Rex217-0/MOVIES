@@ -43,7 +43,7 @@ import {
   numberedName, MAX_LORA_IMAGES,
 } from './src/direk/lora.ts';
 import {
-  comfyAvailable, generateWithComfy, comfyUrl, generateVideoWithComfy, comfyVideoConfigured,
+  comfyAvailable, generateWithComfy, comfyUrl,
   publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
 } from './src/direk/comfyui.ts';
 import { pollinationsUrl } from './src/direk/imagine.ts';
@@ -64,6 +64,7 @@ import {
   type MovieProgress, type MovieScript, type MovieOptions, type Mood, type TtsVoice,
   type NarrationSource,
 } from './src/direk/movie.ts';
+import { renderVideo } from './src/direk/videoRenderService.ts';
 import { MIN_MINUTES, MAX_MINUTES, sceneCount } from './src/movieMeta.ts';
 import { groundMovie, groundingBlock } from './src/direk/grounding.ts';
 import { FactoryDb, factoryDbPath } from './src/direk/factoryDb.ts';
@@ -511,153 +512,52 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   const formattedPrompt = buildTacticalVideoPrompt(prompt);
   const startTime = Date.now();
 
-  // T3 (heavy GPU): video rendering is offloaded unless the local box is
-  // explicitly allowed to take it, so a render never overloads Server-2.
+  // Heavy video renders on the local ComfyUI GPU (Server-2), with Wan 2.2 on
+  // fal.ai as the fallback. The router keeps video local, so a shot is never
+  // silently handed to an unconfigured cloud tier.
   const videoPlan = planExecution('video_render', { prompt });
   broadcastThought(`[ROUTER] video_render → ${videoPlan.route.tier} (${videoPlan.run})`);
-  if (videoPlan.run === 'cloud') {
-    const offload = route_to_cloud('video_render', { prompt, aspect_ratio: validAspect, duration, resolution });
-    broadcastThought(`[ROUTER] ${offload.note}`);
-    res.status(503).json({
-      ...aiUnavailable('cloud-t3', offload.note, 'T3 offload'),
-      route: videoPlan.route,
-      offload,
-    });
-    return;
-  }
 
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
-  // Free path first: a local ComfyUI with an AnimateDiff/SVD workflow. This is
-  // the only free way to actually render video, so prefer it when configured.
-  if (process.env.COMFYUI_DISABLE !== '1' && comfyVideoConfigured() && (await comfyAvailable())) {
-    try {
-      const { data } = await generateVideoWithComfy(formattedPrompt, {
-        negative: buildVeoStyleNegative(),
-      });
-      const elapsedMs = Date.now() - startTime;
-      const dataUrl = `data:video/mp4;base64,${data.toString('base64')}`;
-      broadcastThought(`[VIDEO COMPLETE] ComfyUI video rendered (${elapsedMs}ms).`);
-      const mediaRecord: MediaItem = {
-        id: `VID-${Date.now()}`,
-        type: 'video',
-        url: dataUrl,
-        prompt: cleanPrompt(prompt),
-        aspect_ratio: validAspect,
-        timestamp: new Date().toLocaleTimeString(),
-        model: 'comfyui',
-        details: 'ComfyUI local render',
-      };
-      mediaGallery.unshift(mediaRecord);
-      if (mediaGallery.length > 40) mediaGallery.pop();
-      renderVaultAssets.unshift({
-        id: `ASSET-${Date.now()}`,
-        title: cleanPrompt(prompt),
-        url: dataUrl,
-        status: 'completed',
-        reviewStatus: 'pending',
-        createdAt: new Date().toISOString(),
-      });
-      res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
-      return;
-    } catch (error: any) {
-      const reason = error?.message || 'Unknown error';
-      console.error('[VIDEO ERROR] ComfyUI render failed:', reason);
-      broadcastThought(`[VIDEO ERROR] ComfyUI failed: ${reason}`);
-      res.status(503).json(
-        aiUnavailable('comfyui', 'Check that ComfyUI is running and the video workflow is valid.', reason)
-      );
-      return;
-    }
-  }
-
-  // Honest behaviour: there is no video model on the Gemini free tier, so
-  // report the feature as unavailable instead of returning a stock clip that
-  // looks like a generated result.
-  if (!process.env.GEMINI_API_KEY || !VIDEO_MODEL_FREE) {
-    broadcastThought(`[VIDEO UNAVAILABLE] ${NO_FREE_VIDEO_MODEL}`);
-    res.status(503).json(
-      aiUnavailable(
-        VIDEO_MODEL,
-        `${NO_FREE_VIDEO_MODEL} Libreng paraan: magpatakbo ng ComfyUI at itakda ang ` +
-          `COMFYUI_VIDEO_WORKFLOW sa isang AnimateDiff/SVD workflow.`,
-        'Video generation is unavailable'
-      )
-    );
-    return;
-  }
-
-  broadcastThought(`[VIDEO PIPELINE] Calling ${VIDEO_MODEL} via Interactions API...`);
-
   try {
-    const interaction = await ai.interactions.create({
-      model: VIDEO_MODEL,
-      input: formattedPrompt,
-      background: false,
-      store: false,
-      stream: false,
-      response_format: {
-        type: 'video',
-        aspect_ratio: validAspect, // Strictly '16:9' or '9:16'
-        duration: duration || '10s',
-        resolution: resolution || '720p',
-      },
-    }, { timeout: 300000 });
-
-    let videoUrl = '';
-    const videoPart = interaction.output_video;
-    if (videoPart) {
-      if (videoPart.data) {
-        const mime = videoPart.mime_type || 'video/mp4';
-        videoUrl = `data:${mime};base64,${videoPart.data}`;
-      } else if (videoPart.uri) {
-        videoUrl = videoPart.uri;
-      }
-    }
-
-    if (!videoUrl) {
-      throw new Error('The model did not return video data');
-    }
-
+    const { data, engine, editor, editNote } = await renderVideo({
+      prompt: formattedPrompt,
+      negative: buildVeoStyleNegative(),
+      aspectRatio: validAspect,
+      resolution,
+    });
+    if (editNote) broadcastThought(`[VIDEO EDIT] ${editNote}`);
     const elapsedMs = Date.now() - startTime;
-    broadcastThought(`[VIDEO SYNTHESIS COMPLETE] Visual reconnaissance ready (${validAspect}, ${elapsedMs}ms).`);
-
+    const dataUrl = `data:video/mp4;base64,${data.toString('base64')}`;
+    broadcastThought(`[VIDEO COMPLETE] ${engine} video rendered (${elapsedMs}ms).`);
     const mediaRecord: MediaItem = {
       id: `VID-${Date.now()}`,
       type: 'video',
-      url: videoUrl,
+      url: dataUrl,
       prompt: cleanPrompt(prompt),
       aspect_ratio: validAspect,
       timestamp: new Date().toLocaleTimeString(),
-      model: VIDEO_MODEL,
-      details: `Resolution: ${resolution || '720p'} · Duration: ${duration || '10s'} · Aspect: ${validAspect}`,
+      model: engine,
+      details: editor ? `${engine} render, edited with ${editor}` : `${engine} render`,
     };
-
     mediaGallery.unshift(mediaRecord);
     if (mediaGallery.length > 40) mediaGallery.pop();
-
-    // Also sync into RenderVault (Staging review)
     renderVaultAssets.unshift({
       id: `ASSET-${Date.now()}`,
       title: cleanPrompt(prompt),
-      url: videoUrl,
+      url: dataUrl,
       status: 'completed',
       reviewStatus: 'pending',
       createdAt: new Date().toISOString(),
     });
-
-    res.json({
-      status: 'success',
-      item: mediaRecord,
-      latency_ms: elapsedMs,
-    });
+    res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
   } catch (error: any) {
     const reason = error?.message || 'Unknown error';
-    console.error(`[VIDEO ERROR] ${VIDEO_MODEL} generation failed:`, reason);
-    broadcastThought(`[VIDEO ERROR] Generation failed: ${reason}`);
-    res.status(503).json(
-      aiUnavailable(VIDEO_MODEL, 'Check the server logs and the Gemini API key.', reason)
-    );
+    const detail = error?.name === 'VideoBackendUnavailable' ? 'Walang video backend.' : 'Check the server logs.';
+    console.error('[VIDEO ERROR] render failed:', reason);
+    broadcastThought(`[VIDEO ERROR] ${reason}`);
+    res.status(503).json(aiUnavailable('video', detail, reason));
   }
 });
 
@@ -1205,8 +1105,8 @@ const featureFactory = new FeatureFactory({
   // Every scene is a real ComfyUI render. When ComfyUI cannot render the shot
   // (unreachable, no video workflow) the scene fails with AI_UNAVAILABLE; the
   // factory never fabricates a placeholder clip.
-  renderScene: async ({ scene, index }) => {
-    const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS });
+  renderScene: async ({ scene, index, onStage }) => {
+    const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS, onStage });
     return { data: result.data, seconds: result.seconds, voiced: result.voiced };
   },
   ffmpegAvailable,

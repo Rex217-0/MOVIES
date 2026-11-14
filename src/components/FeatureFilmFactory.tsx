@@ -21,15 +21,6 @@ function bytes(n: number): string {
   return `${n} B`;
 }
 
-const SCENE_BAR: Record<FeatureSceneView['status'], string> = {
-  pending: 'bg-raised',
-  rendering: 'bg-primary animate-pulse',
-  rendered: 'bg-primary/60',
-  approved: 'bg-growth',
-  rejected: 'bg-orange-400',
-  failed: 'bg-red-500',
-};
-
 const SCENE_LABEL: Record<FeatureSceneView['status'], string> = {
   pending: 'naghihintay',
   rendering: 'ginagawa',
@@ -38,6 +29,18 @@ const SCENE_LABEL: Record<FeatureSceneView['status'], string> = {
   rejected: 'tinanggihan',
   failed: 'bigo',
 };
+
+/** The four pipeline stages each scene passes through, in order. */
+const STAGES: { key: FeatureSceneView['stage']; label: string }[] = [
+  { key: 'scripting', label: 'Scripting' },
+  { key: 'rendering', label: 'Rendering' },
+  { key: 'audio', label: 'Audio' },
+  { key: 'completed', label: 'Completed' },
+];
+
+function stageIndex(stage: FeatureSceneView['stage']): number {
+  return Math.max(0, STAGES.findIndex(s => s.key === stage));
+}
 
 export function FeatureFilmFactory() {
   const [status, setStatus] = useState<FeatureStatus | null>(null);
@@ -186,7 +189,7 @@ export function FeatureFilmFactory() {
           </span>
           <span className="rounded-pill border border-subtle bg-raised px-2.5 py-1 text-muted">
             <Play className="mr-1 inline h-3 w-3" />
-            T3 routing: {job?.scenes?.[0]?.route?.placement ?? 'cloud'}
+            T3 video → local ComfyUI ({job?.scenes?.[0]?.route?.placement ?? 'local'})
           </span>
           <span
             className={`rounded-pill border px-2.5 py-1 font-medium ${
@@ -399,7 +402,21 @@ export function FeatureFilmFactory() {
 
           {/* The 18 scenes. */}
           <div className="mt-5">
-            <p className="text-xs font-medium text-muted">Bawat eksena (5 minuto)</p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-medium text-muted">Bawat eksena (5 minuto)</p>
+              <div className="flex flex-wrap items-center gap-2 text-[10px] text-dim">
+                {STAGES.map((s, si) => (
+                  <span key={s.key} className="inline-flex items-center gap-1">
+                    <span
+                      className={`inline-block h-1.5 w-4 rounded-pill ${
+                        si === 0 ? 'bg-growth' : si === 1 ? 'bg-primary' : 'bg-sunken'
+                      }`}
+                    />
+                    {s.label}
+                  </span>
+                ))}
+              </div>
+            </div>
             <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
               {job.scenes.map(scene => (
                 <div key={scene.index} className="rounded-card border border-subtle bg-raised p-2.5">
@@ -407,13 +424,34 @@ export function FeatureFilmFactory() {
                     <span className="font-medium text-ink">E{scene.index}</span>
                     <span className="text-dim">A{scene.act} · {scene.route.tier}</span>
                   </div>
-                  <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-pill bg-sunken">
-                    <div
-                      className={`h-full rounded-pill transition-all ${SCENE_BAR[scene.status]}`}
-                      style={{ width: `${scene.percent}%` }}
-                    />
+                  <div className="mt-1.5 flex gap-0.5">
+                    {STAGES.map((s, si) => {
+                      const reached = stageIndex(scene.stage) >= si && scene.status !== 'pending';
+                      const done = stageIndex(scene.stage) > si;
+                      const failed = scene.status === 'failed' || scene.status === 'rejected';
+                      const cls = failed
+                        ? 'bg-red-500'
+                        : done
+                          ? 'bg-growth'
+                          : reached
+                            ? 'bg-primary animate-pulse'
+                            : 'bg-sunken';
+                      return (
+                        <div
+                          key={s.key}
+                          className={`h-1.5 flex-1 overflow-hidden rounded-pill ${cls}`}
+                          title={`${s.label}${reached ? ' ✓' : ''}`}
+                        />
+                      );
+                    })}
                   </div>
-                  <p className="mt-1.5 text-[10px] text-muted">{SCENE_LABEL[scene.status]}</p>
+                  <p className="mt-1.5 text-[10px] text-muted">
+                    {scene.status === 'pending'
+                      ? SCENE_LABEL.pending
+                      : scene.status === 'failed' || scene.status === 'rejected'
+                        ? SCENE_LABEL[scene.status]
+                        : STAGES[stageIndex(scene.stage)].label}
+                  </p>
                   {scene.error && <p className="mt-1 text-[10px] text-red-300">{scene.error.slice(0, 60)}</p>}
                   {scene.renderUrl && (scene.status === 'rendered' || scene.status === 'approved') && (
                     <a

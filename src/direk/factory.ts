@@ -25,6 +25,13 @@ import {
   type MovieConcept, type FeatureScene, type SceneStatus,
 } from '../featureFilm.ts';
 
+/**
+ * The four pipeline stages the Commander tracks for each scene, in order.
+ * `scripting` is the plan/shot list, `rendering` is the ComfyUI picture,
+ * `audio` is the narration + music mix, `completed` is a finished scene.
+ */
+export type SceneStage = 'scripting' | 'rendering' | 'audio' | 'completed';
+
 /** One scene's place in the batch, for the UI. */
 export interface SceneState {
   index: number;
@@ -37,6 +44,8 @@ export interface SceneState {
   visual: string;
   mood: Mood;
   status: SceneStatus;
+  /** Which pipeline stage the scene is in, so the UI shows real progress. */
+  stage: SceneStage;
   percent: number;
   seconds: number;
   assetId?: string;
@@ -83,6 +92,8 @@ export interface FeatureJobView {
 export interface SceneRenderInput {
   scene: FeatureScene;
   index: number;
+  /** The renderer reports each pipeline stage as it reaches it. */
+  onStage?: (stage: SceneStage) => void;
 }
 
 /** What an injected renderer must return. */
@@ -159,6 +170,7 @@ export class FeatureFactory {
       visual: scene.visual,
       mood: scene.mood,
       status: 'pending',
+      stage: 'scripting',
       percent: 0,
       seconds: scene.seconds,
       route,
@@ -281,18 +293,30 @@ export class FeatureFactory {
       if (state.status === 'rendered' || state.status === 'approved') continue;
       job.currentScene = state.index;
       state.status = 'rendering';
+      state.stage = 'rendering';
       state.startedAt = Date.now();
       state.percent = 10;
       this.persist(job);
       try {
         if (plan.run === 'cloud') {
-          // T3 is offloaded; with no cloud worker configured it is queued, and
-          // the scene is marked failed so the batch moves on rather than
-          // secretly loading the local GPU.
+          // A non-video T3 task (large TTS, massive LoRA) is offloaded; with no
+          // cloud worker configured it is queued, and the scene is marked failed
+          // so the batch moves on rather than secretly loading the local GPU.
+          // Video itself is always local, so this branch never fires for it.
           throw new Error(route_to_cloud('video_render', { scene: state.index }).note);
         }
         state.percent = 40;
-        const out = await this.deps.renderScene({ scene: scenes[i], index: state.index });
+        const out = await this.deps.renderScene({
+          scene: scenes[i],
+          index: state.index,
+          // Mirror the renderer's real sub-stage (ComfyUI picture, then audio
+          // mix) onto the scene so the UI's four bars are honest.
+          onStage: stage => {
+            state.stage = stage;
+            state.percent = stage === 'audio' ? 80 : state.percent;
+            this.persist(job);
+          },
+        });
         const seconds = out.seconds ?? state.seconds;
         state.percent = 90;
         const asset = saveAsset(out.data, {
@@ -309,6 +333,7 @@ export class FeatureFactory {
         state.renderUrl = stored.url;
         state.seconds = seconds;
         state.status = 'rendered';
+        state.stage = 'completed';
         state.percent = 100;
         state.endedAt = Date.now();
       } catch (error: any) {
@@ -430,11 +455,20 @@ export class FeatureFactory {
     const scenes = this.scenesOf(job);
     const scene = scenes.find(s => s.index === index)!;
     state.status = 'rendering';
+    state.stage = 'rendering';
     state.percent = 10;
     state.error = undefined;
     this.persist(job);
     try {
-      const out = await this.deps.renderScene({ scene, index });
+      const out = await this.deps.renderScene({
+        scene,
+        index,
+        onStage: stage => {
+          state.stage = stage;
+          state.percent = stage === 'audio' ? 80 : state.percent;
+          this.persist(job);
+        },
+      });
       const asset = saveAsset(out.data, {
         title: `Scene ${index} — ${job.concept.title}`,
         ext: 'mp4',
@@ -447,6 +481,7 @@ export class FeatureFactory {
       state.assetName = asset.name;
       state.renderUrl = stored.url;
       state.status = 'rendered';
+      state.stage = 'completed';
       state.percent = 100;
     } catch (error: any) {
       state.status = 'failed';

@@ -8,9 +8,9 @@
  *                     Runs locally; needs no GPU.
  *   T2  Medium / GPU  image generation (SDXL/Pollinations), Piper TTS, small
  *                     LoRA training. Runs locally on the one GPU.
- *   T3  Heavy / GPU   video rendering (AnimateDiff/SVD), large TTS models
- *                     (Qwen3/Fish), massive LoRA training. Offloaded to a cloud
- *                     free tier so it never blocks the local GPU.
+ *   T3  Heavy / GPU   video rendering (AnimateDiff/SVD) runs on the local
+ *                     ComfyUI GPU (Server-2); large TTS models (Qwen3/Fish) and
+ *                     massive LoRA training are offloaded to a cloud free tier.
  *
  * The classification is a pure lookup, so it can be unit-tested and reported to
  * the UI without touching ComfyUI or the network.
@@ -49,7 +49,7 @@ export const TASK_TIERS: Record<string, Tier> = {
   tts_piper: 'T2',
   lora_train_small: 'T2',
 
-  // T3 — heavy, offload to the cloud free tiers.
+  // T3 — heavy: video renders on the local ComfyUI; the rest offloads to cloud.
   video: 'T3',
   video_render: 'T3',
   animatediff: 'T3',
@@ -60,10 +60,18 @@ export const TASK_TIERS: Record<string, Tier> = {
   lora_train_large: 'T3',
 };
 
+/** Heavy video tasks that render on the local ComfyUI GPU, not a cloud tier. */
+export const LOCAL_VIDEO_TASKS = new Set(['video', 'video_render', 'animatediff', 'svd']);
+
+/** True when a T3 task renders on the local ComfyUI rather than offloading. */
+export function isLocalVideoTask(taskType: string): boolean {
+  return LOCAL_VIDEO_TASKS.has(normalise(taskType));
+}
+
 export const TIER_LABELS: Record<Tier, string> = {
   T1: 'Light / CPU — local (Server-2)',
   T2: 'Medium / GPU — local (Server-2)',
-  T3: 'Heavy / GPU — offload to cloud',
+  T3: 'Heavy / GPU — video on local ComfyUI, the rest to cloud',
 };
 
 const REASONS: Record<Tier, string> = {
@@ -71,6 +79,9 @@ const REASONS: Record<Tier, string> = {
   T2: 'Medium GPU work: runs on the local GPU (Server-2).',
   T3: 'Heavy GPU work: offloaded to a cloud free tier to protect the local GPU.',
 };
+
+const VIDEO_REASON =
+  'Mabigat na video render: tumatakbo sa lokal na ComfyUI (Server-2) na GPU.';
 
 /** Normalise a task name so `Video Render` and `video_render` agree. */
 function normalise(taskType: string): string {
@@ -89,6 +100,10 @@ export function tierOf(taskType: string): Tier | null {
 export function classifyTask(taskType: string): TaskRoute {
   const task = normalise(taskType) || 'unknown';
   const tier = tierOf(task) ?? 'T3';
+  // Heavy video always renders on the local ComfyUI GPU, never the cloud.
+  if (isLocalVideoTask(task)) {
+    return { task, tier, placement: 'local', reason: VIDEO_REASON };
+  }
   return {
     task,
     tier,
@@ -118,10 +133,11 @@ export interface CloudResult {
 /**
  * Placeholder for the cloud offload path.
  *
- * This is intentionally not wired to a real provider yet: the founder's
- * directive is that T3 work *must not* run on Server-2, so until a cloud worker
- * is configured the router reports the job as queued-for-offload instead of
- * running it locally. Set `CLOUD_T3_URL` to point it at a real worker.
+ * This is intentionally not wired to a real provider yet: non-video T3 work
+ * (large TTS, massive LoRA training) must not load Server-2, so until a cloud
+ * worker is configured the router reports the job as queued-for-offload instead
+ * of running it locally. Set `CLOUD_T3_URL` to point it at a real worker. Video
+ * rendering is exempt: it always runs on the local ComfyUI GPU.
  */
 export function route_to_cloud(task: string, payload: Record<string, unknown> = {}): CloudResult {
   const job: CloudJob = { task: normalise(task) || 'unknown', tier: 'T3', payload };
@@ -139,7 +155,11 @@ export function route_to_cloud(task: string, payload: Record<string, unknown> = 
 /** The full routing table, for the UI and the status endpoint. */
 export function routingTable(): { task: string; tier: Tier; placement: Placement }[] {
   return Object.entries(TASK_TIERS)
-    .map(([task, tier]) => ({ task, tier, placement: tier === 'T3' ? ('cloud' as const) : ('local' as const) }))
+    .map(([task, tier]) => ({
+      task,
+      tier,
+      placement: tier === 'T3' && !isLocalVideoTask(task) ? ('cloud' as const) : ('local' as const),
+    }))
     .sort((a, b) => a.tier.localeCompare(b.tier) || a.task.localeCompare(b.task));
 }
 
@@ -197,6 +217,8 @@ export interface ExecutionPlan {
 export function planExecution(taskType: string, payload: Record<string, unknown> = {}): ExecutionPlan {
   const route = classifyTask(taskType);
   if (route.tier !== 'T3') return { route, run: 'local' };
+  // Video renders on the local ComfyUI GPU and is never offloaded to the cloud.
+  if (isLocalVideoTask(route.task)) return { route, run: 'local' };
   const cloudConfigured = Boolean(process.env.CLOUD_T3_URL);
   if (cloudConfigured || !t3LocalAllowed()) return { route, run: 'cloud' };
   return { route: { ...route, placement: 'local' }, run: 'local' };
