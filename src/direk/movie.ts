@@ -76,13 +76,17 @@ export interface MovieScript {
   scenes: MovieScene[];
 }
 
-export function scriptPrompt(brief: string, opts: MovieOptions): string {
+export function scriptPrompt(brief: string, opts: MovieOptions, grounding = ''): string {
   const scenes = sceneCount(opts.minutes);
-  return [
+  const lines = [
     `Ikaw si Movie Robo, isang direktor ng pelikula. Gumawa ng screenplay sa JSON.`,
     `Brief: ${brief}`,
     `Haba: ${opts.minutes} minuto. Bilang ng eksena: ${scenes}.`,
     opts.mood ? `Mood: ${opts.mood}.` : `Pumili ng mood na bagay sa brief.`,
+  ];
+  // Grounding from the real datasets: reference titles, market share, pacing.
+  if (grounding.trim()) lines.push('', grounding);
+  lines.push(
     ``,
     `Sumagot lamang ng JSON na ganito ang hugis:`,
     `{"title":"...","logline":"...","scenes":[{"heading":"SCENE 1 — LUGAR, ORAS","narration":"...","visual":"...","mood":"warm"}]}`,
@@ -93,7 +97,8 @@ export function scriptPrompt(brief: string, opts: MovieOptions): string {
     `- Ang "visual" ay maikling paglalarawan ng shot sa Ingles, 8 hanggang 16 salita.`,
     `- Ang "mood" ay isa sa: ${MOODS.join(', ')}.`,
     `- Walang markdown, walang paliwanag, JSON lang.`,
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 /** Pull the screenplay out of a model reply that may carry prose or fences. */
@@ -734,6 +739,57 @@ export interface MovieProgress {
 }
 
 export type ProgressFn = (p: MovieProgress) => void;
+
+export interface SceneRenderResult {
+  data: Buffer;
+  seconds: number;
+  voiced: boolean;
+  voiceSource: NarrationSource;
+}
+
+/**
+ * Render one feature-film scene on its own, start to finish: narration, the
+ * mood shot with a caption fallback, and a quiet music bed. Scenes are rendered
+ * independently so a bad five minutes can be re-rendered without touching the
+ * rest of the picture. Every scene comes out at the same size, frame rate and
+ * audio layout, so they can later be joined with `ffmpeg -c copy`.
+ */
+export async function renderFeatureScene(
+  scene: MovieScene,
+  opts: { index: number; voice?: TtsVoice; seconds?: number } = { index: 1 },
+): Promise<SceneRenderResult> {
+  const dir = workDir();
+  try {
+    const voice = opts.voice ?? 'Kore';
+    const seconds = opts.seconds ?? MAX_SCENE_SECONDS;
+    const backends = narrationBackends();
+    let narrationFile: string | null = null;
+    let voiceSource: NarrationSource = 'none';
+    if (backends.fish || backends.cloud || backends.tagalog || backends.offline) {
+      const line = await narrate(scene.narration, voice);
+      if (line) {
+        narrationFile = path.join(dir, 'voice.wav');
+        fs.writeFileSync(narrationFile, line.buffer);
+        voiceSource = line.source;
+      }
+    }
+    const shot = await renderShot(scene, opts.index, dir, seconds, { caption: !narrationFile });
+    const voiced = await muxNarration(shot, narrationFile, seconds, dir, 'scene-voiced');
+    const bed = await musicBed(seconds, scene.mood, dir);
+    const out = path.join(dir, 'scene.mp4');
+    await ff([
+      '-y', '-hide_banner', '-loglevel', 'error',
+      '-i', voiced, '-i', bed,
+      '-filter_complex', '[1:a]volume=0.12[m];[0:a][m]amix=inputs=2:duration=first[a]',
+      '-map', '0:v', '-map', '[a]',
+      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2',
+      '-movflags', '+faststart', out,
+    ]);
+    return { data: fs.readFileSync(out), seconds, voiced: Boolean(narrationFile), voiceSource };
+  } finally {
+    cleanup(dir);
+  }
+}
 
 export interface MovieResult {
   asset: AssetMeta;

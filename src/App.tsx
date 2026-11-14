@@ -9,16 +9,18 @@ import { CognitiveMatrixModal } from './components/CognitiveMatrixModal';
 import { DirectorsChair } from './components/DirectorsChair';
 import { LoraStudio } from './components/LoraStudio';
 import { MovieMaker } from './components/MovieMaker';
+import { FeatureFilmFactory } from './components/FeatureFilmFactory';
 import { SetupModal } from './components/SetupModal';
 import { direkStatus } from './api';
-import { Sparkles, Radio, Terminal, Video, Wand2, Film, Clapperboard, Boxes, FolderCog, ShieldCheck } from 'lucide-react';
+import { Sparkles, Radio, Terminal, Video, Wand2, Film, Clapperboard, Boxes, FolderCog, ShieldCheck, Factory } from 'lucide-react';
 
-type TabId = 'movie' | 'direk' | 'lora' | 'cockpit' | 'radar' | 'video' | 'image' | 'vault' | 'staging';
+type TabId = 'movie' | 'feature' | 'direk' | 'lora' | 'cockpit' | 'radar' | 'video' | 'image' | 'vault' | 'staging';
 
 type Tab = { id: TabId; label: string; icon: React.ComponentType<{ size?: number; className?: string }> };
 
 const TABS: Tab[] = [
   { id: 'movie', label: 'Movie Maker', icon: Film },
+  { id: 'feature', label: 'Feature Film Factory', icon: Factory },
   { id: 'direk', label: 'Movie Robo', icon: Clapperboard },
   { id: 'lora', label: 'LoRA Studio', icon: Boxes },
   { id: 'cockpit', label: 'Battle Room', icon: Terminal },
@@ -113,6 +115,8 @@ export default function App() {
         <div className="flex-1 flex flex-col h-full min-h-[680px]">
           {activeTab === 'movie' ? (
             <MovieMaker />
+          ) : activeTab === 'feature' ? (
+            <FeatureFilmFactory />
           ) : activeTab === 'direk' ? (
             <DirectorsChair />
           ) : activeTab === 'lora' ? (

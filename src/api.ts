@@ -461,6 +461,8 @@ export interface MovieJobView {
   voiceSource?: 'fish' | 'gemini' | 'tagalog' | 'piper' | 'none';
   note?: string;
   asset?: { name: string; bytes: number; kind: string; title: string };
+  /** What the screenplay was grounded in (real datasets), when available. */
+  grounding?: { genre: string | null; references: number; market: boolean; pacing: string };
   error?: string;
   startedAt: number;
   endedAt?: number;
@@ -528,3 +530,94 @@ export async function movieWait(
   if (last) return last;
   throw new Error('Hindi natapos ang pelikula sa oras.');
 }
+
+// ---------------------------------------------------------------------------
+// Feature Film Factory (18 scenes -> one 90-minute feature)
+// ---------------------------------------------------------------------------
+
+export interface FeatureSceneView {
+  index: number;
+  act: number;
+  heading: string;
+  beat: string;
+  narration: string;
+  visual: string;
+  mood: string;
+  status: 'pending' | 'rendering' | 'rendered' | 'failed' | 'approved' | 'rejected';
+  percent: number;
+  seconds: number;
+  assetId?: string;
+  assetName?: string;
+  /** Public URL of the scene file in the local render store (/renders/...). */
+  renderUrl?: string;
+  error?: string;
+  route: { task: string; tier: string; placement: string; reason: string };
+}
+
+export interface FeatureJobView {
+  id: string;
+  concept: { title: string; genre: string; rating: string; format: string; brief: string };
+  status: 'idle' | 'running' | 'paused' | 'done' | 'error';
+  percent: number;
+  rendered: number;
+  failed: number;
+  approved: number;
+  rejected: number;
+  total: number;
+  totalSeconds: number;
+  currentScene: number;
+  renderedSeconds: number;
+  filmClock: string;
+  totalClock: string;
+  scenes: FeatureSceneView[];
+  film?: { assetName: string; bytes: number; seconds: number; renderName?: string; renderUrl?: string };
+  error?: string;
+  startedAt: number;
+  endedAt?: number;
+}
+
+export interface FeatureStatus {
+  available: boolean;
+  scenes: number;
+  scene_seconds: number;
+  total_seconds: number;
+  total_clock: string;
+  ratings: string[];
+  rating_labels: Record<string, string>;
+  formats: string[];
+  narration_order: string[];
+  ffmpeg: boolean;
+  job: FeatureJobView | null;
+}
+
+export async function featureStatus(id?: string): Promise<FeatureStatus> {
+  const q = id ? `?id=${encodeURIComponent(id)}` : '';
+  const res = await apiFetch(`/api/direk/feature/status${q}`);
+  if (!res.ok) throw new Error(`Feature status failed (${res.status})`);
+  return res.json();
+}
+
+export async function featureCreate(input: {
+  brief: string; title?: string; genre?: string; rating?: string; format?: string; mood?: string;
+}): Promise<FeatureJobView> {
+  const res = await apiFetch('/api/direk/feature/create', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Feature create failed (${res.status})`);
+  return body.job;
+}
+
+async function featureAction(path: string, payload: Record<string, unknown>): Promise<FeatureJobView> {
+  const res = await apiFetch(`/api/direk/feature/${path}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Feature ${path} failed (${res.status})`);
+  return body.job;
+}
+
+export const featureStart = (id: string) => featureAction('start', { id });
+export const featurePause = (id: string) => featureAction('pause', { id });
+export const featureRerender = (id: string, scene: number) => featureAction('rerender', { id, scene });
+export const featureAssemble = (id: string) => featureAction('assemble', { id });

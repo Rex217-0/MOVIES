@@ -252,6 +252,15 @@ export function MovieMaker() {
                   <p className="text-sm font-semibold text-ink">{job.asset ? bytes(job.asset.bytes) : '—'}</p>
                 </div>
               </div>
+              {job.grounding && (
+                <p className="mt-3 rounded-card border border-subtle bg-raised p-3 text-xs text-muted">
+                  <span className="font-medium text-ink">Grounded sa datos:</span>{' '}
+                  {job.grounding.references} reference
+                  {job.grounding.genre ? ` · genre ${job.grounding.genre}` : ''}
+                  {job.grounding.market ? ' · may box-office stats' : ''}
+                  {job.grounding.pacing ? ` · ${job.grounding.pacing}` : ''}
+                </p>
+              )}
               {job.note && <p className="mt-3 text-xs text-muted">{job.note}</p>}
               <video
                 className="mt-4 w-full rounded-card border border-subtle bg-black"

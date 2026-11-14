@@ -11,4 +11,8 @@ direk.config.json
 comfy_loras/
 .openhands/
 assets/
+public/renders/
+factory.db
+factory.db-shm
+factory.db-wal
 gdrive.token.json
