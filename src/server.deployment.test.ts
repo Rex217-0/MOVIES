@@ -50,6 +50,7 @@ function startServer(env: Record<string, string>) {
       DIREK_RENDERS_DIR: rendersDir,
       DIREK_FACTORY_DB: path.join(assetsDir, 'factory.db'),
       DIREK_CONFIG: path.join(repoRoot, '.no-such-config.json'),
+      KAGGLE_PILOT_URL: '',
       ...env,
     },
     stdio: 'ignore',
@@ -304,6 +305,38 @@ function comfyEnv(mock: { url: string }, workflow: string): Record<string, strin
   };
 }
 
+/** A stand-in for the Kaggle Pilot cloud worker, over a real HTTP server. */
+async function startMockPilot(): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      const json = (payload: unknown) => {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.url === '/health') return json({ ok: true });
+      if (req.url === '/generate_script') return json({ script: 'ANG HULING TALA — screenplay mula sa Pilot.' });
+      if (req.url === '/generate_character_bible') return json({ bible: 'Ramon — mangingisda.' });
+      if (req.url === '/breakdown_scenes') {
+        return json({
+          scenes: Array.from({ length: 18 }, (_, i) => ({
+            heading: `PILOT SCENE ${i + 1}`,
+            narration: `Narration ${i + 1} mula sa Kaggle Pilot.`,
+            visual: `Pilot shot ${i + 1}`,
+            mood: 'warm',
+          })),
+        });
+      }
+      res.statusCode = 404;
+      res.end('{}');
+    });
+  });
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as any).port;
+  return { url: `http://127.0.0.1:${port}`, close: () => new Promise<void>(r => server.close(() => r())) };
+}
+
 test('the factory builds an 18-scene concept from one brief', async (t) => {
   const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
@@ -344,6 +377,96 @@ test('starting a batch without a video backend answers 503 AI_UNAVAILABLE', asyn
   assert.equal(res.status, 503);
   const body = await res.json() as any;
   assert.equal(body.code, 'AI_UNAVAILABLE');
+});
+
+test('the pilot status reports not-configured and the bridge answers 503 without a URL', async (t) => {
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', KAGGLE_PILOT_URL: '' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const status = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/status`)).json() as any;
+  assert.equal(status.pilot.configured, false);
+  assert.equal(status.pilot.reachable, false);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang drama sa probinsya.' }),
+  })).json() as any;
+
+  // Asking the Pilot for a script with no URL is an honest failure, not a fake.
+  const pilot = await fetch(`http://127.0.0.1:${port}/api/direk/feature/pilot`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: created.job.id }),
+  });
+  assert.equal(pilot.status, 503);
+  const pilotBody = await pilot.json() as any;
+  assert.equal(pilotBody.code, 'PILOT_UNAVAILABLE');
+  assert.equal(pilotBody.model, 'kaggle-pilot');
+
+  // With no Pilot configured at all, START BATCH still runs on the built-in plan.
+  const noJob = await fetch(`http://127.0.0.1:${port}/api/direk/feature/pilot`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'FILM-wala' }),
+  });
+  assert.equal(noJob.status, 404);
+});
+
+test('a reachable Kaggle Pilot writes the script and 18 scenes onto the job', async (t) => {
+  const pilot = await startMockPilot();
+  t.after(() => pilot.close());
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', KAGGLE_PILOT_URL: pilot.url });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const status = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/status`)).json() as any;
+  assert.equal(status.pilot.configured, true);
+  assert.equal(status.pilot.reachable, true);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang horror sa gubat, SPG.' }),
+  })).json() as any;
+
+  const res = await fetch(`http://127.0.0.1:${port}/api/direk/feature/pilot`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: created.job.id }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json() as any;
+  assert.match(body.job.script, /screenplay mula sa Pilot/);
+  assert.equal(body.job.bible, 'Ramon — mangingisda.');
+  assert.equal(body.job.scenes.length, 18);
+  assert.match(body.job.scenes[0].heading, /PILOT SCENE 1/);
+  assert.equal(body.script_chars > 0, true);
+  assert.equal(body.bible, true);
+
+  // The script survives a reload, because it is stored in SQLite.
+  const reloaded = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/status?id=${created.job.id}`)).json() as any;
+  assert.match(reloaded.job.script, /screenplay mula sa Pilot/);
+});
+
+test('a configured-but-unreachable Pilot fails START BATCH with 503, never a fake script', async (t) => {
+  const pilot = await startMockPilot();
+  const deadUrl = pilot.url;
+  await pilot.close();
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', KAGGLE_PILOT_URL: deadUrl });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang aksyon sa Maynila.' }),
+  })).json() as any;
+
+  const res = await fetch(`http://127.0.0.1:${port}/api/direk/feature/start`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: created.job.id }),
+  });
+  assert.equal(res.status, 503);
+  const body = await res.json() as any;
+  assert.equal(body.code, 'PILOT_UNAVAILABLE');
+
+  // Nothing was fabricated: the job carries no script.
+  const job = await featureJob(port, created.job.id);
+  assert.equal(job.script ?? null, null);
 });
 
 test('the batch renders all 18 scenes and stitches the approved ones with -c copy', async (t) => {

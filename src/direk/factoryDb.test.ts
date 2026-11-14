@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { FactoryDb } from './factoryDb.ts';
 import { FeatureFactory } from './factory.ts';
 import { FEATURE_SCENE_SECONDS } from '../featureFilm.ts';
@@ -82,5 +83,121 @@ test('load returns undefined for an unknown id, and list is newest-first', () =>
   const listed = db.list();
   assert.equal(listed.length, 2);
   assert.ok(listed.some(j => j.id === a.id) && listed.some(j => j.id === b.id));
+  db.close();
+});
+
+test('movieDoc carries the exact MovieJobs columns Copilot Firestore uses', () => {
+  tmpStore();
+  const db = tmpDb();
+  const factory = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS }),
+    ffmpegAvailable: async () => true,
+    db,
+  });
+  const job = factory.create({ brief: 'Isang drama sa probinsya, SPG.' });
+
+  const doc = db.movieDoc(job.id)!;
+  assert.deepEqual(Object.keys(doc).sort(), [
+    'created_at', 'format', 'genre', 'id', 'rating', 'status', 'title',
+  ]);
+  assert.equal(doc.id, job.id);
+  assert.equal(doc.title, job.concept.title);
+  assert.equal(doc.genre, job.concept.genre);
+  assert.equal(doc.rating, job.concept.rating);
+  assert.equal(doc.format, job.concept.format);
+  assert.equal(doc.status, 'idle');
+  assert.equal(typeof doc.created_at, 'number');
+  assert.equal(doc.created_at, job.startedAt);
+  assert.equal(db.movieDoc('FILM-wala'), undefined);
+  db.close();
+});
+
+test('sceneDocs carries the exact SceneJobs columns, scene_number 1-18', () => {
+  tmpStore();
+  const db = tmpDb();
+  const factory = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS }),
+    ffmpegAvailable: async () => true,
+    db,
+  });
+  const job = factory.create({ brief: 'Isang aksyon sa Maynila.' });
+
+  const docs = db.sceneDocs(job.id);
+  assert.equal(docs.length, 18);
+  assert.deepEqual(Object.keys(docs[0]).sort(), [
+    'id', 'movie_id', 'scene_number', 'status', 'video_path',
+  ]);
+  assert.deepEqual(docs.map(d => d.scene_number), Array.from({ length: 18 }, (_, i) => i + 1));
+  assert.ok(docs.every(d => d.movie_id === job.id));
+  assert.equal(docs[0].status, 'pending');
+  assert.equal(docs[0].video_path, null);
+  assert.equal(docs[0].id, `${job.id}-S01`);
+  assert.equal(docs[17].id, `${job.id}-S18`);
+  db.close();
+});
+
+test('a rendered scene writes its asset name into SceneJobs.video_path', async () => {
+  tmpStore();
+  const db = tmpDb();
+  const factory = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.from('scene'), seconds: FEATURE_SCENE_SECONDS }),
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+    db,
+  });
+  const job = factory.create({ brief: 'Isang horror sa gubat.' });
+  factory.start(job.id);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && factory.get(job.id)!.status === 'running') {
+    await new Promise(r => setTimeout(r, 5));
+  }
+
+  const docs = db.sceneDocs(job.id);
+  assert.equal(docs[0].status, 'rendered');
+  assert.ok(docs[0].video_path && docs[0].video_path.endsWith('.mp4'), 'video_path points at the rendered mp4');
+  db.close();
+});
+
+test('a database written before the alignment is migrated and backfilled', () => {
+  tmpStore();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'legacydb-'));
+  const file = path.join(dir, 'factory.db');
+
+  // The old shape: no canonical columns, no script/bible.
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`
+    CREATE TABLE movie_jobs (
+      id TEXT PRIMARY KEY, concept TEXT NOT NULL, status TEXT NOT NULL, percent INTEGER NOT NULL DEFAULT 0,
+      rendered INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, approved INTEGER NOT NULL DEFAULT 0,
+      rejected INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 18, total_seconds INTEGER NOT NULL DEFAULT 5400,
+      current_scene INTEGER NOT NULL DEFAULT 0, rendered_seconds INTEGER NOT NULL DEFAULT 0, film TEXT, error TEXT,
+      started_at INTEGER NOT NULL, ended_at INTEGER
+    );
+    CREATE TABLE scene_jobs (
+      movie_id TEXT NOT NULL, idx INTEGER NOT NULL, act INTEGER NOT NULL, heading TEXT NOT NULL, beat TEXT NOT NULL,
+      narration TEXT NOT NULL, visual TEXT NOT NULL, mood TEXT NOT NULL, status TEXT NOT NULL,
+      percent INTEGER NOT NULL DEFAULT 0, seconds INTEGER NOT NULL DEFAULT 300, asset_id TEXT, asset_name TEXT,
+      error TEXT, route TEXT NOT NULL, started_at INTEGER, ended_at INTEGER, PRIMARY KEY (movie_id, idx)
+    );
+    INSERT INTO movie_jobs (id, concept, status, started_at)
+      VALUES ('FILM-old', '{"title":"Luma","genre":"drama","rating":"PG","format":"Realistic","brief":"x"}', 'idle', 1234);
+    INSERT INTO scene_jobs (movie_id, idx, act, heading, beat, narration, visual, mood, status, route, asset_name)
+      VALUES ('FILM-old', 1, 1, 'SCENE 1', 'beat', 'narration', 'visual', 'warm', 'rendered', '{}', 'old-scene.mp4');
+  `);
+  legacy.close();
+
+  // Opening it with FactoryDb adds the columns and backfills them.
+  const db = new FactoryDb(file);
+  const doc = db.movieDoc('FILM-old')!;
+  assert.equal(doc.title, 'Luma');
+  assert.equal(doc.genre, 'drama');
+  assert.equal(doc.rating, 'PG');
+  assert.equal(doc.format, 'Realistic');
+  assert.equal(doc.created_at, 1234, 'created_at backfilled from started_at');
+
+  const scenes = db.sceneDocs('FILM-old');
+  assert.equal(scenes[0].scene_number, 1);
+  assert.equal(scenes[0].id, 'FILM-old-S01');
+  assert.equal(scenes[0].video_path, 'old-scene.mp4', 'video_path backfilled from asset_name');
   db.close();
 });

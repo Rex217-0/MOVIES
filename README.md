@@ -302,11 +302,13 @@ a fixed size, frame rate and audio layout, so the approved ones join with
 
 ```
 POST /api/direk/feature/create    brief -> an 18-scene concept (no render)
-POST /api/direk/feature/start     render all 18 scenes, one at a time
+POST /api/direk/feature/start     ask the Pilot for the script, then render 18 scenes
 POST /api/direk/feature/pause     stop the batch; finished scenes are kept
 POST /api/direk/feature/rerender  re-render one scene by index
 POST /api/direk/feature/assemble  stitch the approved scenes into one film
-GET  /api/direk/feature/status    job, scene list, tiers, progress
+GET  /api/direk/feature/status    job, scene list, tiers, progress, Pilot status
+GET  /api/direk/feature/pilot     the Kaggle Pilot reachability
+POST /api/direk/feature/pilot     fetch the script + bible + 18-scene breakdown
 ```
 
 A scene needs a real video backend: ComfyUI reachable and `COMFYUI_VIDEO_WORKFLOW`
@@ -314,9 +316,44 @@ set. When it is not, `start` answers `503 AI_UNAVAILABLE` up front and a scene
 that fails mid-batch is marked **failed** — the factory never writes a
 placeholder clip to pretend a scene rendered.
 
+### The Kaggle Pilot (external cloud worker)
+
+The screenplay is written by the **Kaggle Pilot**: a Qwen 2.5 3B notebook that
+runs on Kaggle's GPU. It is an **external cloud worker** — it is not part of this
+repository and not on this machine. The app reaches it over the internet through
+a Cloudflare tunnel whose public URL is set in `KAGGLE_PILOT_URL`
+(`src/services/pilotService.ts` is the only bridge).
+
+`START BATCH` calls the Pilot for the 18-scene script, stores it in SQLite
+(`movie_jobs.script`), then renders every scene for real. When the Pilot is
+configured but not answering, the call answers an honest
+`503 PILOT_UNAVAILABLE` and **nothing is fabricated**. With no Pilot configured
+at all, the built-in 18-beat breakdown is used so the app still works offline.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DIREK_SCENE_SECONDS` | `300` | Seconds per scene. Lower it for tests/demos; production keeps 300 so the film is 90 minutes |
+| `KAGGLE_PILOT_URL` | _(empty)_ | Cloudflare tunnel URL of the Kaggle Notebook. Empty = no Pilot |
+| `KAGGLE_PILOT_TOKEN` | _(empty)_ | Optional bearer token for the tunnel |
+| `KAGGLE_PILOT_TIMEOUT_MS` | `120000` | Per-call timeout for the Pilot |
+| `KAGGLE_PILOT_SCRIPT_PATH` | `/generate_script` | Screenplay endpoint |
+| `KAGGLE_PILOT_BIBLE_PATH` | `/generate_character_bible` | Character-bible endpoint |
+| `KAGGLE_PILOT_SCENES_PATH` | `/breakdown_scenes` | 18-scene breakdown endpoint |
+
+### The database mirrors Firestore
+
+`factory.db` (local SQLite) keeps two tables whose canonical columns match the
+hosted Firestore documents field for field, so a migration is a copy, not a
+rename. `FactoryDb.movieDoc(id)` and `FactoryDb.sceneDocs(id)` return exactly
+these shapes:
+
+| `MovieJobs` | `SceneJobs` |
+| --- | --- |
+| `id`, `title`, `genre`, `rating`, `format`, `status`, `created_at` | `id`, `movie_id`, `scene_number` (1-18), `status`, `video_path` |
+
+Engine-only columns (progress, routing, timings, the stored script) ride
+alongside. A `factory.db` written before this alignment is migrated and
+backfilled on open, so no existing render is lost.
 
 ## Veo-style prompts
 

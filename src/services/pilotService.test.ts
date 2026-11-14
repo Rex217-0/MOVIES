@@ -1,0 +1,221 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import {
+  generateScript, generateCharacterBible, breakdownScenes, pilotStatus, pilotReady,
+  pilotUrl, pilotConfigured, PilotUnavailable, PILOT_UNAVAILABLE,
+} from './pilotService.ts';
+
+/**
+ * A stand-in for the Kaggle Pilot: the real Cloudflare-tunnel endpoints, over a
+ * real HTTP server, so the bridge is exercised for real instead of mocked.
+ */
+function startPilot(opts: { script?: string; bible?: string; scenes?: unknown[]; fail?: number } = {}) {
+  const server = http.createServer((req, res) => {
+    if (opts.fail) {
+      res.statusCode = opts.fail;
+      res.end('{"error":"boom"}');
+      return;
+    }
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      const json = (payload: unknown) => {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.url === '/health') return json({ ok: true });
+      if (req.url === '/generate_script') return json({ script: opts.script ?? 'SCENE 1: ang simula.' });
+      if (req.url === '/generate_character_bible') return json({ bible: opts.bible ?? 'Ramon — mangingisda, 40s.' });
+      if (req.url === '/breakdown_scenes') {
+        return json({ scenes: opts.scenes ?? [
+          { heading: 'SCENE 1', narration: 'Narration isa.', visual: 'A wide shot', mood: 'warm' },
+          { heading: 'SCENE 2', narration: 'Narration dalawa.', visual: 'A close-up', mood: 'tense' },
+          { heading: 'SCENE 3', narration: 'Narration tatlo.', visual: 'A pan', mood: 'grim' },
+        ] });
+      }
+      res.statusCode = 404;
+      res.end('{}');
+    });
+  });
+  return new Promise<{ url: string; close: () => Promise<void>; lastBody: () => any }>(resolve => {
+    let last = '';
+    server.on('request', req => { req.on('data', c => { last += c; }); });
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as any).port;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise<void>(r => server.close(() => r())),
+        lastBody: () => { try { return JSON.parse(last); } catch { return last; } },
+      });
+    });
+  });
+}
+
+/** Run `fn` with the Pilot environment set, then restore it. */
+async function withPilot<T>(env: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
+  const keys = [
+    'KAGGLE_PILOT_URL', 'KAGGLE_PILOT_TOKEN', 'KAGGLE_PILOT_TIMEOUT_MS',
+    'KAGGLE_PILOT_SCRIPT_PATH', 'KAGGLE_PILOT_BIBLE_PATH', 'KAGGLE_PILOT_SCENES_PATH',
+  ];
+  const saved: Record<string, string | undefined> = {};
+  for (const k of keys) {
+    saved[k] = process.env[k];
+    if (env[k] === undefined) delete process.env[k];
+    else process.env[k] = env[k];
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+test('pilotUrl trims trailing slashes and pilotConfigured reflects it', async () => {
+  await withPilot({ KAGGLE_PILOT_URL: 'https://x.trycloudflare.com///' }, async () => {
+    assert.equal(pilotUrl(), 'https://x.trycloudflare.com');
+    assert.equal(pilotConfigured(), true);
+  });
+  await withPilot({ KAGGLE_PILOT_URL: '' }, async () => {
+    assert.equal(pilotUrl(), '');
+    assert.equal(pilotConfigured(), false);
+  });
+});
+
+test('pilotStatus reports not-configured without a URL', async () => {
+  await withPilot({ KAGGLE_PILOT_URL: '' }, async () => {
+    const status = await pilotStatus();
+    assert.equal(status.configured, false);
+    assert.equal(status.reachable, false);
+    assert.match(status.detail, /KAGGLE_PILOT_URL/);
+  });
+});
+
+test('pilotStatus and pilotReady report an online worker', async () => {
+  const pilot = await startPilot();
+  try {
+    await withPilot({ KAGGLE_PILOT_URL: pilot.url }, async () => {
+      const status = await pilotStatus();
+      assert.equal(status.configured, true);
+      assert.equal(status.reachable, true);
+      assert.equal(await pilotReady(), true);
+    });
+  } finally {
+    await pilot.close();
+  }
+});
+
+test('a dead tunnel reports unreachable instead of throwing', async () => {
+  // A closed port: the worker is configured but not answering.
+  const pilot = await startPilot();
+  const url = pilot.url;
+  await pilot.close();
+  await withPilot({ KAGGLE_PILOT_URL: url }, async () => {
+    const status = await pilotStatus();
+    assert.equal(status.configured, true);
+    assert.equal(status.reachable, false);
+    assert.equal(await pilotReady(), false);
+  });
+});
+
+test('generateScript POSTs the brief and returns the screenplay', async () => {
+  const pilot = await startPilot({ script: 'ANG HULING TALA — screenplay.' });
+  try {
+    await withPilot({ KAGGLE_PILOT_URL: pilot.url }, async () => {
+      const script = await generateScript('Isang mangingisda sa probinsya.');
+      assert.equal(script, 'ANG HULING TALA — screenplay.');
+      assert.equal(pilot.lastBody().brief, 'Isang mangingisda sa probinsya.');
+    });
+  } finally {
+    await pilot.close();
+  }
+});
+
+test('generateCharacterBible and breakdownScenes return the worker output', async () => {
+  const pilot = await startPilot();
+  try {
+    await withPilot({ KAGGLE_PILOT_URL: pilot.url }, async () => {
+      const bible = await generateCharacterBible('script');
+      assert.match(bible, /Ramon/);
+
+      const scenes = await breakdownScenes('script');
+      assert.equal(scenes.length, 3);
+      assert.equal(scenes[0].heading, 'SCENE 1');
+      assert.equal(scenes[2].mood, 'grim');
+    });
+  } finally {
+    await pilot.close();
+  }
+});
+
+test('breakdownScenes accepts a nested scene array and alternate field names', async () => {
+  const pilot = await startPilot({
+    scenes: [{ title: 'S1', voiceover: 'Narration.', description: 'Shot.', tone: 'warm' }],
+  });
+  try {
+    await withPilot({ KAGGLE_PILOT_URL: pilot.url }, async () => {
+      const scenes = await breakdownScenes('script');
+      assert.equal(scenes[0].heading, 'S1');
+      assert.equal(scenes[0].narration, 'Narration.');
+      assert.equal(scenes[0].visual, 'Shot.');
+      assert.equal(scenes[0].mood, 'warm');
+    });
+  } finally {
+    await pilot.close();
+  }
+});
+
+test('a configured-but-down Pilot throws PilotUnavailable with code PILOT_UNAVAILABLE', async () => {
+  const pilot = await startPilot();
+  const url = pilot.url;
+  await pilot.close();
+  await withPilot({ KAGGLE_PILOT_URL: url }, async () => {
+    await assert.rejects(
+      () => generateScript('brief'),
+      (error: any) => {
+        assert.ok(error instanceof PilotUnavailable);
+        assert.equal(error.code, PILOT_UNAVAILABLE);
+        assert.equal(error.status, 503);
+        return true;
+      },
+    );
+  });
+});
+
+test('an unconfigured Pilot throws PilotUnavailable without any network call', async () => {
+  await withPilot({ KAGGLE_PILOT_URL: '' }, async () => {
+    await assert.rejects(() => generateScript('brief'), (error: any) => error.code === PILOT_UNAVAILABLE);
+  });
+});
+
+test('an HTTP error from the worker becomes PilotUnavailable, not a crash', async () => {
+  const pilot = await startPilot({ fail: 500 });
+  try {
+    await withPilot({ KAGGLE_PILOT_URL: pilot.url }, async () => {
+      await assert.rejects(() => generateScript('brief'), (error: any) => {
+        assert.ok(error instanceof PilotUnavailable);
+        assert.match(error.detail, /500/);
+        return true;
+      });
+    });
+  } finally {
+    await pilot.close();
+  }
+});
+
+test('custom endpoint paths are honoured', async () => {
+  const pilot = await startPilot({ script: 'Mula sa custom path.' });
+  try {
+    await withPilot(
+      { KAGGLE_PILOT_URL: pilot.url, KAGGLE_PILOT_SCRIPT_PATH: '/generate_script' },
+      async () => {
+        assert.equal(await generateScript('brief'), 'Mula sa custom path.');
+      },
+    );
+  } finally {
+    await pilot.close();
+  }
+});

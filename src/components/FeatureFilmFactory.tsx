@@ -3,7 +3,7 @@ import {
   Clapperboard, Download, Film, Layers, Loader2, Pause, Play, RefreshCw, Sparkles, TriangleAlert,
 } from 'lucide-react';
 import {
-  assetDownloadUrl, featureAssemble, featureCreate, featurePause, featureRerender,
+  assetDownloadUrl, featureAssemble, featureCreate, featurePause, featurePilot, featureRerender,
   featureStart, featureStatus,
   type FeatureJobView, type FeatureSceneView, type FeatureStatus,
 } from '../api';
@@ -106,6 +106,20 @@ export function FeatureFilmFactory() {
     }
   };
 
+  const fetchPilot = async () => {
+    if (!job || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await featurePilot(job.id);
+      setJob(result.job);
+    } catch (e: any) {
+      setError(e?.message || 'Hindi maabot ang Kaggle Pilot.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const pause = async () => {
     if (!job || busy) return;
     setBusy(true);
@@ -171,6 +185,23 @@ export function FeatureFilmFactory() {
           <span className="rounded-pill border border-subtle bg-raised px-2.5 py-1 text-muted">
             <Play className="mr-1 inline h-3 w-3" />
             T3 routing: {job?.scenes?.[0]?.route?.placement ?? 'cloud'}
+          </span>
+          <span
+            className={`rounded-pill border px-2.5 py-1 font-medium ${
+              status?.pilot?.reachable
+                ? 'border-growth-soft bg-growth-soft/15 text-growth'
+                : status?.pilot?.configured
+                  ? 'border-red-500/40 bg-red-500/10 text-red-300'
+                  : 'border-subtle bg-raised text-muted'
+            }`}
+            title={status?.pilot?.detail ?? ''}
+          >
+            <Sparkles className="mr-1 inline h-3 w-3" />
+            {status?.pilot?.reachable
+              ? 'Kaggle Pilot: online'
+              : status?.pilot?.configured
+                ? 'Kaggle Pilot: hindi maabot'
+                : 'Kaggle Pilot: hindi naka-set'}
           </span>
         </div>
       </header>
@@ -272,6 +303,15 @@ export function FeatureFilmFactory() {
               </button>
               <button
                 type="button"
+                onClick={fetchPilot}
+                disabled={busy || running}
+                title="Hingin ang script at character bible mula sa Kaggle Pilot (external cloud worker)"
+                className="inline-flex items-center gap-2 rounded-pill border border-subtle bg-raised px-4 py-2.5 text-sm font-medium text-ink disabled:opacity-40"
+              >
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} Pilot script
+              </button>
+              <button
+                type="button"
                 onClick={pause}
                 disabled={busy || !running}
                 className="inline-flex items-center gap-2 rounded-pill border border-subtle bg-raised px-4 py-2.5 text-sm font-medium text-ink disabled:opacity-40"
@@ -311,6 +351,23 @@ export function FeatureFilmFactory() {
               {job.status}
             </span>
           </div>
+
+          {job.script && (
+            <details className="mt-4 rounded-card border border-subtle bg-sunken p-3">
+              <summary className="cursor-pointer text-xs font-medium text-ink">
+                Script mula sa Kaggle Pilot ({job.script.length.toLocaleString()} chars
+                {job.bible ? ', may character bible' : ''})
+              </summary>
+              <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap text-[11px] text-muted">
+                {job.script}
+              </pre>
+              {job.bible && (
+                <pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap border-t border-subtle pt-2 text-[11px] text-dim">
+                  {job.bible}
+                </pre>
+              )}
+            </details>
+          )}
 
           {/* The whole film. */}
           <div className="mt-4">

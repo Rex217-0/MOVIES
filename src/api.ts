@@ -571,6 +571,10 @@ export interface FeatureJobView {
   totalClock: string;
   scenes: FeatureSceneView[];
   film?: { assetName: string; bytes: number; seconds: number; renderName?: string; renderUrl?: string };
+  /** The Kaggle Pilot screenplay this film was built from, when one was fetched. */
+  script?: string;
+  /** The character bible the Pilot produced for the screenplay. */
+  bible?: string;
   error?: string;
   startedAt: number;
   endedAt?: number;
@@ -587,6 +591,8 @@ export interface FeatureStatus {
   formats: string[];
   narration_order: string[];
   ffmpeg: boolean;
+  /** The Kaggle Pilot (external cloud worker) reachability. */
+  pilot: { configured: boolean; reachable: boolean; url: string; detail: string };
   job: FeatureJobView | null;
 }
 
@@ -621,3 +627,17 @@ export const featureStart = (id: string) => featureAction('start', { id });
 export const featurePause = (id: string) => featureAction('pause', { id });
 export const featureRerender = (id: string, scene: number) => featureAction('rerender', { id, scene });
 export const featureAssemble = (id: string) => featureAction('assemble', { id });
+
+/**
+ * Ask the Kaggle Pilot (external cloud worker) for the screenplay, character
+ * bible and 18-scene breakdown, and store them on the job. Answers an honest
+ * `503 PILOT_UNAVAILABLE` when the worker is down.
+ */
+export async function featurePilot(id: string): Promise<{ job: FeatureJobView; script_chars: number; bible: boolean; scenes: number }> {
+  const res = await apiFetch('/api/direk/feature/pilot', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Pilot failed (${res.status})`);
+  return body;
+}
