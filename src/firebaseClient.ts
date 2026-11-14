@@ -79,7 +79,6 @@ export async function ensureAnonymousSession(): Promise<AuthSession> {
     }
   }
 
-  // Firebase Identity Toolkit requires a JSON boolean here (not the string "true").
   const result = await authRequest('accounts:signUp', { returnSecureToken: true });
   const session = {
     uid: result.localId,

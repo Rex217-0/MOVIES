@@ -1,7 +1,6 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Anonymous Firebase Auth identities can access only their own Movie Maker history.
     match /users/{userId}/movie_history/{movieId} {
       allow read: if request.auth != null && request.auth.uid == userId;
       allow create, update: if request.auth != null
