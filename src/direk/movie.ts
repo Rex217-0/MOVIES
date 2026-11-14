@@ -22,8 +22,13 @@ import { ffmpegPath, fontPath, filterPath, probe, concatVideos } from './render.
 import { defaultPython } from './platform.ts';
 import { saveAsset, type AssetMeta } from './assets.ts';
 import { MOODS, MOOD_LABELS, TTS_VOICES, type Mood, type MovieOptions, type TtsVoice, sceneCount } from '../movieMeta.ts';
-import { comfyAvailable, comfyUrl, comfyVideoConfigured, generateVideoWithComfy } from './comfyui.ts';
+import { renderVideo } from './videoRenderService.ts';
 import { buildVeoStylePrompt, buildVeoStyleNegative } from '../tactical/rules.ts';
+
+export {
+  VideoBackendUnavailable, videoRenderReady as videoBackendReady,
+  videoRenderDetail as videoBackendDetail,
+} from './videoRenderService.ts';
 
 export { MOODS, MOOD_LABELS, TTS_VOICES, type Mood, type MovieOptions, type TtsVoice, sceneCount };
 
@@ -749,39 +754,7 @@ export interface SceneRenderResult {
 }
 
 /**
- * A scene cannot be rendered because no real video backend is available. The
- * factory turns this into a failed scene, and an API route turns it into a 503.
- */
-export class VideoBackendUnavailable extends Error {
-  readonly code = 'AI_UNAVAILABLE';
-  constructor(detail: string) {
-    super(`Walang video backend: ${detail}`);
-    this.name = 'VideoBackendUnavailable';
-  }
-}
-
-/**
- * True when a real local video backend can render a scene: ComfyUI is enabled,
- * a video workflow is configured, and the server answers. This never fakes a
- * clip; it only reports readiness.
- */
-export async function videoBackendReady(): Promise<boolean> {
-  if (process.env.COMFYUI_DISABLE === '1') return false;
-  if (!comfyVideoConfigured()) return false;
-  return comfyAvailable();
-}
-
-/** Why the video backend is not ready, for an honest error message. */
-export function videoBackendDetail(): string {
-  if (process.env.COMFYUI_DISABLE === '1') return 'COMFYUI_DISABLE=1';
-  if (!comfyVideoConfigured()) {
-    return 'walang COMFYUI_VIDEO_WORKFLOW (kailangan ng AnimateDiff/SVD workflow sa API format)';
-  }
-  return `hindi maabot ang ComfyUI sa ${comfyUrl()}`;
-}
-
-/**
- * Normalise a ComfyUI clip to the film's fixed format (1280x720, 30fps, stereo
+ * Normalise a generated clip to the film's fixed format (1280x720, 30fps, stereo
  * AAC), then extend it to the full scene length by looping the encoded clip and
  * copying it (`-c copy`), so the long scene is never re-encoded. Every scene
  * then carries the same codec, size and audio layout, so the whole picture
@@ -836,16 +809,17 @@ async function mixScene(shot: string, narration: string | null, bed: string, sec
 }
 
 /**
- * Render one feature-film scene on its own, start to finish: a real ComfyUI
- * video shot, narration, and a quiet music bed. Scenes are rendered
- * independently so a bad five minutes can be re-rendered without touching the
- * rest of the picture. Every scene comes out at the same size, frame rate and
- * audio layout, so they can later be joined with `ffmpeg -c copy`.
+ * Render one feature-film scene on its own, start to finish: a real video shot,
+ * narration, and a quiet music bed. Scenes are rendered independently so a bad
+ * five minutes can be re-rendered without touching the rest of the picture.
+ * Every scene comes out at the same size, frame rate and audio layout, so they
+ * can later be joined with `ffmpeg -c copy`.
  *
- * The picture is always a real ComfyUI render. When ComfyUI cannot render the
- * shot the scene fails with `VideoBackendUnavailable` (AI_UNAVAILABLE) instead
- * of fabricating a clip that only looks like a result. Narration is optional: a
- * scene without a voice still renders, carrying only the music bed.
+ * The picture is always a real render: the local ComfyUI first, then Wan 2.2 on
+ * fal.ai. When neither can render, the scene fails with
+ * `VideoBackendUnavailable` (AI_UNAVAILABLE) instead of fabricating a clip that
+ * only looks like a result. Narration is optional: a scene without a voice still
+ * renders, carrying only the music bed.
  */
 export async function renderFeatureScene(
   scene: MovieScene,
@@ -856,12 +830,9 @@ export async function renderFeatureScene(
     const voice = opts.voice ?? 'Kore';
     const seconds = opts.seconds ?? MAX_SCENE_SECONDS;
 
-    // 1. The picture must come from ComfyUI. No backend -> no scene.
-    if (!(await videoBackendReady())) {
-      throw new VideoBackendUnavailable(videoBackendDetail());
-    }
+    // 1. The picture: local ComfyUI first, Wan 2.2 on fal.ai as the fallback.
     const prompt = buildVeoStylePrompt(`${scene.heading}. ${scene.visual}`);
-    const { data } = await generateVideoWithComfy(prompt, { negative: buildVeoStyleNegative() });
+    const { data } = await renderVideo({ prompt, negative: buildVeoStyleNegative() });
     const clip = path.join(dir, 'comfy.mp4');
     fs.writeFileSync(clip, data);
 
