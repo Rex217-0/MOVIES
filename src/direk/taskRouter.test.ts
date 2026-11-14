@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classifyTask, tierOf, classifyLoraTraining, planExecution, route_to_cloud,
-  routingTable, t3LocalAllowed, TASK_TIERS, TIER_LABELS, type Tier,
+  routingTable, t3LocalAllowed, isLocalVideoTask, TASK_TIERS, TIER_LABELS, type Tier,
 } from './taskRouter.ts';
 
 test('tierOf maps every known task type to its tier', () => {
@@ -39,8 +39,8 @@ test('classifyTask gives the tier, the placement and a reason', () => {
 
   const video = classifyTask('video_render');
   assert.equal(video.tier, 'T3');
-  assert.equal(video.placement, 'cloud', 'T3 must be offloaded, not local');
-  assert.match(video.reason, /cloud/i);
+  assert.equal(video.placement, 'local', 'video renders on the local ComfyUI');
+  assert.match(video.reason, /ComfyUI/i);
 });
 
 test('an unknown task defaults to T3 so it never loads the local GPU', () => {
@@ -71,11 +71,11 @@ test('planExecution runs T1 and T2 locally', () => {
   assert.equal(planExecution('image_generation').run, 'local');
 });
 
-test('planExecution offloads T3 when a cloud worker is configured', () => {
+test('planExecution offloads a non-video T3 when a cloud worker is configured', () => {
   const before = process.env.CLOUD_T3_URL;
   process.env.CLOUD_T3_URL = 'https://cloud.example/run';
   try {
-    const plan = planExecution('video_render');
+    const plan = planExecution('fish_tts');
     assert.equal(plan.run, 'cloud');
     assert.equal(plan.route.tier, 'T3');
   } finally {
@@ -84,14 +84,14 @@ test('planExecution offloads T3 when a cloud worker is configured', () => {
   }
 });
 
-test('planExecution offloads T3 when the local box is forbidden (T3_ALLOW_LOCAL=0)', () => {
+test('planExecution offloads a non-video T3 when the local box is forbidden (T3_ALLOW_LOCAL=0)', () => {
   const cloud = process.env.CLOUD_T3_URL;
   const allow = process.env.T3_ALLOW_LOCAL;
   delete process.env.CLOUD_T3_URL;
   process.env.T3_ALLOW_LOCAL = '0';
   try {
-    const plan = planExecution('video_render');
-    assert.equal(plan.run, 'cloud', 'T3 must not run on Server-2 when forbidden');
+    const plan = planExecution('tts_large');
+    assert.equal(plan.run, 'cloud', 'non-video T3 must not run on Server-2 when forbidden');
   } finally {
     if (cloud === undefined) delete process.env.CLOUD_T3_URL; else process.env.CLOUD_T3_URL = cloud;
     if (allow === undefined) delete process.env.T3_ALLOW_LOCAL; else process.env.T3_ALLOW_LOCAL = allow;
@@ -104,12 +104,31 @@ test('planExecution falls back to the local GPU only when T3 is allowed and no c
   delete process.env.CLOUD_T3_URL;
   delete process.env.T3_ALLOW_LOCAL;
   try {
-    const plan = planExecution('video_render');
+    const plan = planExecution('fish_tts');
     assert.equal(plan.run, 'local');
     assert.equal(plan.route.placement, 'local', 'the reported placement follows the fallback');
   } finally {
     if (cloud !== undefined) process.env.CLOUD_T3_URL = cloud;
     if (allow !== undefined) process.env.T3_ALLOW_LOCAL = allow;
+  }
+});
+
+test('video render always runs on the local ComfyUI, never the cloud', () => {
+  const cloud = process.env.CLOUD_T3_URL;
+  const allow = process.env.T3_ALLOW_LOCAL;
+  // Even with a cloud worker set and the local box forbidden, video stays local.
+  process.env.CLOUD_T3_URL = 'https://cloud.example/run';
+  process.env.T3_ALLOW_LOCAL = '0';
+  try {
+    for (const task of ['video', 'video_render', 'animatediff', 'svd']) {
+      const plan = planExecution(task);
+      assert.equal(plan.run, 'local', `${task} must render on the local ComfyUI`);
+      assert.equal(plan.route.placement, 'local');
+      assert.equal(plan.route.tier, 'T3');
+    }
+  } finally {
+    if (cloud === undefined) delete process.env.CLOUD_T3_URL; else process.env.CLOUD_T3_URL = cloud;
+    if (allow === undefined) delete process.env.T3_ALLOW_LOCAL; else process.env.T3_ALLOW_LOCAL = allow;
   }
 });
 
@@ -146,7 +165,8 @@ test('routingTable lists every task with its tier and placement, T1 first', () =
   assert.equal(table.length, Object.keys(TASK_TIERS).length);
   for (const row of table) {
     assert.ok(['T1', 'T2', 'T3'].includes(row.tier));
-    assert.equal(row.placement, row.tier === 'T3' ? 'cloud' : 'local');
+    const offloaded = row.tier === 'T3' && !isLocalVideoTask(row.task);
+    assert.equal(row.placement, offloaded ? 'cloud' : 'local');
   }
   // Sorted by tier, so the light work comes first.
   const tiers = table.map(r => r.tier) as Tier[];

@@ -21,6 +21,9 @@ function startServer(env: Record<string, string>) {
       // Force the no-backend path: this test is about what happens when no text
       // model is configured, not about a developer's local Ollama.
       OLLAMA_DISABLE: '1',
+      // No fal.ai either: this test checks the no-backend 503 path.
+      FAL_KEY: '',
+      OPENCUT_ENDPOINT: '',
       ...env,
     },
     stdio: 'ignore',

@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { renderVideo, videoRenderReady, VideoBackendUnavailable } from './videoRenderService.ts';
 import {
   setFalClientForTests, normaliseAspect, normaliseResolution, type FalLike,
@@ -82,7 +85,7 @@ test('the local ComfyUI is used first and Wan is never called', async (t) => {
 
   const comfy = await startMockComfyUI();
   t.after(() => comfy.close());
-  const workflow = writeVideoWorkflow(await import('node:fs').then(fs => fs.mkdtempSync('/tmp/wf-')));
+  const workflow = writeVideoWorkflow(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-')));
 
   await withEnv({
     COMFYUI_URL: comfy.url,

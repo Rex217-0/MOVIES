@@ -51,6 +51,9 @@ function startServer(env: Record<string, string>) {
       DIREK_FACTORY_DB: path.join(assetsDir, 'factory.db'),
       DIREK_CONFIG: path.join(repoRoot, '.no-such-config.json'),
       KAGGLE_PILOT_URL: '',
+      // Blank beats a developer's .env: this test checks the no-fal path.
+      FAL_KEY: '',
+      OPENCUT_ENDPOINT: '',
       ...env,
     },
     stdio: 'ignore',
@@ -226,11 +229,11 @@ test('the routing endpoint reports the T1/T2/T3 table and the T3 policy', async 
   assert.equal(chat.tier, 'T1');
   assert.equal(chat.placement, 'local');
   assert.equal(video.tier, 'T3');
-  assert.equal(video.placement, 'cloud');
+  assert.equal(video.placement, 'local', 'video renders on the local ComfyUI');
   assert.ok(body.tiers.T3);
 });
 
-test('video generation is offloaded, never rendered on the local GPU, when T3 is forbidden', async (t) => {
+test('video is never offloaded to the cloud, even when T3 is forbidden locally', async (t) => {
   const { child, port } = startServer({ APP_AUTH_TOKEN: '', T3_ALLOW_LOCAL: '0', CLOUD_T3_URL: '' });
   t.after(() => child.kill());
   await waitForServer(port);
@@ -241,9 +244,8 @@ test('video generation is offloaded, never rendered on the local GPU, when T3 is
   });
   assert.equal(res.status, 503);
   const body: any = await res.json();
-  assert.equal(body.route.tier, 'T3');
-  assert.equal(body.route.placement, 'cloud');
-  assert.equal(body.offload.job.task, 'video_render');
+  assert.equal(body.code, 'AI_UNAVAILABLE');
+  assert.equal(body.route, undefined, 'video must not be handed to a cloud tier');
 });
 
 test('the LoRA plan reports where its text, image and training work will run', async (t) => {
