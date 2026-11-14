@@ -1,9 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   parseScript, fallbackScript, sceneCount, scriptPrompt, moodPalette,
-  wavFromPcm, parsePcmRate, wrapText, MOODS, MOOD_LABELS, TTS_VOICES,
+  wavFromPcm, parsePcmRate, wrapText, renderFeatureScene,
+  MOODS, MOOD_LABELS, TTS_VOICES,
 } from './movie.ts';
+import { probe } from './render.ts';
 
 test('parseScript reads a clean JSON screenplay', () => {
   const script = parseScript(JSON.stringify({
@@ -249,3 +254,22 @@ test('narrationBackends exposes the chain for the status endpoint', async () => 
   assert.deepEqual(backends.order, (await import('./movie.ts')).narrationBackendOrder());
 });
 
+
+test('renderFeatureScene makes one standalone clip at the scene length', async () => {
+  // The unit of the factory: a single five-minute scene, rendered alone, at a
+  // fixed size/rate so it can later be joined with `ffmpeg -c copy`.
+  const scene = { heading: 'SCENE 7', narration: 'Isang pagsubok ng eksena.', visual: 'wide shot', mood: 'tense' as const };
+  const result = await renderFeatureScene(scene, { index: 7, seconds: 4 });
+  assert.equal(result.seconds, 4);
+  assert.equal(typeof result.voiced, 'boolean');
+  assert.ok(result.data.length > 1000, 'a real MP4 came back');
+
+  const file = path.join(os.tmpdir(), `feature-scene-${process.pid}.mp4`);
+  fs.writeFileSync(file, result.data);
+  const info = await probe(file);
+  assert.equal(info.width, 1280);
+  assert.equal(info.height, 720);
+  assert.equal(info.hasAudio, true, 'every scene carries an audio track');
+  assert.ok(Math.abs(info.duration - 4) < 0.4, `expected ~4s, got ${info.duration}`);
+  fs.rmSync(file, { force: true });
+});

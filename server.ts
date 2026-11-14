@@ -58,12 +58,23 @@ import {
   ollamaStatus, ollamaChat, preferredTextBackend, ollamaUrl, ollamaModel,
 } from './src/direk/llm.ts';
 import {
-  renderMovie, scriptPrompt, parseScript, fallbackScript, narrationBackends,
+  renderMovie, renderFeatureScene, scriptPrompt, parseScript, fallbackScript, narrationBackends,
   TTS_MODEL, TTS_VOICES, MOODS,
   type MovieProgress, type MovieScript, type MovieOptions, type Mood, type TtsVoice,
   type NarrationSource,
 } from './src/direk/movie.ts';
 import { MIN_MINUTES, MAX_MINUTES } from './src/movieMeta.ts';
+import {
+  FeatureFactory, factorySummary,
+} from './src/direk/factory.ts';
+import {
+  breakdownPrompt, parseBreakdown, type ConceptOptions,
+} from './src/direk/featureFilm.ts';
+import {
+  FEATURE_SCENES, FEATURE_SCENE_SECONDS, FEATURE_TOTAL_SECONDS, filmClock,
+  RATINGS, FORMATS, RATING_LABELS,
+  type Rating, type FilmFormat,
+} from './src/featureFilm.ts';
 import {
   classifyTask, classifyLoraTraining, planExecution, route_to_cloud,
   routingTable, t3LocalAllowed, TIER_LABELS,
@@ -1156,6 +1167,141 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
     job.error = error?.message || 'Hindi nagawa ang pelikula.';
     job.endedAt = Date.now();
     broadcastThought(`[MOVIE ERROR] ${job.error}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Feature Film Factory: one concept -> an 18-scene, 90-minute feature.
+// Each scene is rendered alone and lands in the Staging Vault for review; the
+// approved scenes are stitched with `ffmpeg -c copy` at the end.
+// ---------------------------------------------------------------------------
+const featureFactory = new FeatureFactory({
+  // FEATURE_MOCK_RENDER=1 swaps in a stand-in renderer so the batch can be
+  // exercised end to end (tests, demos) without spending GPU time on 18 clips.
+  renderScene: process.env.FEATURE_MOCK_RENDER === '1'
+    ? async ({ scene, index }) => ({
+        data: Buffer.from(`mock-scene-${index}-${scene.mood}`),
+        seconds: FEATURE_SCENE_SECONDS,
+        voiced: false,
+      })
+    : async ({ scene, index }) => {
+        const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS });
+        return { data: result.data, seconds: result.seconds, voiced: result.voiced };
+      },
+  ffmpegAvailable,
+  concat: process.env.FEATURE_MOCK_RENDER === '1'
+    ? async (files: string[]) => ({ data: Buffer.from(`mock-feature:${files.length}`) })
+    : undefined,
+});
+
+function featureView(job: ReturnType<FeatureFactory['create']>) {
+  return {
+    ...job,
+    totalSeconds: FEATURE_TOTAL_SECONDS,
+    filmClock: filmClock(job.renderedSeconds),
+    totalClock: filmClock(FEATURE_TOTAL_SECONDS),
+  };
+}
+
+app.get('/api/direk/feature/status', (req: Request, res: Response) => {
+  const id = typeof req.query.id === 'string' ? req.query.id : '';
+  const job = id ? featureFactory.refresh(id) : featureFactory.latest();
+  const backends = narrationBackends();
+  res.json({
+    available: true,
+    scenes: FEATURE_SCENES,
+    scene_seconds: FEATURE_SCENE_SECONDS,
+    total_seconds: FEATURE_TOTAL_SECONDS,
+    total_clock: filmClock(FEATURE_TOTAL_SECONDS),
+    ratings: RATINGS,
+    rating_labels: RATING_LABELS,
+    formats: FORMATS,
+    narration_order: backends.order,
+    ffmpeg: Boolean(ffmpegPath()),
+    job: job ? featureView(job) : null,
+  });
+});
+
+app.post('/api/direk/feature/create', async (req: Request, res: Response) => {
+  const body = req.body as {
+    brief?: string; title?: string; genre?: string; rating?: string; format?: string; mood?: string;
+  };
+  const brief = typeof body.brief === 'string' ? body.brief.trim() : '';
+  if (!brief) {
+    res.status(400).json({ error: 'Kailangan ng brief (isang pangungusap na ideya).' });
+    return;
+  }
+  const rating = (RATINGS as readonly string[]).includes(String(body.rating)) ? (body.rating as Rating) : undefined;
+  const format = (FORMATS as readonly string[]).includes(String(body.format)) ? (body.format as FilmFormat) : undefined;
+  const mood = (MOODS as string[]).includes(String(body.mood)) ? (body.mood as Mood) : undefined;
+  const opts: ConceptOptions = { brief, title: body.title, genre: body.genre, rating, format, mood };
+  const job = featureFactory.create(opts);
+
+  // A richer breakdown from a text model when one is available; the built-in
+  // 18-beat structure stands in when there is none.
+  try {
+    const raw = await generateText(breakdownPrompt(job.concept), [{ role: 'user', content: brief }], {
+      json: true, temperature: 0.9, maxTokens: 8192,
+    });
+    const parsed = parseBreakdown(raw);
+    if (parsed) featureFactory.applyBreakdown(job.id, parsed);
+  } catch (error: any) {
+    broadcastThought(`[FILM] Walang text model (${error?.message || 'error'}) — built-in 18-beat breakdown ang gagamitin.`);
+  }
+  broadcastThought(`[FILM] ${factorySummary(job)}`);
+  res.status(201).json({ job: featureView(job) });
+});
+
+app.post('/api/direk/feature/start', (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : '';
+  const job = id ? featureFactory.start(id) : undefined;
+  if (!job) {
+    res.status(404).json({ error: 'Walang ganoong pelikula. Gumawa muna ng concept.' });
+    return;
+  }
+  broadcastThought(`[FILM] Batch START · ${job.concept.title} · ${job.total} eksena`);
+  res.json({ job: featureView(job) });
+});
+
+app.post('/api/direk/feature/pause', (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : '';
+  const job = id ? featureFactory.pause(id) : undefined;
+  if (!job) {
+    res.status(404).json({ error: 'Walang ganoong pelikula.' });
+    return;
+  }
+  broadcastThought(`[FILM] Batch PAUSE · ${job.concept.title}`);
+  res.json({ job: featureView(job) });
+});
+
+app.post('/api/direk/feature/rerender', async (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : '';
+  const index = Number(req.body?.scene);
+  const job = id ? await featureFactory.rerender(id, index) : undefined;
+  if (!job) {
+    res.status(404).json({ error: 'Walang ganoong pelikula o eksena.' });
+    return;
+  }
+  res.json({ job: featureView(job) });
+});
+
+app.post('/api/direk/feature/assemble', async (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : '';
+  const job = id ? featureFactory.get(id) : undefined;
+  if (!job) {
+    res.status(404).json({ error: 'Walang ganoong pelikula.' });
+    return;
+  }
+  try {
+    const film = await featureFactory.assemble(job);
+    if (!film) {
+      res.status(400).json({ error: 'Kailangan ng hindi bababa sa dalawang aprubadong eksena.' });
+      return;
+    }
+    broadcastThought(`[FILM] Naidugtong: ${film.assetName} · ${filmClock(film.seconds)}`);
+    res.json({ job: featureView(job), film });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'Hindi naidugtong ang pelikula.' });
   }
 });
 

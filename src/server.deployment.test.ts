@@ -254,3 +254,125 @@ test('the LoRA plan reports where its text, image and training work will run', a
   assert.equal(body.routing.training.tier, 'T2', 'a small set trains locally');
   assert.equal(body.routing.training.placement, 'local');
 });
+
+// ---------------------------------------------------------------------------
+// Feature Film Factory (18 scenes -> one 90-minute feature)
+// The batch renderer is mocked (FEATURE_MOCK_RENDER=1) so the full flow runs
+// end to end without spending GPU time on 18 real clips.
+// ---------------------------------------------------------------------------
+
+async function featureJob(port: number, id: string): Promise<any> {
+  const res = await fetch(`http://127.0.0.1:${port}/api/direk/feature/status?id=${encodeURIComponent(id)}`);
+  return (await res.json()).job;
+}
+
+async function waitFeature(port: number, id: string, timeoutMs = 20000): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
+  let job: any = null;
+  while (Date.now() < deadline) {
+    job = await featureJob(port, id);
+    if (job && job.status !== 'running') return job;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  throw new Error('feature batch did not finish');
+}
+
+test('the factory builds an 18-scene concept from one brief', async (t) => {
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const status = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/status`)).json() as any;
+  assert.equal(status.scenes, 18);
+  assert.equal(status.scene_seconds, 300);
+  assert.equal(status.total_clock, '1:30:00');
+
+  const res = await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang horror sa masukal na gubat, SPG, Realistic.' }),
+  });
+  assert.equal(res.status, 201);
+  const job = (await res.json() as any).job;
+  assert.equal(job.scenes.length, 18);
+  assert.equal(job.concept.rating, 'SPG');
+  assert.equal(job.concept.format, 'Realistic');
+  assert.equal(job.totalSeconds, 5400);
+  assert.ok(job.scenes.every((s: any) => s.status === 'pending'));
+  assert.ok(job.scenes.every((s: any) => s.route.tier === 'T3'));
+});
+
+test('the batch renders all 18 scenes and stitches the approved ones with -c copy', async (t) => {
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang aksyon sa Maynila, R.' }),
+  })).json() as any;
+  const id = created.job.id;
+
+  const started = await fetch(`http://127.0.0.1:${port}/api/direk/feature/start`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+  });
+  assert.equal(started.status, 200);
+
+  const done = await waitFeature(port, id);
+  assert.equal(done.status, 'done');
+  assert.equal(done.rendered, 18);
+  assert.equal(done.failed, 0);
+  assert.equal(done.percent, 100);
+
+  // Approve two scenes in the vault, then stitch them.
+  const review = async (sceneIndex: number) => {
+    const scene = done.scenes.find((s: any) => s.index === sceneIndex);
+    const r = await fetch(`http://127.0.0.1:${port}/api/direk/assets/review`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: scene.assetId, action: 'approve' }),
+    });
+    assert.equal(r.status, 200);
+  };
+  await review(1);
+  await review(2);
+
+  const assembled = await fetch(`http://127.0.0.1:${port}/api/direk/feature/assemble`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+  });
+  assert.equal(assembled.status, 200);
+  const body = await assembled.json() as any;
+  assert.ok(body.film, 'the stitched film should be reported');
+  assert.equal(body.film.seconds, 2 * 300);
+  assert.equal(body.job.approved, 2);
+});
+
+test('assemble without two approved scenes returns a clear 400', async (t) => {
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang drama sa probinsya.' }),
+  })).json() as any;
+
+  const res = await fetch(`http://127.0.0.1:${port}/api/direk/feature/assemble`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: created.job.id }),
+  });
+  assert.equal(res.status, 400);
+});
+
+test('create needs a brief, and start needs a real job', async (t) => {
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const noBrief = await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+  });
+  assert.equal(noBrief.status, 400);
+
+  const noJob = await fetch(`http://127.0.0.1:${port}/api/direk/feature/start`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'FILM-wala' }),
+  });
+  assert.equal(noJob.status, 404);
+});

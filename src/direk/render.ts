@@ -245,6 +245,30 @@ export async function concatVideos(inputs: string[], width = 1280, height = 720)
   }
 }
 
+/**
+ * Join clips with the concat demuxer and `-c copy`, so the video and audio are
+ * copied through instead of re-encoded. This is how the factory stitches the 18
+ * approved scenes into one feature: it is fast, and it loses no quality.
+ *
+ * `-c copy` only works when the clips share codec, size, frame rate and audio
+ * layout. `renderFeatureScene` guarantees that; if a mismatch is found anyway,
+ * the caller gets the ffmpeg error rather than a silently broken film.
+ */
+export async function concatCopy(inputs: string[], dir?: string): Promise<RenderOutput> {
+  if (inputs.length < 2) throw new Error('Kailangan ng dalawa o higit pang clip para pagsamahin.');
+  const work = dir ?? workDir();
+  const ownsDir = !dir;
+  try {
+    const list = path.join(work, 'concat-list.txt');
+    fs.writeFileSync(list, inputs.map(c => `file '${c.replace(/'/g, "'\\''")}'`).join('\n'), 'utf8');
+    const out = path.join(work, 'feature.mp4');
+    await run(['-y', '-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-movflags', '+faststart', out]);
+    return await readResult(out, MP4);
+  } finally {
+    if (ownsDir) cleanup(work);
+  }
+}
+
 /** Turn one still into a moving shot with a slow zoom, a ken-burns clip. */
 export async function kenBurnsClip(image: string, seconds = 3, width = 1280, height = 720): Promise<string> {
   const dir = workDir();
