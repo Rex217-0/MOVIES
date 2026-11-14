@@ -350,6 +350,16 @@ export function FeatureFilmFactory() {
                   </div>
                   <p className="mt-1.5 text-[10px] text-muted">{SCENE_LABEL[scene.status]}</p>
                   {scene.error && <p className="mt-1 text-[10px] text-red-300">{scene.error.slice(0, 60)}</p>}
+                  {scene.renderUrl && (scene.status === 'rendered' || scene.status === 'approved') && (
+                    <a
+                      href={scene.renderUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-1.5 inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
+                    >
+                      <Play className="h-3 w-3" /> Play
+                    </a>
+                  )}
                   {(scene.status === 'failed' || scene.status === 'rejected') && (
                     <button
                       type="button"

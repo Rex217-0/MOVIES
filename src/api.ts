@@ -461,6 +461,8 @@ export interface MovieJobView {
   voiceSource?: 'fish' | 'gemini' | 'tagalog' | 'piper' | 'none';
   note?: string;
   asset?: { name: string; bytes: number; kind: string; title: string };
+  /** What the screenplay was grounded in (real datasets), when available. */
+  grounding?: { genre: string | null; references: number; market: boolean; pacing: string };
   error?: string;
   startedAt: number;
   endedAt?: number;
@@ -546,6 +548,8 @@ export interface FeatureSceneView {
   seconds: number;
   assetId?: string;
   assetName?: string;
+  /** Public URL of the scene file in the local render store (/renders/...). */
+  renderUrl?: string;
   error?: string;
   route: { task: string; tier: string; placement: string; reason: string };
 }
@@ -566,7 +570,7 @@ export interface FeatureJobView {
   filmClock: string;
   totalClock: string;
   scenes: FeatureSceneView[];
-  film?: { assetName: string; bytes: number; seconds: number };
+  film?: { assetName: string; bytes: number; seconds: number; renderName?: string; renderUrl?: string };
   error?: string;
   startedAt: number;
   endedAt?: number;

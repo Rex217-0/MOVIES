@@ -63,7 +63,10 @@ import {
   type MovieProgress, type MovieScript, type MovieOptions, type Mood, type TtsVoice,
   type NarrationSource,
 } from './src/direk/movie.ts';
-import { MIN_MINUTES, MAX_MINUTES } from './src/movieMeta.ts';
+import { MIN_MINUTES, MAX_MINUTES, sceneCount } from './src/movieMeta.ts';
+import { groundMovie, groundingBlock } from './src/direk/grounding.ts';
+import { FactoryDb, factoryDbPath } from './src/direk/factoryDb.ts';
+import { rendersDir, renderPath } from './src/direk/renderStore.ts';
 import {
   FeatureFactory, factorySummary,
 } from './src/direk/factory.ts';
@@ -1081,6 +1084,8 @@ interface MovieJob {
   voiceSource?: NarrationSource;
   note?: string;
   asset?: AssetMeta;
+  /** What the screenplay was grounded in, for the UI and the logs. */
+  grounding?: { genre: string | null; references: number; market: boolean; pacing: string };
   error?: string;
   startedAt: number;
   endedAt?: number;
@@ -1120,6 +1125,15 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
   const voice = (TTS_VOICES as readonly string[]).includes(String(body.voice)) ? (body.voice as TtsVoice) : undefined;
   const opts: MovieOptions = { minutes, mood, voice, title: body.title };
 
+  // Ground the screenplay in the real datasets before the model is asked to
+  // write: the reference catalog (real titles/genres) and the box-office stats.
+  const grounding = groundMovie(brief, { minutes, sceneCount: sceneCount(minutes) }, referenceCatalog, marketIntel);
+  const groundingText = groundingBlock(grounding);
+  broadcastThought(
+    `[MOVIE] Grounding: ${grounding.references.length} reference · ` +
+    `${grounding.genre ?? 'walang genre'} · ${grounding.market_brief ? 'may market stats' : 'walang market stats'}`,
+  );
+
   const id = `MOV-${Date.now()}`;
   const job: MovieJob = { id, brief, minutes, stage: 'Simula', percent: 0, status: 'running', startedAt: Date.now() };
   movieJobs.set(id, job);
@@ -1140,7 +1154,7 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
     tick({ stage: 'Script', percent: 1 });
     let script: MovieScript | null = null;
     try {
-      const raw = await generateText(scriptPrompt(brief, opts), [{ role: 'user', content: brief }], {
+      const raw = await generateText(scriptPrompt(brief, opts, groundingText), [{ role: 'user', content: brief }], {
         json: true,
         temperature: 0.9,
         maxTokens: 8192,
@@ -1160,6 +1174,12 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
     job.voiceSource = result.voice_source;
     job.note = result.note;
     job.asset = result.asset;
+    job.grounding = {
+      genre: grounding.genre,
+      references: grounding.references.length,
+      market: Boolean(grounding.market_brief),
+      pacing: grounding.pacing,
+    };
     job.endedAt = Date.now();
     broadcastThought(`[MOVIE DONE] ${script.title} · ${result.seconds.toFixed(0)}s`);
   } catch (error: any) {
@@ -1175,6 +1195,7 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
 // Each scene is rendered alone and lands in the Staging Vault for review; the
 // approved scenes are stitched with `ffmpeg -c copy` at the end.
 // ---------------------------------------------------------------------------
+const featureDb = new FactoryDb();
 const featureFactory = new FeatureFactory({
   // FEATURE_MOCK_RENDER=1 swaps in a stand-in renderer so the batch can be
   // exercised end to end (tests, demos) without spending GPU time on 18 clips.
@@ -1192,6 +1213,8 @@ const featureFactory = new FeatureFactory({
   concat: process.env.FEATURE_MOCK_RENDER === '1'
     ? async (files: string[]) => ({ data: Buffer.from(`mock-feature:${files.length}`) })
     : undefined,
+  // Local SQLite store for MovieJobs and SceneJobs (factory.db).
+  db: featureDb,
 });
 
 function featureView(job: ReturnType<FeatureFactory['create']>) {
@@ -1303,6 +1326,41 @@ app.post('/api/direk/feature/assemble', async (req: Request, res: Response) => {
   } catch (error: any) {
     res.status(500).json({ error: error?.message || 'Hindi naidugtong ang pelikula.' });
   }
+});
+
+// Stitch one film by id: gather its 18 approved scenes and join them with
+// `ffmpeg -c copy`. Works even if the in-memory job is gone, by reading the
+// scene list back from factory.db.
+app.post('/api/direk/feature/stitch', async (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : typeof req.body?.movie_id === 'string' ? req.body.movie_id : '';
+  if (!id) {
+    res.status(400).json({ error: 'Kailangan ang movie id.' });
+    return;
+  }
+  try {
+    const film = await featureFactory.stitchMovie(id);
+    if (!film) {
+      res.status(400).json({ error: 'Kailangan ng hindi bababa sa dalawang aprubadong eksena.' });
+      return;
+    }
+    broadcastThought(`[FILM] stitchMovie(${id}) → ${film.assetName} · ${filmClock(film.seconds)}`);
+    const job = featureFactory.get(id);
+    res.json({ movie_id: id, film, job: job ? featureView(job) : null });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'Hindi naidugtong ang pelikula.' });
+  }
+});
+
+// Local factory database: which films and scenes are stored.
+app.get('/api/direk/factory/db', (_req: Request, res: Response) => {
+  const movies = featureDb.list();
+  res.json({
+    database: factoryDbPath(),
+    renders_dir: rendersDir(),
+    movies: movies.length,
+    scenes: movies.reduce((n, m) => n + featureDb.sceneCount(m.id), 0),
+    jobs: movies.map(m => ({ id: m.id, title: m.concept.title, status: m.status, scenes: m.scenes.length })),
+  });
 });
 
 // Box-office market intelligence (real stats, no model needed).
@@ -1710,6 +1768,18 @@ app.get('/api/direk/assets/:name/download', (req: Request, res: Response) => {
     return;
   }
   res.download(full);
+});
+
+// Local render store: finished .mp4 files (scenes and stitched features) are
+// served straight from `public/renders/` so the browser can play or download
+// them without going through the asset vault.
+app.get('/renders/:name', (req: Request, res: Response) => {
+  const full = renderPath(String(req.params.name));
+  if (!full) {
+    res.status(404).json({ error: 'Hindi mahanap ang render.' });
+    return;
+  }
+  res.sendFile(full);
 });
 
 // Google Drive API v3: status, consent, and the callback Google redirects to.

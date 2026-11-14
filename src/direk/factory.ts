@@ -16,6 +16,8 @@ import path from 'node:path';
 import { classifyTask, planExecution, route_to_cloud, type TaskRoute } from './taskRouter.ts';
 import { saveAsset, assetPath, listAssets, type ReviewStatus } from './assets.ts';
 import { concatCopy } from './render.ts';
+import { saveRender, type StoredRender } from './renderStore.ts';
+import type { FactoryDb } from './factoryDb.ts';
 import { buildConcept, buildScenes, mergeScenes, type ConceptOptions } from './featureFilm.ts';
 import type { Mood } from '../movieMeta.ts';
 import {
@@ -39,6 +41,8 @@ export interface SceneState {
   seconds: number;
   assetId?: string;
   assetName?: string;
+  /** Public URL of the scene file in the local render store. */
+  renderUrl?: string;
   error?: string;
   route: TaskRoute;
   startedAt?: number;
@@ -64,7 +68,7 @@ export interface FeatureJobView {
   renderedSeconds: number;
   scenes: SceneState[];
   /** The stitched film, once the batch is done and scenes were approved. */
-  film?: { assetName: string; bytes: number; seconds: number };
+  film?: { assetName: string; bytes: number; seconds: number; renderName?: string; renderUrl?: string };
   error?: string;
   startedAt: number;
   endedAt?: number;
@@ -84,6 +88,8 @@ export interface FactoryDeps {
   ffmpegAvailable: () => Promise<boolean>;
   /** Stitching backend. Defaults to the real `ffmpeg -c copy` concat. */
   concat?: (files: string[]) => Promise<{ data: Buffer }>;
+  /** Local SQLite store for MovieJobs and SceneJobs. Optional (in-memory if absent). */
+  db?: FactoryDb;
 }
 
 /** Which review states count as "done enough to stitch". */
@@ -96,6 +102,15 @@ export class FeatureFactory {
 
   constructor(deps: FactoryDeps) {
     this.deps = deps;
+  }
+
+  /** Persist one job to SQLite, when a database is wired in. */
+  private persist(job: FeatureJobView): void {
+    try {
+      this.deps.db?.save(job);
+    } catch {
+      // The batch must not die because the local database hiccuped.
+    }
   }
 
   /** Create a job from one brief; every field is derived when not given. */
@@ -121,6 +136,7 @@ export class FeatureFactory {
     };
     this.jobs.set(id, job);
     while (this.jobs.size > 12) this.jobs.delete(this.jobs.keys().next().value as string);
+    this.persist(job);
     return job;
   }
 
@@ -166,6 +182,7 @@ export class FeatureFactory {
     const fallback = buildScenes(job.concept);
     const merged = mergeScenes(model, fallback, job.concept);
     job.scenes = merged.map(s => ({ ...this.sceneState(s), status: 'pending' as SceneStatus }));
+    this.persist(job);
     return job;
   }
 
@@ -192,6 +209,7 @@ export class FeatureFactory {
     job.status = 'running';
     job.error = undefined;
     job.endedAt = undefined;
+    this.persist(job);
     this.queue = this.queue.then(() => this.runBatch(job)).catch(() => {});
     return job;
   }
@@ -200,6 +218,7 @@ export class FeatureFactory {
     const job = this.jobs.get(id);
     if (!job || job.status !== 'running') return job;
     job.status = 'paused';
+    this.persist(job);
     return job;
   }
 
@@ -224,6 +243,7 @@ export class FeatureFactory {
       state.status = 'rendering';
       state.startedAt = Date.now();
       state.percent = 10;
+      this.persist(job);
       try {
         if (plan.run === 'cloud') {
           // T3 is offloaded; with no cloud worker configured it is queued, and
@@ -242,8 +262,11 @@ export class FeatureFactory {
           source: 'feature-film-factory',
           prompt: scenes[i].visual,
         });
+        // The served copy lives in public/renders/ for playback and download.
+        const stored: StoredRender = saveRender(out.data, `scene-${state.index}-${job.concept.title}`);
         state.assetId = asset.id;
         state.assetName = asset.name;
+        state.renderUrl = stored.url;
         state.seconds = seconds;
         state.status = 'rendered';
         state.percent = 100;
@@ -256,6 +279,7 @@ export class FeatureFactory {
         state.endedAt = Date.now();
       }
       this.recompute(job);
+      this.persist(job);
     }
     job.currentScene = 0;
     // Assembly: stitch the approved scenes with `-c copy`.
@@ -266,6 +290,7 @@ export class FeatureFactory {
     }
     job.status = 'done';
     job.endedAt = Date.now();
+    this.persist(job);
   }
 
   /**
@@ -299,8 +324,28 @@ export class FeatureFactory {
       source: 'feature-film-factory',
       prompt: job.concept.brief,
     });
-    job.film = { assetName: asset.name, bytes: asset.bytes, seconds };
+    const stored = saveRender(joined.data, `feature-${job.concept.title}`);
+    job.film = {
+      assetName: asset.name,
+      bytes: asset.bytes,
+      seconds,
+      renderName: stored.name,
+      renderUrl: stored.url,
+    };
+    this.persist(job);
     return job.film;
+  }
+
+  /**
+   * Stitch one film by id: gather its approved scene `.mp4`s in order and join
+   * them with `ffmpeg -c copy` into a single continuous feature. Thin wrapper
+   * over `assemble` so a caller only needs the movie id.
+   */
+  async stitchMovie(movieId: string): Promise<FeatureJobView['film'] | undefined> {
+    const job = this.jobs.get(movieId) ?? this.deps.db?.load(movieId);
+    if (!job) return undefined;
+    if (!this.jobs.has(movieId)) this.jobs.set(movieId, job);
+    return this.assemble(job);
   }
 
   /** A scene's review state, from its asset when it has one. */
@@ -332,6 +377,7 @@ export class FeatureFactory {
       else if (state.status === 'approved' || state.status === 'rejected') state.status = 'rendered';
     }
     this.recompute(job);
+    this.persist(job);
     return job;
   }
 
@@ -346,6 +392,7 @@ export class FeatureFactory {
     state.status = 'rendering';
     state.percent = 10;
     state.error = undefined;
+    this.persist(job);
     try {
       const out = await this.deps.renderScene({ scene, index });
       const asset = saveAsset(out.data, {
@@ -355,8 +402,10 @@ export class FeatureFactory {
         source: 'feature-film-factory',
         prompt: scene.visual,
       });
+      const stored = saveRender(out.data, `scene-${index}-${job.concept.title}`);
       state.assetId = asset.id;
       state.assetName = asset.name;
+      state.renderUrl = stored.url;
       state.status = 'rendered';
       state.percent = 100;
     } catch (error: any) {
@@ -364,6 +413,7 @@ export class FeatureFactory {
       state.error = error?.message || 'Nabigo ang render.';
     }
     this.recompute(job);
+    this.persist(job);
     return job;
   }
 }

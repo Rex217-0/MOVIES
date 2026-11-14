@@ -36,6 +36,7 @@ function jpeg(): Buffer {
 function startServer(env: Record<string, string>) {
   const port = 4900 + Math.floor(Math.random() * 500);
   const assetsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-'));
+  const rendersDir = fs.mkdtempSync(path.join(os.tmpdir(), 'renders-'));
   const child = spawn('node', ['server.ts'], {
     cwd: repoRoot,
     env: {
@@ -45,12 +46,14 @@ function startServer(env: Record<string, string>) {
       OLLAMA_DISABLE: '1',
       COMFYUI_DISABLE: '1',
       DIREK_ASSETS_DIR: assetsDir,
+      DIREK_RENDERS_DIR: rendersDir,
+      DIREK_FACTORY_DB: path.join(assetsDir, 'factory.db'),
       DIREK_CONFIG: path.join(repoRoot, '.no-such-config.json'),
       ...env,
     },
     stdio: 'ignore',
   });
-  return { child, port, assetsDir };
+  return { child, port, assetsDir, rendersDir };
 }
 
 async function waitForServer(port: number) {
@@ -375,4 +378,61 @@ test('create needs a brief, and start needs a real job', async (t) => {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'FILM-wala' }),
   });
   assert.equal(noJob.status, 404);
+});
+
+test('the factory writes MovieJobs and SceneJobs to factory.db', async (t) => {
+  const { child, port, assetsDir } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang horror sa gubat, SPG.' }),
+  })).json() as any;
+
+  const db = await (await fetch(`http://127.0.0.1:${port}/api/direk/factory/db`)).json() as any;
+  assert.equal(db.movies, 1);
+  assert.equal(db.scenes, 18);
+  assert.ok(fs.existsSync(path.join(assetsDir, 'factory.db')), 'factory.db should exist on disk');
+  assert.ok(db.jobs.some((j: any) => j.id === created.job.id && j.scenes === 18));
+});
+
+test('stitchMovie joins the approved scenes and serves the file from /renders/', async (t) => {
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang aksyon sa Maynila, R.' }),
+  })).json() as any;
+  const id = created.job.id;
+  await fetch(`http://127.0.0.1:${port}/api/direk/feature/start`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+  });
+  const done = await waitFeature(port, id);
+
+  // A rendered scene carries the public render url.
+  assert.ok(done.scenes[0].renderUrl?.startsWith('/renders/'));
+
+  // Approve two scenes, then stitch by movie id.
+  for (const i of [1, 2]) {
+    const scene = done.scenes.find((s: any) => s.index === i);
+    await fetch(`http://127.0.0.1:${port}/api/direk/assets/review`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: scene.assetId, action: 'approve' }),
+    });
+  }
+  const stitched = await fetch(`http://127.0.0.1:${port}/api/direk/feature/stitch`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ movie_id: id }),
+  });
+  assert.equal(stitched.status, 200);
+  const body = await stitched.json() as any;
+  assert.equal(body.film.seconds, 2 * 300);
+  assert.ok(body.film.renderUrl?.startsWith('/renders/'));
+
+  // The stitched file is really served from the local render store.
+  const served = await fetch(`http://127.0.0.1:${port}${body.film.renderUrl}`);
+  assert.equal(served.status, 200);
+  assert.ok((await served.arrayBuffer()).byteLength > 0);
 });

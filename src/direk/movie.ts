@@ -76,13 +76,17 @@ export interface MovieScript {
   scenes: MovieScene[];
 }
 
-export function scriptPrompt(brief: string, opts: MovieOptions): string {
+export function scriptPrompt(brief: string, opts: MovieOptions, grounding = ''): string {
   const scenes = sceneCount(opts.minutes);
-  return [
+  const lines = [
     `Ikaw si Movie Robo, isang direktor ng pelikula. Gumawa ng screenplay sa JSON.`,
     `Brief: ${brief}`,
     `Haba: ${opts.minutes} minuto. Bilang ng eksena: ${scenes}.`,
     opts.mood ? `Mood: ${opts.mood}.` : `Pumili ng mood na bagay sa brief.`,
+  ];
+  // Grounding from the real datasets: reference titles, market share, pacing.
+  if (grounding.trim()) lines.push('', grounding);
+  lines.push(
     ``,
     `Sumagot lamang ng JSON na ganito ang hugis:`,
     `{"title":"...","logline":"...","scenes":[{"heading":"SCENE 1 — LUGAR, ORAS","narration":"...","visual":"...","mood":"warm"}]}`,
@@ -93,7 +97,8 @@ export function scriptPrompt(brief: string, opts: MovieOptions): string {
     `- Ang "visual" ay maikling paglalarawan ng shot sa Ingles, 8 hanggang 16 salita.`,
     `- Ang "mood" ay isa sa: ${MOODS.join(', ')}.`,
     `- Walang markdown, walang paliwanag, JSON lang.`,
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 /** Pull the screenplay out of a model reply that may carry prose or fences. */

@@ -4,13 +4,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { FeatureFactory, factorySummary } from './factory.ts';
+import { FactoryDb } from './factoryDb.ts';
 import { reviewAsset, listAssets } from './assets.ts';
+import { listRenders } from './renderStore.ts';
 import { FEATURE_SCENES, FEATURE_SCENE_SECONDS, FEATURE_TOTAL_SECONDS } from '../featureFilm.ts';
 
-/** Every factory test writes to its own asset store. */
+/** Every factory test writes to its own asset store and render store. */
 function freshStore(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-'));
   process.env.DIREK_ASSETS_DIR = dir;
+  process.env.DIREK_RENDERS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'renders-'));
   return dir;
 }
 
@@ -225,3 +228,75 @@ test('refresh pulls the Staging Vault review decisions back into the job', async
   factory.refresh(job.id);
   assert.equal(job.scenes[1].status, 'rendered');
 });
+
+test('every rendered scene is saved to the local render store as an .mp4', async () => {
+  freshStore();
+  const { factory } = makeFactory();
+  const job = factory.create({ brief: 'Isang aksyon sa Maynila.' });
+  factory.start(job.id);
+  const done = await settle(factory, job.id);
+
+  // 18 scenes saved as .mp4 in the local render store. (No scene is approved
+  // yet, so the batch does not stitch a film on its own.)
+  const renders = listRenders();
+  assert.equal(renders.length, 18, `expected 18 scene renders, got ${renders.length}`);
+  assert.ok(renders.every(n => n.endsWith('.mp4')));
+  // Each scene carries the public url the UI plays.
+  assert.ok(done.scenes.every(s => s.renderUrl?.startsWith('/renders/')));
+});
+
+test('stitchMovie(id) gathers the approved scenes and joins them with -c copy', async () => {
+  freshStore();
+  const { factory, concatCalls } = makeFactory({ concatData: Buffer.from('stitched') });
+  const job = factory.create({ brief: 'Isang drama sa probinsya.' });
+  factory.start(job.id);
+  await settle(factory, job.id);
+
+  // Approve four scenes out of order.
+  for (const i of [9, 1, 4, 15]) reviewAsset(job.scenes.find(s => s.index === i)!.assetId!, 'approved');
+
+  // stitchMovie works from the id alone.
+  const film = await factory.stitchMovie(job.id);
+  assert.ok(film);
+  assert.equal(film!.seconds, 4 * FEATURE_SCENE_SECONDS);
+  assert.equal(concatCalls.length, 1);
+  const names = concatCalls[0].map(f => path.basename(f));
+  assert.deepEqual(
+    names.map(n => Number(n.match(/scene-(\d+)-/)![1])),
+    [1, 4, 9, 15],
+    'the scenes handed to ffmpeg are approved and in order',
+  );
+});
+
+test('stitchMovie reads a film back from the database when memory was cleared', async () => {
+  freshStore();
+  const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitchdb-'));
+  const db = new FactoryDb(path.join(dbDir, 'factory.db'));
+  const dbFactory = new FeatureFactory({
+    renderScene: async ({ index }) => ({ data: Buffer.from(`scene-${index}`), seconds: FEATURE_SCENE_SECONDS }),
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+    db,
+  });
+  const job = dbFactory.create({ brief: 'Isang sci-fi sa Mars.' });
+  dbFactory.start(job.id);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && dbFactory.get(job.id)!.status === 'running') {
+    await new Promise(r => setTimeout(r, 5));
+  }
+  for (const i of [2, 3]) reviewAsset(job.scenes.find(s => s.index === i)!.assetId!, 'approved');
+  dbFactory.refresh(job.id);
+
+  // A fresh factory with an empty memory, same database: stitch still works.
+  const cold = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.alloc(0) }),
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+    db,
+  });
+  const film = await cold.stitchMovie(job.id);
+  assert.ok(film, 'the cold factory should rebuild the job from factory.db');
+  assert.equal(film!.seconds, 2 * FEATURE_SCENE_SECONDS);
+  db.close();
+});
+
