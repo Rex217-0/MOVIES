@@ -82,6 +82,7 @@ interface SceneRow {
   visual: string;
   mood: string;
   status: string;
+  stage: string;
   percent: number;
   seconds: number;
   asset_id: string | null;
@@ -164,6 +165,7 @@ CREATE TABLE IF NOT EXISTS scene_jobs (
   visual TEXT NOT NULL,
   mood TEXT NOT NULL,
   status TEXT NOT NULL,
+  stage TEXT NOT NULL DEFAULT 'scripting',
   percent INTEGER NOT NULL DEFAULT 0,
   seconds INTEGER NOT NULL DEFAULT 300,
   asset_id TEXT,
@@ -218,6 +220,7 @@ function migrate(db: DatabaseSync): void {
     ['org_id', `TEXT NOT NULL DEFAULT '${ORG_ID}'`],
     ['scene_number', 'INTEGER NOT NULL DEFAULT 0'],
     ['video_path', 'TEXT'],
+    ['stage', "TEXT NOT NULL DEFAULT 'scripting'"],
   ];
   for (const [name, type] of addScene) {
     if (!sceneCols.has(name)) db.exec(`ALTER TABLE scene_jobs ADD COLUMN ${name} ${type}`);
@@ -298,21 +301,21 @@ export class FactoryDb {
     const scene = this.db.prepare(
       `INSERT INTO scene_jobs
          (id, org_id, movie_id, scene_number, video_path, idx, act, heading, beat, narration, visual,
-          mood, status, percent, seconds, asset_id, asset_name, error, route, started_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          mood, status, stage, percent, seconds, asset_id, asset_name, error, route, started_at, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(movie_id, idx) DO UPDATE SET
          org_id=excluded.org_id,
          id=excluded.id, scene_number=excluded.scene_number, video_path=excluded.video_path,
          act=excluded.act, heading=excluded.heading, beat=excluded.beat,
          narration=excluded.narration, visual=excluded.visual, mood=excluded.mood,
-         status=excluded.status, percent=excluded.percent, seconds=excluded.seconds,
+         status=excluded.status, stage=excluded.stage, percent=excluded.percent, seconds=excluded.seconds,
          asset_id=excluded.asset_id, asset_name=excluded.asset_name, error=excluded.error,
          route=excluded.route, started_at=excluded.started_at, ended_at=excluded.ended_at`,
     );
     for (const s of job.scenes) {
       scene.run(
         sceneId(job.id, s.index), ORG_ID, job.id, s.index, s.assetName ?? null, s.index, s.act, s.heading,
-        s.beat, s.narration, s.visual, s.mood, s.status, s.percent, s.seconds,
+        s.beat, s.narration, s.visual, s.mood, s.status, s.stage, s.percent, s.seconds,
         s.assetId ?? null, s.assetName ?? null, s.error ?? null, JSON.stringify(s.route),
         s.startedAt ?? null, s.endedAt ?? null,
       );
@@ -338,6 +341,7 @@ export class FactoryDb {
       visual: row.visual,
       mood: row.mood as SceneState['mood'],
       status: row.status as SceneStatus,
+      stage: row.stage as SceneState['stage'],
       percent: row.percent,
       seconds: row.seconds,
       assetId: row.asset_id ?? undefined,

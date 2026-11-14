@@ -1105,8 +1105,8 @@ const featureFactory = new FeatureFactory({
   // Every scene is a real ComfyUI render. When ComfyUI cannot render the shot
   // (unreachable, no video workflow) the scene fails with AI_UNAVAILABLE; the
   // factory never fabricates a placeholder clip.
-  renderScene: async ({ scene, index }) => {
-    const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS });
+  renderScene: async ({ scene, index, onStage }) => {
+    const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS, onStage });
     return { data: result.data, seconds: result.seconds, voiced: result.voiced };
   },
   ffmpegAvailable,
