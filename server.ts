@@ -85,7 +85,7 @@ import {
 } from './src/direk/taskRouter.ts';
 import type { AssetMeta } from './src/direk/assets.ts';
 import {
-  generateScript, generateCharacterBible, breakdownScenes, pilotStatus,
+  pilotStatus, writeScreenplay,
   PilotUnavailable, PILOT_UNAVAILABLE, PILOT_MODEL,
 } from './src/services/pilotService.ts';
 
@@ -1244,6 +1244,8 @@ app.get('/api/direk/feature/status', async (req: Request, res: Response) => {
       reachable: pilot.reachable,
       url: pilot.url,
       detail: pilot.detail,
+      preferred: pilot.preferred,
+      local: pilot.local,
     },
     job: job ? featureView(job) : null,
   });
@@ -1308,17 +1310,20 @@ app.post('/api/direk/feature/pilot', async (req: Request, res: Response) => {
   }
   const brief = job.concept.brief;
   try {
-    broadcastThought(`[PILOT] Hinihingi ang script mula sa Kaggle Pilot…`);
-    const script = await generateScript(brief);
-    const bible = await generateCharacterBible(script).catch(() => undefined);
-    const scenes = await breakdownScenes(script).catch(() => undefined);
-    const updated = featureFactory.applyScript(job.id, script, { bible, scenes: scenes ? { scenes } : undefined })!;
-    broadcastThought(`[PILOT] Script + ${scenes?.length ?? 0} eksena mula sa Kaggle Pilot, nai-save sa SQLite.`);
+    broadcastThought(`[PILOT] Hinihingi ang script (Kaggle, o local Ollama kung wala)…`);
+    const result = await writeScreenplay(brief);
+    const updated = featureFactory.applyScript(job.id, result.script, {
+      bible: result.bible,
+      scenes: result.scenes ? { scenes: result.scenes } : undefined,
+    })!;
+    broadcastThought(`[PILOT] Script + ${result.scenes?.length ?? 0} eksena mula sa ${result.model}, nai-save sa SQLite.`);
     res.json({
       job: featureView(updated),
-      script_chars: script.length,
-      bible: Boolean(bible),
+      script_chars: result.script.length,
+      bible: Boolean(result.bible),
       scenes: updated.scenes.length,
+      source: result.source,
+      model: result.model,
       pilot: await pilotStatus(),
     });
   } catch (error: any) {
@@ -1336,27 +1341,30 @@ app.post('/api/direk/feature/start', async (req: Request, res: Response) => {
     return;
   }
 
-  // Step 1 — the screenplay. START BATCH asks the Kaggle Pilot for the 18-scene
-  // script and stores it in SQLite. A Pilot that is configured but not answering
-  // is a real failure, so it answers 503 PILOT_UNAVAILABLE rather than quietly
-  // switching to another source. With no Pilot configured at all, the built-in
-  // 18-beat breakdown is used so the app still works offline.
+  // Step 1 — the screenplay. START BATCH asks the Kaggle Pilot (T3 heavy
+  // batch) for the 18-scene script and stores it in SQLite; when Kaggle is
+  // unset or down it falls back to the local Ollama (T1, real time). A Pilot
+  // that is expected (configured, or a reachable local model) but fails is a
+  // real failure, so this answers 503 PILOT_UNAVAILABLE rather than quietly
+  // switching sources. With no Pilot at all, the built-in 18-beat plan is used
+  // so the factory still runs offline.
   try {
-    broadcastThought(`[PILOT] Hinihingi ang 18-scene script mula sa Kaggle Pilot…`);
-    const script = await generateScript(job.concept.brief);
-    const bible = await generateCharacterBible(script).catch(() => undefined);
-    const scenes = await breakdownScenes(script).catch(() => undefined);
-    featureFactory.applyScript(job.id, script, { bible, scenes: scenes ? { scenes } : undefined });
-    broadcastThought(`[PILOT] Script + ${scenes?.length ?? 0} eksena mula sa Kaggle Pilot, nai-save sa SQLite.`);
+    broadcastThought(`[PILOT] Hinihingi ang 18-scene script (Kaggle, o local Ollama kung wala)…`);
+    const result = await writeScreenplay(job.concept.brief);
+    featureFactory.applyScript(job.id, result.script, {
+      bible: result.bible,
+      scenes: result.scenes ? { scenes: result.scenes } : undefined,
+    });
+    broadcastThought(`[PILOT] Script + ${result.scenes?.length ?? 0} eksena mula sa ${result.model}, nai-save sa SQLite.`);
   } catch (error: any) {
     const detail = error instanceof PilotUnavailable ? error.detail : error?.message || 'error';
     const status = await pilotStatus();
-    if (status.configured) {
+    if (status.configured || status.local.reachable) {
       broadcastThought(`[PILOT] Hindi available: ${detail}`);
       res.status(503).json(pilotUnavailableBody(detail));
       return;
     }
-    broadcastThought(`[PILOT] Walang KAGGLE_PILOT_URL — built-in 18-beat breakdown ang gagamitin.`);
+    broadcastThought(`[PILOT] Walang Pilot (Kaggle o local Ollama) — built-in 18-beat breakdown ang gagamitin.`);
   }
 
   // Step 2 — a real video backend, or every scene would fail. Answer 503 up

@@ -18,7 +18,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { GoogleGenAI } from '@google/genai';
-import { ffmpegPath, fontPath, probe, concatVideos } from './render.ts';
+import { ffmpegPath, fontPath, filterPath, probe, concatVideos } from './render.ts';
+import { defaultPython } from './platform.ts';
 import { saveAsset, type AssetMeta } from './assets.ts';
 import { MOODS, MOOD_LABELS, TTS_VOICES, type Mood, type MovieOptions, type TtsVoice, sceneCount } from '../movieMeta.ts';
 import { comfyAvailable, comfyUrl, comfyVideoConfigured, generateVideoWithComfy } from './comfyui.ts';
@@ -415,7 +416,7 @@ export function resetNarration(): void {
 export async function tagalogSpeech(text: string): Promise<Buffer> {
   const model = tagalogVoice();
   if (!model) throw new Error('Walang available na offline na Tagalog na boses.');
-  const python = process.env.TTS_PYTHON || 'python3';
+  const python = process.env.TTS_PYTHON || defaultPython();
   const script = process.env.TTS_TAGALOG_SCRIPT || path.join(process.cwd(), 'scripts', 'tagalog_tts.py');
   const out = path.join(os.tmpdir(), `direk-tgl-${Date.now()}-${Math.random().toString(36).slice(2)}.wav`);
   try {
@@ -597,11 +598,9 @@ async function backdrop(dir: string, mood: Mood, index: number): Promise<string>
 function drawtext(text: string, opts: { size: number; y: string; color: string; from: number; to: number }): string {
   const file = path.join(os.tmpdir(), `direk-txt-${Math.random().toString(36).slice(2)}.txt`);
   fs.writeFileSync(file, text, 'utf8');
-  const escaped = file.replace(/'/g, "'\\''");
-  const font = fontPath().replace(/'/g, "'\\''");
   const alpha = `if(lt(t,${opts.from}+1),t-${opts.from},if(lt(t,${opts.to}),1,0))`;
   return (
-    `drawtext=textfile='${escaped}':fontfile='${font}':fontcolor=${opts.color}:fontsize=${opts.size}:` +
+    `drawtext=textfile='${filterPath(file)}':fontfile='${filterPath(fontPath())}':fontcolor=${opts.color}:fontsize=${opts.size}:` +
     `line_spacing=12:box=1:boxcolor=black@0.42:boxborderw=20:x=(w-text_w)/2:y=${opts.y}:` +
     `alpha='${alpha}':enable='between(t,${opts.from},${opts.to})'`
   );

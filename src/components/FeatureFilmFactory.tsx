@@ -49,6 +49,7 @@ export function FeatureFilmFactory() {
   const [format, setFormat] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [pilotSource, setPilotSource] = useState('');
   const alive = useRef(true);
 
   const load = useCallback((id?: string) => {
@@ -113,8 +114,9 @@ export function FeatureFilmFactory() {
     try {
       const result = await featurePilot(job.id);
       setJob(result.job);
+      setPilotSource(result.source === 'kaggle' ? 'Kaggle (T3)' : `local Ollama (${result.model})`);
     } catch (e: any) {
-      setError(e?.message || 'Hindi maabot ang Kaggle Pilot.');
+      setError(e?.message || 'Hindi maabot ang Pilot (Kaggle o local Ollama).');
     } finally {
       setBusy(false);
     }
@@ -188,20 +190,26 @@ export function FeatureFilmFactory() {
           </span>
           <span
             className={`rounded-pill border px-2.5 py-1 font-medium ${
-              status?.pilot?.reachable
+              status?.pilot?.preferred === 'kaggle'
                 ? 'border-growth-soft bg-growth-soft/15 text-growth'
-                : status?.pilot?.configured
-                  ? 'border-red-500/40 bg-red-500/10 text-red-300'
+                : status?.pilot?.preferred === 'local-ollama'
+                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
                   : 'border-subtle bg-raised text-muted'
             }`}
-            title={status?.pilot?.detail ?? ''}
+            title={
+              status?.pilot?.preferred === 'kaggle'
+                ? status.pilot.detail
+                : status?.pilot?.preferred === 'local-ollama'
+                  ? `Fallback: ${status.pilot.local.detail}`
+                  : `${status?.pilot?.detail ?? ''} ${status?.pilot?.local?.detail ?? ''}`.trim()
+            }
           >
             <Sparkles className="mr-1 inline h-3 w-3" />
-            {status?.pilot?.reachable
-              ? 'Kaggle Pilot: online'
-              : status?.pilot?.configured
-                ? 'Kaggle Pilot: hindi maabot'
-                : 'Kaggle Pilot: hindi naka-set'}
+            {status?.pilot?.preferred === 'kaggle'
+              ? 'Pilot: Kaggle (T3)'
+              : status?.pilot?.preferred === 'local-ollama'
+                ? `Pilot: local Ollama (T1)`
+                : 'Pilot: wala'}
           </span>
         </div>
       </header>
@@ -305,7 +313,7 @@ export function FeatureFilmFactory() {
                 type="button"
                 onClick={fetchPilot}
                 disabled={busy || running}
-                title="Hingin ang script at character bible mula sa Kaggle Pilot (external cloud worker)"
+                title="Hingin ang script at character bible: Kaggle (T3) muna, local Ollama (T1) kung wala"
                 className="inline-flex items-center gap-2 rounded-pill border border-subtle bg-raised px-4 py-2.5 text-sm font-medium text-ink disabled:opacity-40"
               >
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} Pilot script
@@ -355,7 +363,7 @@ export function FeatureFilmFactory() {
           {job.script && (
             <details className="mt-4 rounded-card border border-subtle bg-sunken p-3">
               <summary className="cursor-pointer text-xs font-medium text-ink">
-                Script mula sa Kaggle Pilot ({job.script.length.toLocaleString()} chars
+                Script{pilotSource ? ` mula sa ${pilotSource}` : ''} ({job.script.length.toLocaleString()} chars
                 {job.bible ? ', may character bible' : ''})
               </summary>
               <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap text-[11px] text-muted">

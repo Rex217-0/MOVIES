@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {
   generateScript, generateCharacterBible, breakdownScenes, pilotStatus, pilotReady,
-  pilotUrl, pilotConfigured, PilotUnavailable, PILOT_UNAVAILABLE,
+  pilotUrl, pilotConfigured, generateScriptAnswer, writeScreenplay,
+  PilotUnavailable, PILOT_UNAVAILABLE,
 } from './pilotService.ts';
 
 /**
@@ -57,6 +58,7 @@ async function withPilot<T>(env: Record<string, string | undefined>, fn: () => P
   const keys = [
     'KAGGLE_PILOT_URL', 'KAGGLE_PILOT_TOKEN', 'KAGGLE_PILOT_TIMEOUT_MS',
     'KAGGLE_PILOT_SCRIPT_PATH', 'KAGGLE_PILOT_BIBLE_PATH', 'KAGGLE_PILOT_SCENES_PATH',
+    'LOCAL_OLLAMA_URL', 'OLLAMA_URL', 'OLLAMA_MODEL', 'OLLAMA_DISABLE',
   ];
   const saved: Record<string, string | undefined> = {};
   for (const k of keys) {
@@ -72,6 +74,51 @@ async function withPilot<T>(env: Record<string, string | undefined>, fn: () => P
       else process.env[k] = v;
     }
   }
+}
+
+/**
+ * A stand-in for the local Ollama instance (T1). It answers the two endpoints
+ * the Pilot fallback uses: `/api/tags` for the status probe and `/api/chat` for
+ * generation, over a real HTTP server.
+ */
+function startOllama(opts: { reply?: string } = {}) {
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      const json = (payload: unknown) => {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(payload));
+      };
+      if (req.url === '/api/tags') return json({ models: [{ name: 'qwen2.5:7b' }] });
+      if (req.url === '/api/chat') {
+        return json({ message: { content: opts.reply ?? 'LOCAL SCRIPT: ang huling tala.' } });
+      }
+      res.statusCode = 404;
+      res.end('{}');
+    });
+  });
+  return new Promise<{ url: string; close: () => Promise<void>; lastBody: () => any }>(resolve => {
+    let last = '';
+    server.on('request', req => { req.on('data', c => { last += c; }); });
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as any).port;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise<void>(r => server.close(() => r())),
+        lastBody: () => { try { return JSON.parse(last); } catch { return last; } },
+      });
+    });
+  });
+}
+
+/** A URL on a closed port, so nothing answers there. */
+async function deadUrl(): Promise<string> {
+  const server = http.createServer();
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as any).port;
+  await new Promise<void>(r => server.close(() => r()));
+  return `http://127.0.0.1:${port}`;
 }
 
 test('pilotUrl trims trailing slashes and pilotConfigured reflects it', async () => {
@@ -172,7 +219,7 @@ test('a configured-but-down Pilot throws PilotUnavailable with code PILOT_UNAVAI
   const pilot = await startPilot();
   const url = pilot.url;
   await pilot.close();
-  await withPilot({ KAGGLE_PILOT_URL: url }, async () => {
+  await withPilot({ KAGGLE_PILOT_URL: url, OLLAMA_DISABLE: '1' }, async () => {
     await assert.rejects(
       () => generateScript('brief'),
       (error: any) => {
@@ -186,7 +233,7 @@ test('a configured-but-down Pilot throws PilotUnavailable with code PILOT_UNAVAI
 });
 
 test('an unconfigured Pilot throws PilotUnavailable without any network call', async () => {
-  await withPilot({ KAGGLE_PILOT_URL: '' }, async () => {
+  await withPilot({ KAGGLE_PILOT_URL: '', OLLAMA_DISABLE: '1' }, async () => {
     await assert.rejects(() => generateScript('brief'), (error: any) => error.code === PILOT_UNAVAILABLE);
   });
 });
@@ -194,7 +241,7 @@ test('an unconfigured Pilot throws PilotUnavailable without any network call', a
 test('an HTTP error from the worker becomes PilotUnavailable, not a crash', async () => {
   const pilot = await startPilot({ fail: 500 });
   try {
-    await withPilot({ KAGGLE_PILOT_URL: pilot.url }, async () => {
+    await withPilot({ KAGGLE_PILOT_URL: pilot.url, OLLAMA_DISABLE: '1' }, async () => {
       await assert.rejects(() => generateScript('brief'), (error: any) => {
         assert.ok(error instanceof PilotUnavailable);
         assert.match(error.detail, /500/);
@@ -203,6 +250,92 @@ test('an HTTP error from the worker becomes PilotUnavailable, not a crash', asyn
     });
   } finally {
     await pilot.close();
+  }
+});
+
+test('a dead Kaggle tunnel falls back to the local Ollama (T1)', async () => {
+  const kaggle = await deadUrl();
+  const ollama = await startOllama({ reply: 'LOCAL SCRIPT: ang huling tala.' });
+  try {
+    await withPilot({ KAGGLE_PILOT_URL: kaggle, LOCAL_OLLAMA_URL: ollama.url, OLLAMA_DISABLE: '' }, async () => {
+      const answer = await generateScriptAnswer('Isang mangingisda sa probinsya.');
+      assert.equal(answer.source, 'local-ollama');
+      assert.equal(answer.value, 'LOCAL SCRIPT: ang huling tala.');
+      // The local model really received the brief.
+      assert.match(String(ollama.lastBody().messages.at(-1).content), /mangingisda/);
+    });
+  } finally {
+    await ollama.close();
+  }
+});
+
+test('an unset KAGGLE_PILOT_URL also uses the local Ollama', async () => {
+  const ollama = await startOllama();
+  try {
+    await withPilot({ KAGGLE_PILOT_URL: '', LOCAL_OLLAMA_URL: ollama.url, OLLAMA_DISABLE: '' }, async () => {
+      const answer = await generateScriptAnswer('brief');
+      assert.equal(answer.source, 'local-ollama');
+    });
+  } finally {
+    await ollama.close();
+  }
+});
+
+test('writeScreenplay reports the source and stores the local script', async () => {
+  const kaggle = await deadUrl();
+  const ollama = await startOllama({ reply: '{"scenes":[{"heading":"S1","narration":"N.","visual":"V.","mood":"warm"}]}' });
+  try {
+    await withPilot({ KAGGLE_PILOT_URL: kaggle, LOCAL_OLLAMA_URL: ollama.url, OLLAMA_DISABLE: '' }, async () => {
+      const result = await writeScreenplay('brief');
+      assert.equal(result.source, 'local-ollama');
+      assert.match(result.script, /LOCAL|scenes/);
+      assert.equal(result.model, 'qwen2.5:7b');
+    });
+  } finally {
+    await ollama.close();
+  }
+});
+
+test('both workers down -> honest PilotUnavailable naming both', async () => {
+  const kaggle = await deadUrl();
+  await withPilot({ KAGGLE_PILOT_URL: kaggle, OLLAMA_DISABLE: '1' }, async () => {
+    await assert.rejects(() => generateScript('brief'), (error: any) => {
+      assert.ok(error instanceof PilotUnavailable);
+      assert.match(error.detail, /Ollama/);
+      return true;
+    });
+  });
+});
+
+test('pilotStatus reports the local Ollama and the preferred worker', async () => {
+  const kaggle = await deadUrl();
+  const ollama = await startOllama();
+  try {
+    await withPilot({ KAGGLE_PILOT_URL: kaggle, LOCAL_OLLAMA_URL: ollama.url, OLLAMA_DISABLE: '' }, async () => {
+      const status = await pilotStatus();
+      assert.equal(status.local.reachable, true);
+      assert.equal(status.local.model_present, true);
+      assert.equal(status.preferred, 'local-ollama');
+    });
+  } finally {
+    await ollama.close();
+  }
+});
+
+test('a live Kaggle worker wins over the local Ollama', async () => {
+  const pilot = await startPilot({ script: 'KAGGLE SCRIPT' });
+  const ollama = await startOllama({ reply: 'LOCAL SCRIPT' });
+  try {
+    await withPilot({ KAGGLE_PILOT_URL: pilot.url, LOCAL_OLLAMA_URL: ollama.url, OLLAMA_DISABLE: '' }, async () => {
+      const answer = await generateScriptAnswer('brief');
+      assert.equal(answer.source, 'kaggle');
+      assert.equal(answer.value, 'KAGGLE SCRIPT');
+      const status = await pilotStatus();
+      assert.equal(status.preferred, 'kaggle');
+    });
+  } finally {
+    await pilot.close();
+    await ollama.close();
   }
 });
 

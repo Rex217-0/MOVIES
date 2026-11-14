@@ -212,7 +212,7 @@ export const SetupModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
  <div className="grid grid-cols-2 gap-3">
  <Field label="Python">
  <input value={settings.kohya_python || ''} onChange={set('kohya_python')}
- placeholder="python3" className={inputCls} />
+ placeholder="python" className={inputCls} />
  </Field>
  <Field label="Output folder">
  <input value={settings.kohya_output_dir || ''} onChange={set('kohya_output_dir')}

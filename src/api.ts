@@ -591,8 +591,15 @@ export interface FeatureStatus {
   formats: string[];
   narration_order: string[];
   ffmpeg: boolean;
-  /** The Kaggle Pilot (external cloud worker) reachability. */
-  pilot: { configured: boolean; reachable: boolean; url: string; detail: string };
+  /** The Dual-Pilot: Kaggle (T3 batch) and the local Ollama (T1 fallback). */
+  pilot: {
+    configured: boolean;
+    reachable: boolean;
+    url: string;
+    detail: string;
+    preferred: 'kaggle' | 'local-ollama' | 'none';
+    local: { url: string; model: string; reachable: boolean; model_present: boolean; detail: string };
+  };
   job: FeatureJobView | null;
 }
 
@@ -629,11 +636,19 @@ export const featureRerender = (id: string, scene: number) => featureAction('rer
 export const featureAssemble = (id: string) => featureAction('assemble', { id });
 
 /**
- * Ask the Kaggle Pilot (external cloud worker) for the screenplay, character
- * bible and 18-scene breakdown, and store them on the job. Answers an honest
- * `503 PILOT_UNAVAILABLE` when the worker is down.
+ * Ask the Dual-Pilot for the screenplay, character bible and 18-scene
+ * breakdown, and store them on the job. Kaggle (T3 heavy batch) is tried
+ * first; when it is unset or down the local Ollama (T1) writes the script.
+ * Answers an honest `503 PILOT_UNAVAILABLE` only when both are down.
  */
-export async function featurePilot(id: string): Promise<{ job: FeatureJobView; script_chars: number; bible: boolean; scenes: number }> {
+export async function featurePilot(id: string): Promise<{
+  job: FeatureJobView;
+  script_chars: number;
+  bible: boolean;
+  scenes: number;
+  source: 'kaggle' | 'local-ollama';
+  model: string;
+}> {
   const res = await apiFetch('/api/direk/feature/pilot', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
   });
