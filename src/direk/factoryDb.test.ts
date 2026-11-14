@@ -233,3 +233,26 @@ test('every read is scoped to LJRgroupORG, so another org cannot leak in', () =>
   assert.ok(db.list().some(j => j.id === job.id), 'list() still returns our own film');
   db.close();
 });
+
+test('the factory serves only its own vault through get, latest and list', () => {
+  tmpStore();
+  const factory = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS }),
+    ffmpegAvailable: async () => true,
+  });
+  const ours = factory.create({ brief: 'Sa amin ito.' });
+
+  // A job from another org injected straight into the in-memory map.
+  const foreign = {
+    ...ours,
+    id: 'FILM-dayuhan',
+    orgId: 'IBANGORG',
+    startedAt: ours.startedAt + 1,
+  };
+  (factory as unknown as { jobs: Map<string, typeof ours> }).jobs.set(foreign.id, foreign);
+
+  assert.equal(factory.get(foreign.id), undefined, 'get() refuses the other org');
+  assert.equal(factory.latest()?.id, ours.id, 'latest() never returns the other org');
+  assert.ok(factory.list().every(j => j.id !== foreign.id), 'list() never returns the other org');
+  assert.deepEqual(factory.list().map(j => j.id), [ours.id]);
+});

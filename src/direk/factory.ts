@@ -165,21 +165,35 @@ export class FeatureFactory {
     };
   }
 
+  /** True when a job belongs to this build's private vault. */
+  private inVault(job: FeatureJobView): boolean {
+    return job.orgId === ORG_ID;
+  }
+
+  /**
+   * One job by id, or undefined when it is unknown or outside the vault. The
+   * vault check keeps a shared process from serving another org's film to the
+   * frontend.
+   */
   get(id: string): FeatureJobView | undefined {
-    return this.jobs.get(id);
+    const job = this.jobs.get(id);
+    return job && this.inVault(job) ? job : undefined;
   }
 
   /** The newest job, for a UI that only shows one film. */
   latest(): FeatureJobView | undefined {
     let newest: FeatureJobView | undefined;
     for (const job of this.jobs.values()) {
+      if (!this.inVault(job)) continue;
       if (!newest || job.startedAt > newest.startedAt) newest = job;
     }
     return newest;
   }
 
   list(): FeatureJobView[] {
-    return [...this.jobs.values()].sort((a, b) => b.startedAt - a.startedAt);
+    return [...this.jobs.values()]
+      .filter(job => this.inVault(job))
+      .sort((a, b) => b.startedAt - a.startedAt);
   }
 
   /** Replace the scene list with a richer one (a model breakdown). */
@@ -368,7 +382,7 @@ export class FeatureFactory {
    * over `assemble` so a caller only needs the movie id.
    */
   async stitchMovie(movieId: string): Promise<FeatureJobView['film'] | undefined> {
-    const job = this.jobs.get(movieId) ?? this.deps.db?.load(movieId);
+    const job = this.get(movieId) ?? this.deps.db?.load(movieId);
     if (!job) return undefined;
     if (!this.jobs.has(movieId)) this.jobs.set(movieId, job);
     return this.assemble(job);
