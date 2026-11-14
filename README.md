@@ -292,6 +292,32 @@ set, `/api/pilot/video/generate` renders there and saves the result into the
 Render Vault. Without it, the endpoint honestly returns `503` and tells you to
 run ComfyUI rather than returning a stock clip.
 
+## Feature Film Factory (18 scenes → one 90-minute film)
+
+One brief in, an 18-scene feature out. Each scene is a full five minutes and is
+rendered **alone** through the same ComfyUI path as the single-shot video above,
+so a bad scene can be re-rendered without touching the rest. Scenes come out at
+a fixed size, frame rate and audio layout, so the approved ones join with
+`ffmpeg -c copy` into the finished film.
+
+```
+POST /api/direk/feature/create    brief -> an 18-scene concept (no render)
+POST /api/direk/feature/start     render all 18 scenes, one at a time
+POST /api/direk/feature/pause     stop the batch; finished scenes are kept
+POST /api/direk/feature/rerender  re-render one scene by index
+POST /api/direk/feature/assemble  stitch the approved scenes into one film
+GET  /api/direk/feature/status    job, scene list, tiers, progress
+```
+
+A scene needs a real video backend: ComfyUI reachable and `COMFYUI_VIDEO_WORKFLOW`
+set. When it is not, `start` answers `503 AI_UNAVAILABLE` up front and a scene
+that fails mid-batch is marked **failed** — the factory never writes a
+placeholder clip to pretend a scene rendered.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DIREK_SCENE_SECONDS` | `300` | Seconds per scene. Lower it for tests/demos; production keeps 300 so the film is 90 minutes |
+
 ## Veo-style prompts
 
 Google Veo's prompt guide builds a prompt from subject, action, camera, lighting

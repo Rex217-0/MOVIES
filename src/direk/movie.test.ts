@@ -5,10 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   parseScript, fallbackScript, sceneCount, scriptPrompt, moodPalette,
-  wavFromPcm, parsePcmRate, wrapText, renderFeatureScene,
+  wavFromPcm, parsePcmRate, wrapText, renderFeatureScene, videoBackendReady,
   MOODS, MOOD_LABELS, TTS_VOICES,
 } from './movie.ts';
 import { probe } from './render.ts';
+import { startMockComfyUI, writeVideoWorkflow } from '../testing/comfyuiMock.ts';
 
 test('parseScript reads a clean JSON screenplay', () => {
   const script = parseScript(JSON.stringify({
@@ -255,9 +256,28 @@ test('narrationBackends exposes the chain for the status endpoint', async () => 
 });
 
 
-test('renderFeatureScene makes one standalone clip at the scene length', async () => {
+test('renderFeatureScene makes one standalone clip at the scene length', async (t) => {
   // The unit of the factory: a single five-minute scene, rendered alone, at a
-  // fixed size/rate so it can later be joined with `ffmpeg -c copy`.
+  // fixed size/rate so it can later be joined with `ffmpeg -c copy`. ComfyUI is
+  // stood in for by a mock HTTP server, so the real orchestration runs against
+  // a genuinely valid MP4 instead of a fabricated buffer.
+  const mock = await startMockComfyUI();
+  t.after(mock.close);
+  const workflowDir = fs.mkdtempSync(path.join(os.tmpdir(), 'comfy-wf-'));
+  t.after(() => fs.rmSync(workflowDir, { recursive: true, force: true }));
+  const prev = { url: process.env.COMFYUI_URL, wf: process.env.COMFYUI_VIDEO_WORKFLOW, off: process.env.COMFYUI_DISABLE, tts: process.env.TTS_TAGALOG_DISABLE, ttsG: process.env.TTS_DISABLE };
+  process.env.COMFYUI_URL = mock.url;
+  process.env.COMFYUI_VIDEO_WORKFLOW = writeVideoWorkflow(workflowDir);
+  delete process.env.COMFYUI_DISABLE;
+  process.env.TTS_TAGALOG_DISABLE = '1';
+  process.env.TTS_DISABLE = '1';
+  t.after(() => {
+    for (const [k, v] of Object.entries({ COMFYUI_URL: prev.url, COMFYUI_VIDEO_WORKFLOW: prev.wf, COMFYUI_DISABLE: prev.off, TTS_TAGALOG_DISABLE: prev.tts, TTS_DISABLE: prev.ttsG })) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  });
+
+  assert.equal(await videoBackendReady(), true);
   const scene = { heading: 'SCENE 7', narration: 'Isang pagsubok ng eksena.', visual: 'wide shot', mood: 'tense' as const };
   const result = await renderFeatureScene(scene, { index: 7, seconds: 4 });
   assert.equal(result.seconds, 4);
@@ -272,4 +292,17 @@ test('renderFeatureScene makes one standalone clip at the scene length', async (
   assert.equal(info.hasAudio, true, 'every scene carries an audio track');
   assert.ok(Math.abs(info.duration - 4) < 0.4, `expected ~4s, got ${info.duration}`);
   fs.rmSync(file, { force: true });
+});
+
+test('renderFeatureScene fails with AI_UNAVAILABLE when ComfyUI is not there', async () => {
+  // No backend, no fabrication: the scene must fail instead of writing a
+  // placeholder clip that only looks like a result.
+  const prevOff = process.env.COMFYUI_DISABLE;
+  process.env.COMFYUI_DISABLE = '1';
+  const scene = { heading: 'SCENE 1', narration: 'Wala.', visual: 'wide', mood: 'grim' as const };
+  await assert.rejects(
+    () => renderFeatureScene(scene, { index: 1, seconds: 2 }),
+    (err: any) => err?.code === 'AI_UNAVAILABLE' && err?.name === 'VideoBackendUnavailable',
+  );
+  if (prevOff === undefined) delete process.env.COMFYUI_DISABLE; else process.env.COMFYUI_DISABLE = prevOff;
 });

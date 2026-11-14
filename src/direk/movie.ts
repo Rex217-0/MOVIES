@@ -21,6 +21,8 @@ import { GoogleGenAI } from '@google/genai';
 import { ffmpegPath, fontPath, probe, concatVideos } from './render.ts';
 import { saveAsset, type AssetMeta } from './assets.ts';
 import { MOODS, MOOD_LABELS, TTS_VOICES, type Mood, type MovieOptions, type TtsVoice, sceneCount } from '../movieMeta.ts';
+import { comfyAvailable, comfyUrl, comfyVideoConfigured, generateVideoWithComfy } from './comfyui.ts';
+import { buildVeoStylePrompt, buildVeoStyleNegative } from '../tactical/rules.ts';
 
 export { MOODS, MOOD_LABELS, TTS_VOICES, type Mood, type MovieOptions, type TtsVoice, sceneCount };
 
@@ -748,11 +750,103 @@ export interface SceneRenderResult {
 }
 
 /**
- * Render one feature-film scene on its own, start to finish: narration, the
- * mood shot with a caption fallback, and a quiet music bed. Scenes are rendered
+ * A scene cannot be rendered because no real video backend is available. The
+ * factory turns this into a failed scene, and an API route turns it into a 503.
+ */
+export class VideoBackendUnavailable extends Error {
+  readonly code = 'AI_UNAVAILABLE';
+  constructor(detail: string) {
+    super(`Walang video backend: ${detail}`);
+    this.name = 'VideoBackendUnavailable';
+  }
+}
+
+/**
+ * True when a real local video backend can render a scene: ComfyUI is enabled,
+ * a video workflow is configured, and the server answers. This never fakes a
+ * clip; it only reports readiness.
+ */
+export async function videoBackendReady(): Promise<boolean> {
+  if (process.env.COMFYUI_DISABLE === '1') return false;
+  if (!comfyVideoConfigured()) return false;
+  return comfyAvailable();
+}
+
+/** Why the video backend is not ready, for an honest error message. */
+export function videoBackendDetail(): string {
+  if (process.env.COMFYUI_DISABLE === '1') return 'COMFYUI_DISABLE=1';
+  if (!comfyVideoConfigured()) {
+    return 'walang COMFYUI_VIDEO_WORKFLOW (kailangan ng AnimateDiff/SVD workflow sa API format)';
+  }
+  return `hindi maabot ang ComfyUI sa ${comfyUrl()}`;
+}
+
+/**
+ * Normalise a ComfyUI clip to the film's fixed format (1280x720, 30fps, stereo
+ * AAC), then extend it to the full scene length by looping the encoded clip and
+ * copying it (`-c copy`), so the long scene is never re-encoded. Every scene
+ * then carries the same codec, size and audio layout, so the whole picture
+ * joins with `ffmpeg -c copy`.
+ */
+async function normaliseShot(clip: string, dir: string, seconds: number): Promise<string> {
+  const info = await probe(clip);
+  const vf = `scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=increase,crop=${WIDTH}:${HEIGHT},fps=${FPS},format=yuv420p`;
+  const norm = path.join(dir, 'shot-normalised.mp4');
+  const args = ['-y', '-hide_banner', '-loglevel', 'error', '-i', clip];
+  if (info.hasAudio) {
+    args.push('-vf', vf, '-c:a', 'aac', '-ar', '44100', '-ac', '2');
+  } else {
+    args.push(
+      '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest',
+      '-vf', vf, '-map', '0:v', '-map', '1:a', '-c:a', 'aac', '-ar', '44100', '-ac', '2',
+    );
+  }
+  args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', norm);
+  await ff(args);
+  const out = path.join(dir, 'shot.mp4');
+  await ff([
+    '-y', '-hide_banner', '-loglevel', 'error',
+    '-stream_loop', '-1', '-i', norm, '-t', String(seconds), '-c', 'copy', out,
+  ]);
+  return out;
+}
+
+/**
+ * Put the narration and the music bed onto the shot in one pass, keeping the
+ * video untouched (`-c:v copy`). The narration sits under the shot's own silent
+ * track, delayed so it does not start on the first frame.
+ */
+async function mixScene(shot: string, narration: string | null, bed: string, seconds: number, out: string): Promise<void> {
+  const args = ['-y', '-hide_banner', '-loglevel', 'error', '-i', shot];
+  let filter: string;
+  if (narration) {
+    args.push('-i', narration, '-i', bed);
+    filter =
+      `[1:a]adelay=900|900,apad,atrim=0:${seconds}[v];` +
+      `[2:a]volume=0.12[m];[0:a][v][m]amix=inputs=3:duration=first[a]`;
+  } else {
+    args.push('-i', bed);
+    filter = `[1:a]volume=0.12[m];[0:a][m]amix=inputs=2:duration=first[a]`;
+  }
+  args.push(
+    '-filter_complex', filter, '-map', '0:v', '-map', '[a]',
+    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2',
+    '-movflags', '+faststart', out,
+  );
+  await ff(args);
+}
+
+/**
+ * Render one feature-film scene on its own, start to finish: a real ComfyUI
+ * video shot, narration, and a quiet music bed. Scenes are rendered
  * independently so a bad five minutes can be re-rendered without touching the
  * rest of the picture. Every scene comes out at the same size, frame rate and
  * audio layout, so they can later be joined with `ffmpeg -c copy`.
+ *
+ * The picture is always a real ComfyUI render. When ComfyUI cannot render the
+ * shot the scene fails with `VideoBackendUnavailable` (AI_UNAVAILABLE) instead
+ * of fabricating a clip that only looks like a result. Narration is optional: a
+ * scene without a voice still renders, carrying only the music bed.
  */
 export async function renderFeatureScene(
   scene: MovieScene,
@@ -762,6 +856,20 @@ export async function renderFeatureScene(
   try {
     const voice = opts.voice ?? 'Kore';
     const seconds = opts.seconds ?? MAX_SCENE_SECONDS;
+
+    // 1. The picture must come from ComfyUI. No backend -> no scene.
+    if (!(await videoBackendReady())) {
+      throw new VideoBackendUnavailable(videoBackendDetail());
+    }
+    const prompt = buildVeoStylePrompt(`${scene.heading}. ${scene.visual}`);
+    const { data } = await generateVideoWithComfy(prompt, { negative: buildVeoStyleNegative() });
+    const clip = path.join(dir, 'comfy.mp4');
+    fs.writeFileSync(clip, data);
+
+    // 2. Normalise to the film's fixed format and extend to the scene length.
+    const shot = await normaliseShot(clip, dir, seconds);
+
+    // 3. Narration, from the first voice that answers; a caption otherwise.
     const backends = narrationBackends();
     let narrationFile: string | null = null;
     let voiceSource: NarrationSource = 'none';
@@ -773,18 +881,11 @@ export async function renderFeatureScene(
         voiceSource = line.source;
       }
     }
-    const shot = await renderShot(scene, opts.index, dir, seconds, { caption: !narrationFile });
-    const voiced = await muxNarration(shot, narrationFile, seconds, dir, 'scene-voiced');
+
+    // 4. Lay the narration and the music bed onto the shot in one pass.
     const bed = await musicBed(seconds, scene.mood, dir);
     const out = path.join(dir, 'scene.mp4');
-    await ff([
-      '-y', '-hide_banner', '-loglevel', 'error',
-      '-i', voiced, '-i', bed,
-      '-filter_complex', '[1:a]volume=0.12[m];[0:a][m]amix=inputs=2:duration=first[a]',
-      '-map', '0:v', '-map', '[a]',
-      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2',
-      '-movflags', '+faststart', out,
-    ]);
+    await mixScene(shot, narrationFile, bed, seconds, out);
     return { data: fs.readFileSync(out), seconds, voiced: Boolean(narrationFile), voiceSource };
   } finally {
     cleanup(dir);

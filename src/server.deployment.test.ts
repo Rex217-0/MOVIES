@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ffmpegPath, isPng } from './direk/render.ts';
+import { startMockComfyUI, writeVideoWorkflow } from './testing/comfyuiMock.ts';
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -57,7 +58,9 @@ function startServer(env: Record<string, string>) {
 }
 
 async function waitForServer(port: number) {
-  for (let i = 0; i < 80; i++) {
+  // A cold Vite start can re-optimise dependencies and take a while, so allow
+  // a generous ceiling.
+  for (let i = 0; i < 300; i++) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/api/health`);
       if (res.ok) return;
@@ -260,8 +263,10 @@ test('the LoRA plan reports where its text, image and training work will run', a
 
 // ---------------------------------------------------------------------------
 // Feature Film Factory (18 scenes -> one 90-minute feature)
-// The batch renderer is mocked (FEATURE_MOCK_RENDER=1) so the full flow runs
-// end to end without spending GPU time on 18 real clips.
+// ComfyUI is stood in for by a mock HTTP server (src/testing/comfyuiMock.ts)
+// that answers the real endpoints with a genuinely valid MP4, so the batch runs
+// end to end through the real orchestration instead of a fabricated buffer.
+// DIREK_SCENE_SECONDS keeps each scene short so the run stays quick.
 // ---------------------------------------------------------------------------
 
 async function featureJob(port: number, id: string): Promise<any> {
@@ -269,7 +274,7 @@ async function featureJob(port: number, id: string): Promise<any> {
   return (await res.json()).job;
 }
 
-async function waitFeature(port: number, id: string, timeoutMs = 20000): Promise<any> {
+async function waitFeature(port: number, id: string, timeoutMs = 60000): Promise<any> {
   const deadline = Date.now() + timeoutMs;
   let job: any = null;
   while (Date.now() < deadline) {
@@ -280,8 +285,27 @@ async function waitFeature(port: number, id: string, timeoutMs = 20000): Promise
   throw new Error('feature batch did not finish');
 }
 
+/** A workflow file for the mock; the app only needs the path to exist. */
+function comfyWorkflow(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'comfy-wf-'));
+  return writeVideoWorkflow(dir);
+}
+
+/** Point a spawned server at a mock ComfyUI and keep scenes short. */
+function comfyEnv(mock: { url: string }, workflow: string): Record<string, string> {
+  return {
+    // startServer disables ComfyUI by default; the mock needs it on.
+    COMFYUI_DISABLE: '',
+    COMFYUI_URL: mock.url,
+    COMFYUI_VIDEO_WORKFLOW: workflow,
+    DIREK_SCENE_SECONDS: '2',
+    TTS_DISABLE: '1',
+    TTS_TAGALOG_DISABLE: '1',
+  };
+}
+
 test('the factory builds an 18-scene concept from one brief', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -304,8 +328,28 @@ test('the factory builds an 18-scene concept from one brief', async (t) => {
   assert.ok(job.scenes.every((s: any) => s.route.tier === 'T3'));
 });
 
+test('starting a batch without a video backend answers 503 AI_UNAVAILABLE', async (t) => {
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '1' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang horror sa gubat, SPG.' }),
+  })).json() as any;
+
+  const res = await fetch(`http://127.0.0.1:${port}/api/direk/feature/start`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: created.job.id }),
+  });
+  assert.equal(res.status, 503);
+  const body = await res.json() as any;
+  assert.equal(body.code, 'AI_UNAVAILABLE');
+});
+
 test('the batch renders all 18 scenes and stitches the approved ones with -c copy', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  const mock = await startMockComfyUI();
+  t.after(mock.close);
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', ...comfyEnv(mock, comfyWorkflow()) });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -344,12 +388,12 @@ test('the batch renders all 18 scenes and stitches the approved ones with -c cop
   assert.equal(assembled.status, 200);
   const body = await assembled.json() as any;
   assert.ok(body.film, 'the stitched film should be reported');
-  assert.equal(body.film.seconds, 2 * 300);
+  assert.equal(body.film.seconds, 2 * 2);
   assert.equal(body.job.approved, 2);
 });
 
 test('assemble without two approved scenes returns a clear 400', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -365,7 +409,7 @@ test('assemble without two approved scenes returns a clear 400', async (t) => {
 });
 
 test('create needs a brief, and start needs a real job', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -381,7 +425,7 @@ test('create needs a brief, and start needs a real job', async (t) => {
 });
 
 test('the factory writes MovieJobs and SceneJobs to factory.db', async (t) => {
-  const { child, port, assetsDir } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  const { child, port, assetsDir } = startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -398,7 +442,9 @@ test('the factory writes MovieJobs and SceneJobs to factory.db', async (t) => {
 });
 
 test('stitchMovie joins the approved scenes and serves the file from /renders/', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', FEATURE_MOCK_RENDER: '1' });
+  const mock = await startMockComfyUI();
+  t.after(mock.close);
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', ...comfyEnv(mock, comfyWorkflow()) });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -428,7 +474,7 @@ test('stitchMovie joins the approved scenes and serves the file from /renders/',
   });
   assert.equal(stitched.status, 200);
   const body = await stitched.json() as any;
-  assert.equal(body.film.seconds, 2 * 300);
+  assert.equal(body.film.seconds, 2 * 2);
   assert.ok(body.film.renderUrl?.startsWith('/renders/'));
 
   // The stitched file is really served from the local render store.

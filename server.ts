@@ -59,6 +59,7 @@ import {
 } from './src/direk/llm.ts';
 import {
   renderMovie, renderFeatureScene, scriptPrompt, parseScript, fallbackScript, narrationBackends,
+  videoBackendReady, videoBackendDetail,
   TTS_MODEL, TTS_VOICES, MOODS,
   type MovieProgress, type MovieScript, type MovieOptions, type Mood, type TtsVoice,
   type NarrationSource,
@@ -1197,22 +1198,14 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 const featureDb = new FactoryDb();
 const featureFactory = new FeatureFactory({
-  // FEATURE_MOCK_RENDER=1 swaps in a stand-in renderer so the batch can be
-  // exercised end to end (tests, demos) without spending GPU time on 18 clips.
-  renderScene: process.env.FEATURE_MOCK_RENDER === '1'
-    ? async ({ scene, index }) => ({
-        data: Buffer.from(`mock-scene-${index}-${scene.mood}`),
-        seconds: FEATURE_SCENE_SECONDS,
-        voiced: false,
-      })
-    : async ({ scene, index }) => {
-        const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS });
-        return { data: result.data, seconds: result.seconds, voiced: result.voiced };
-      },
+  // Every scene is a real ComfyUI render. When ComfyUI cannot render the shot
+  // (unreachable, no video workflow) the scene fails with AI_UNAVAILABLE; the
+  // factory never fabricates a placeholder clip.
+  renderScene: async ({ scene, index }) => {
+    const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS });
+    return { data: result.data, seconds: result.seconds, voiced: result.voiced };
+  },
   ffmpegAvailable,
-  concat: process.env.FEATURE_MOCK_RENDER === '1'
-    ? async (files: string[]) => ({ data: Buffer.from(`mock-feature:${files.length}`) })
-    : undefined,
   // Local SQLite store for MovieJobs and SceneJobs (factory.db).
   db: featureDb,
 });
@@ -1275,13 +1268,23 @@ app.post('/api/direk/feature/create', async (req: Request, res: Response) => {
   res.status(201).json({ job: featureView(job) });
 });
 
-app.post('/api/direk/feature/start', (req: Request, res: Response) => {
+app.post('/api/direk/feature/start', async (req: Request, res: Response) => {
   const id = typeof req.body?.id === 'string' ? req.body.id : '';
-  const job = id ? featureFactory.start(id) : undefined;
-  if (!job) {
+  if (!id || !featureFactory.get(id)) {
     res.status(404).json({ error: 'Walang ganoong pelikula. Gumawa muna ng concept.' });
     return;
   }
+  // Honest preflight: without a real video backend every scene would fail, so
+  // answer 503 up front instead of starting 18 doomed renders.
+  if (!(await videoBackendReady())) {
+    broadcastThought(`[FILM] Batch START tinanggihan: walang video backend.`);
+    res.status(503).json({
+      ...aiUnavailable('comfyui', videoBackendDetail(), 'Walang video backend'),
+      route: classifyTask('video_render'),
+    });
+    return;
+  }
+  const job = featureFactory.start(id)!;
   broadcastThought(`[FILM] Batch START · ${job.concept.title} · ${job.total} eksena`);
   res.json({ job: featureView(job) });
 });
