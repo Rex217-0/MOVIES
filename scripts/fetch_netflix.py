@@ -1,7 +1,7 @@
 """Download the full Netflix titles catalog for richer reference results.
 
 The repo ships a small sample (data/netflix_titles_sample.csv). Point
-DIREK_NETFLIX_CSV at the downloaded file to use the full dataset.
+MOVIE_ROBO_NETFLIX_CSV at the downloaded file to use the full dataset.
 
 Usage:
     python scripts/fetch_netflix.py            # -> data/netflix_titles.csv
@@ -33,7 +33,7 @@ def main() -> int:
         print(f"Download failed: {exc}", file=sys.stderr)
         return 1
     print(f"Saved {out} ({out.stat().st_size} bytes)")
-    print("Set DIREK_NETFLIX_CSV to this path to use it.")
+    print("Set MOVIE_ROBO_NETFLIX_CSV to this path to use it.")
     return 0
 
 

@@ -1,4 +1,4 @@
-"""FastAPI application exposing the Direk API and the demo web UI."""
+"""FastAPI application exposing the Movie Robo API and the demo web UI."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .config import Settings
-from .service import DirekService
+from .service import MovieRoboService
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -28,16 +28,17 @@ class ChatRequest(BaseModel):
     max_tokens: int | None = None
 
 
-def create_app(settings: Settings | None = None, service: DirekService | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, service: MovieRoboService | None = None) -> FastAPI:
     settings = settings or Settings()
-    service = service or DirekService(settings)
+    service = service or MovieRoboService(settings)
 
     app = FastAPI(
-        title="Direk — AI Movie Director",
+        title="Movie Robo — AI Movie Creator (Moviecity)",
         version=__version__,
         description=(
-            "OpenAI-compatible chat API with the Direk persona: script, shot list, "
-            "character bible at AI video prompts, may genre reference mula sa catalog."
+            "OpenAI-compatible chat API with the Movie Robo persona: script, shot list, "
+            "character bible at AI video prompts, may genre reference mula sa catalog. "
+            "Ang opisyal na AI Movie Creator ng Moviecity, powered at operated ng LJR Group."
         ),
     )
     app.state.service = service

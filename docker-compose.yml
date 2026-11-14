@@ -5,11 +5,11 @@ services:
       - "8000:8000"
     environment:
       # Point this at any OpenAI-compatible server (vLLM, TGI, Ollama, OpenRouter...).
-      DIREK_BACKEND: openai
-      DIREK_API_BASE: http://model:8001/v1
-      DIREK_MODEL_ID: Qwen/Qwen2.5-3B-Instruct
-      DIREK_API_KEY: ${DIREK_API_KEY:-}
-      DIREK_NETFLIX_CSV: /data/netflix_titles.csv
+      MOVIE_ROBO_BACKEND: openai
+      MOVIE_ROBO_API_BASE: http://model:8001/v1
+      MOVIE_ROBO_MODEL_ID: Qwen/Qwen2.5-3B-Instruct
+      MOVIE_ROBO_API_KEY: ${MOVIE_ROBO_API_KEY:-}
+      MOVIE_ROBO_NETFLIX_CSV: /data/netflix_titles.csv
     volumes:
       - ./data:/data:ro
     depends_on:

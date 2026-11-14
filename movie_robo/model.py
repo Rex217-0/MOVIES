@@ -11,7 +11,7 @@ from typing import Protocol
 
 from .config import Settings
 
-log = logging.getLogger("direk.model")
+log = logging.getLogger("movie_robo.model")
 
 
 class ModelBackend(Protocol):
@@ -43,7 +43,7 @@ class EchoBackend:
             return "Sabihin mo lang ang ideya mo at sisimulan natin."
         return (
             f"Echo backend: natanggap ko ang '{last[:80]}'. "
-            "Ikabit ang DIREK_BACKEND=transformers o DIREK_BACKEND=openai para sa tunay na sagot."
+            "Ikabit ang MOVIE_ROBO_BACKEND=transformers o MOVIE_ROBO_BACKEND=openai para sa tunay na sagot."
         )
 
 

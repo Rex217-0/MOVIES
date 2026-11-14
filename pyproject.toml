@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "direk"
+name = "movie-robo"
 version = "0.1.0"
-description = "Direk — AI Movie Director API (OpenAI-compatible) with script, shot list, character bible at AI video prompts."
+description = "Movie Robo — AI Movie Creator API (Moviecity, by the LJR Group). OpenAI-compatible, with script, shot list, character bible at AI video prompts."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -22,13 +22,13 @@ gpu = ["torch>=2.2", "transformers>=4.44", "accelerate>=0.33"]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
-direk = "direk.__main__:main"
+movie-robo = "movie_robo.__main__:main"
 
 [tool.setuptools]
-packages = ["direk"]
+packages = ["movie_robo"]
 
 [tool.setuptools.package-data]
-direk = ["../static/*", "../data/*"]
+movie_robo = ["../static/*", "../data/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

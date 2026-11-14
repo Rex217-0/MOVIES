@@ -1,4 +1,4 @@
-from direk.skills import SKILLS, extract_action
+from movie_robo.skills import SKILLS, extract_action
 
 
 def test_plain_text_passes_through():

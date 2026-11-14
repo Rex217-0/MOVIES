@@ -1,22 +1,22 @@
-from direk.gate import QUESTIONS
-from direk.service import DirekService
+from movie_robo.gate import QUESTIONS
+from movie_robo.service import MovieRoboService
 
 
-def test_gate_asks_for_haba_first(service: DirekService):
+def test_gate_asks_for_haba_first(service: MovieRoboService):
     result = service.chat([{"role": "user", "content": "Gumawa ka ng horror na kwento sa probinsya."}])
     assert result["gate"] == "haba"
     assert result["choices"][0]["message"]["content"] == QUESTIONS["haba"]
     assert result["reference_genre"] == "horror"
 
 
-def test_gate_asks_for_mood_when_duration_present(service: DirekService):
+def test_gate_asks_for_mood_when_duration_present(service: MovieRoboService):
     result = service.chat(
         [{"role": "user", "content": "Gumawa ka ng horror na kwento, 3 minuto."}]
     )
     assert result["gate"] == "mood"
 
 
-def test_complete_prompt_generates_reply(service: DirekService):
+def test_complete_prompt_generates_reply(service: MovieRoboService):
     result = service.chat(
         [{"role": "user", "content": "Gumawa ka ng horror na kwento, 3 minuto, nakakakaba."}]
     )
@@ -25,14 +25,14 @@ def test_complete_prompt_generates_reply(service: DirekService):
     assert result["choices"][0]["message"]["content"]
 
 
-def test_no_genre_skips_gate(service: DirekService):
-    result = service.chat([{"role": "user", "content": "Kumusta ka, Direk?"}])
+def test_no_genre_skips_gate(service: MovieRoboService):
+    result = service.chat([{"role": "user", "content": "Kumusta ka, Movie Robo?"}])
     assert result["gate"] is None
     assert result["reference_genre"] is None
     assert result["choices"][0]["message"]["content"]
 
 
-def test_health_reports_backend_and_catalog(service: DirekService):
+def test_health_reports_backend_and_catalog(service: MovieRoboService):
     health = service.health()
     assert health["ok"] is True
     assert health["backend"] == "echo"
@@ -40,7 +40,7 @@ def test_health_reports_backend_and_catalog(service: DirekService):
     assert health["reference_rows"] > 0
 
 
-def test_system_prompt_gets_references(service: DirekService):
+def test_system_prompt_gets_references(service: MovieRoboService):
     captured = {}
 
     class Spy:

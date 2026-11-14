@@ -1,4 +1,4 @@
-from direk.genres import find_genre
+from movie_robo.genres import find_genre
 
 
 def test_tagalog_horror():
@@ -18,7 +18,7 @@ def test_love_story_beats_shorter_keyword():
 
 
 def test_no_genre_returns_none():
-    assert find_genre("Kumusta ka, Direk?") is None
+    assert find_genre("Kumusta ka, Movie Robo?") is None
 
 
 def test_empty_input_is_safe():

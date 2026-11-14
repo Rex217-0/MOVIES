@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config import Settings
 
-log = logging.getLogger("direk.reference")
+log = logging.getLogger("movie_robo.reference")
 
 USECOLS = ["title", "type", "listed_in", "release_year", "duration"]
 BUNDLED_SAMPLE = Path(__file__).resolve().parent.parent / "data" / "netflix_titles_sample.csv"

@@ -1,5 +1,5 @@
-from direk.config import Settings
-from direk.reference import BUNDLED_SAMPLE, ReferenceCatalog
+from movie_robo.config import Settings
+from movie_robo.reference import BUNDLED_SAMPLE, ReferenceCatalog
 
 
 def test_bundled_sample_is_loaded(settings: Settings):

@@ -1,4 +1,4 @@
-from direk.gate import gate_question, missing_fields
+from movie_robo.gate import gate_question, missing_fields
 
 
 def test_missing_haba_and_mood():

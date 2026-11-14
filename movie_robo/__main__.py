@@ -1,4 +1,4 @@
-"""Entry point: ``python -m direk``."""
+"""Entry point: ``python -m movie_robo``."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from .config import Settings
 def main() -> None:
     settings = Settings()
     uvicorn.run(
-        "direk.api:app",
+        "movie_robo.api:app",
         host=settings.host,
         port=settings.port,
         log_level="info",

@@ -1,19 +1,19 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from direk.api import create_app
-from direk.service import DirekService
+from movie_robo.api import create_app
+from movie_robo.service import MovieRoboService
 
 
 @pytest.fixture
 def client(settings) -> TestClient:
-    return TestClient(create_app(settings, DirekService(settings)))
+    return TestClient(create_app(settings, MovieRoboService(settings)))
 
 
 def test_health(client: TestClient):
     body = client.get("/health").json()
     assert body["ok"] is True
-    assert body["persona"] == "Direk"
+    assert body["persona"] == "Movie Robo"
 
 
 def test_models_endpoint(client: TestClient):
@@ -45,4 +45,4 @@ def test_empty_messages_rejected(client: TestClient):
 def test_ui_is_served(client: TestClient):
     resp = client.get("/")
     assert resp.status_code == 200
-    assert "Direk" in resp.text
+    assert "Movie Robo" in resp.text

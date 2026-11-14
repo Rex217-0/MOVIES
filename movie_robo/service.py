@@ -1,4 +1,4 @@
-"""The Direk service: gate + references + model + action parsing."""
+"""The Movie Robo service: gate + references + model + action parsing."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from .config import Settings
 from .gate import gate_question
 from .genres import find_genre
 from .model import ModelBackend, build_backend
-from .persona import build_system_prompt
+from .movie_robo_persona import build_system_prompt
 from .reference import ReferenceCatalog
 from .skills import extract_action
 
-log = logging.getLogger("direk.service")
+log = logging.getLogger("movie_robo.service")
 
 
-class DirekService:
+class MovieRoboService:
     def __init__(
         self,
         settings: Settings | None = None,
@@ -46,7 +46,7 @@ class DirekService:
             "model": self.settings.model_id,
             "backend": self.backend.name,
             "backend_error": self._backend_error,
-            "persona": "Direk",
+            "persona": "Movie Robo",
             "reference_available": self.catalog.available,
             "reference_rows": self.catalog.size,
         }
