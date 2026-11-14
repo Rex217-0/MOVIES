@@ -29,6 +29,13 @@ import type { MovieConcept, SceneStatus } from '../featureFilm.ts';
 import type { TaskRoute } from './taskRouter.ts';
 import type { FeatureJobView, SceneState, FeatureStatus } from './factory.ts';
 
+/**
+ * The one private vault this build serves. Every row in `movie_jobs` and
+ * `scene_jobs` is stamped with it, and every read is scoped to it, so a shared
+ * database can never leak another org's films into this one.
+ */
+export const ORG_ID = 'LJRgroupORG';
+
 /** Where the database lives. `DIREK_FACTORY_DB` overrides it (used by tests). */
 export function factoryDbPath(): string {
   return process.env.DIREK_FACTORY_DB || path.join(process.cwd(), 'factory.db');
@@ -36,6 +43,7 @@ export function factoryDbPath(): string {
 
 interface MovieRow {
   id: string;
+  org_id: string;
   title: string;
   genre: string;
   rating: string;
@@ -62,6 +70,7 @@ interface MovieRow {
 
 interface SceneRow {
   id: string;
+  org_id: string;
   movie_id: string;
   scene_number: number;
   video_path: string | null;
@@ -86,9 +95,11 @@ interface SceneRow {
 /**
  * The canonical `MovieJobs` columns the hosted Firestore keeps, in order. The
  * local `movie_jobs` table carries these first, then the engine columns.
+ * `org_id` is the private-vault scope (`ORG_ID`).
  */
 export interface MovieDoc {
   id: string;
+  org_id: string;
   title: string;
   genre: string;
   rating: string;
@@ -100,6 +111,7 @@ export interface MovieDoc {
 /** The canonical `SceneJobs` columns the hosted Firestore keeps. */
 export interface SceneDoc {
   id: string;
+  org_id: string;
   movie_id: string;
   scene_number: number;
   status: string;
@@ -114,6 +126,7 @@ export function sceneId(movieId: string, sceneNumber: number): string {
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS movie_jobs (
   id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '${ORG_ID}',
   title TEXT NOT NULL DEFAULT '',
   genre TEXT NOT NULL DEFAULT '',
   rating TEXT NOT NULL DEFAULT '',
@@ -139,6 +152,7 @@ CREATE TABLE IF NOT EXISTS movie_jobs (
 );
 CREATE TABLE IF NOT EXISTS scene_jobs (
   id TEXT NOT NULL DEFAULT '',
+  org_id TEXT NOT NULL DEFAULT '${ORG_ID}',
   movie_id TEXT NOT NULL,
   scene_number INTEGER NOT NULL DEFAULT 0,
   video_path TEXT,
@@ -175,6 +189,7 @@ function migrate(db: DatabaseSync): void {
 
   const movieCols = columns('movie_jobs');
   const addMovie: [string, string][] = [
+    ['org_id', `TEXT NOT NULL DEFAULT '${ORG_ID}'`],
     ['title', "TEXT NOT NULL DEFAULT ''"],
     ['genre', "TEXT NOT NULL DEFAULT ''"],
     ['rating', "TEXT NOT NULL DEFAULT ''"],
@@ -200,6 +215,7 @@ function migrate(db: DatabaseSync): void {
   const sceneCols = columns('scene_jobs');
   const addScene: [string, string][] = [
     ['id', "TEXT NOT NULL DEFAULT ''"],
+    ['org_id', `TEXT NOT NULL DEFAULT '${ORG_ID}'`],
     ['scene_number', 'INTEGER NOT NULL DEFAULT 0'],
     ['video_path', 'TEXT'],
   ];
@@ -212,6 +228,12 @@ function migrate(db: DatabaseSync): void {
       id = CASE WHEN id = '' THEN movie_id || '-S' || substr('0' || idx, -2) ELSE id END,
       video_path = COALESCE(video_path, asset_name)
     WHERE scene_number = 0 OR id = '' OR video_path IS NULL
+  `);
+
+  // Indexed only after `org_id` exists on both tables.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS movie_jobs_org ON movie_jobs (org_id);
+    CREATE INDEX IF NOT EXISTS scene_jobs_org ON scene_jobs (org_id);
   `);
 }
 
@@ -231,11 +253,12 @@ export class FactoryDb {
     this.db
       .prepare(
         `INSERT INTO movie_jobs
-           (id, title, genre, rating, format, created_at, concept, status, percent, rendered,
+           (id, org_id, title, genre, rating, format, created_at, concept, status, percent, rendered,
             failed, approved, rejected, total, total_seconds, current_scene, rendered_seconds,
             film, error, script, bible, started_at, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
+           org_id=excluded.org_id,
            title=excluded.title, genre=excluded.genre, rating=excluded.rating,
            format=excluded.format, created_at=excluded.created_at, concept=excluded.concept,
            status=excluded.status, percent=excluded.percent, rendered=excluded.rendered,
@@ -247,6 +270,7 @@ export class FactoryDb {
       )
       .run(
         job.id,
+        ORG_ID,
         job.concept.title,
         job.concept.genre,
         job.concept.rating,
@@ -273,10 +297,11 @@ export class FactoryDb {
 
     const scene = this.db.prepare(
       `INSERT INTO scene_jobs
-         (id, movie_id, scene_number, video_path, idx, act, heading, beat, narration, visual,
+         (id, org_id, movie_id, scene_number, video_path, idx, act, heading, beat, narration, visual,
           mood, status, percent, seconds, asset_id, asset_name, error, route, started_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(movie_id, idx) DO UPDATE SET
+         org_id=excluded.org_id,
          id=excluded.id, scene_number=excluded.scene_number, video_path=excluded.video_path,
          act=excluded.act, heading=excluded.heading, beat=excluded.beat,
          narration=excluded.narration, visual=excluded.visual, mood=excluded.mood,
@@ -286,7 +311,7 @@ export class FactoryDb {
     );
     for (const s of job.scenes) {
       scene.run(
-        sceneId(job.id, s.index), job.id, s.index, s.assetName ?? null, s.index, s.act, s.heading,
+        sceneId(job.id, s.index), ORG_ID, job.id, s.index, s.assetName ?? null, s.index, s.act, s.heading,
         s.beat, s.narration, s.visual, s.mood, s.status, s.percent, s.seconds,
         s.assetId ?? null, s.assetName ?? null, s.error ?? null, JSON.stringify(s.route),
         s.startedAt ?? null, s.endedAt ?? null,
@@ -296,11 +321,13 @@ export class FactoryDb {
 
   /** Rebuild a job view from the database, or undefined when it is not stored. */
   load(id: string): FeatureJobView | undefined {
-    const movie = this.db.prepare('SELECT * FROM movie_jobs WHERE id = ?').get(id) as unknown as MovieRow | undefined;
+    const movie = this.db
+      .prepare('SELECT * FROM movie_jobs WHERE id = ? AND org_id = ?')
+      .get(id, ORG_ID) as unknown as MovieRow | undefined;
     if (!movie) return undefined;
     const sceneRows = this.db
-      .prepare('SELECT * FROM scene_jobs WHERE movie_id = ? ORDER BY idx')
-      .all(id) as unknown as SceneRow[];
+      .prepare('SELECT * FROM scene_jobs WHERE movie_id = ? AND org_id = ? ORDER BY idx')
+      .all(id, ORG_ID) as unknown as SceneRow[];
 
     const scenes: SceneState[] = sceneRows.map(row => ({
       index: row.idx,
@@ -323,6 +350,7 @@ export class FactoryDb {
 
     const job: FeatureJobView = {
       id: movie.id,
+      orgId: movie.org_id,
       concept: JSON.parse(movie.concept) as MovieConcept,
       status: movie.status as FeatureStatus,
       percent: movie.percent,
@@ -348,8 +376,8 @@ export class FactoryDb {
   /** The newest stored films, for a restart-safe listing. */
   list(limit = 12): FeatureJobView[] {
     const rows = this.db
-      .prepare('SELECT id FROM movie_jobs ORDER BY started_at DESC LIMIT ?')
-      .all(limit) as { id: string }[];
+      .prepare('SELECT id FROM movie_jobs WHERE org_id = ? ORDER BY started_at DESC LIMIT ?')
+      .all(ORG_ID, limit) as { id: string }[];
     return rows.map(r => this.load(r.id)).filter((j): j is FeatureJobView => Boolean(j));
   }
 
@@ -358,10 +386,13 @@ export class FactoryDb {
    * is the row a Firestore migration writes to `MovieJobs/<id>`.
    */
   movieDoc(id: string): MovieDoc | undefined {
-    const row = this.db.prepare('SELECT * FROM movie_jobs WHERE id = ?').get(id) as unknown as MovieRow | undefined;
+    const row = this.db
+      .prepare('SELECT * FROM movie_jobs WHERE id = ? AND org_id = ?')
+      .get(id, ORG_ID) as unknown as MovieRow | undefined;
     if (!row) return undefined;
     return {
       id: row.id,
+      org_id: row.org_id,
       title: row.title,
       genre: row.genre,
       rating: row.rating,
@@ -377,10 +408,11 @@ export class FactoryDb {
    */
   sceneDocs(movieId: string): SceneDoc[] {
     const rows = this.db
-      .prepare('SELECT * FROM scene_jobs WHERE movie_id = ? ORDER BY scene_number')
-      .all(movieId) as unknown as SceneRow[];
+      .prepare('SELECT * FROM scene_jobs WHERE movie_id = ? AND org_id = ? ORDER BY scene_number')
+      .all(movieId, ORG_ID) as unknown as SceneRow[];
     return rows.map(row => ({
       id: row.id,
+      org_id: row.org_id,
       movie_id: row.movie_id,
       scene_number: row.scene_number,
       status: row.status,
@@ -389,12 +421,14 @@ export class FactoryDb {
   }
 
   count(): number {
-    const row = this.db.prepare('SELECT count(*) AS n FROM movie_jobs').get() as { n: number };
+    const row = this.db.prepare('SELECT count(*) AS n FROM movie_jobs WHERE org_id = ?').get(ORG_ID) as { n: number };
     return row.n;
   }
 
   sceneCount(movieId: string): number {
-    const row = this.db.prepare('SELECT count(*) AS n FROM scene_jobs WHERE movie_id = ?').get(movieId) as { n: number };
+    const row = this.db
+      .prepare('SELECT count(*) AS n FROM scene_jobs WHERE movie_id = ? AND org_id = ?')
+      .get(movieId, ORG_ID) as { n: number };
     return row.n;
   }
 

@@ -18,23 +18,23 @@ service cloud.firestore {
     }
 
     // Draft aligned with src/direk/factoryDb.ts MovieDoc:
-    // id, title, genre, rating, format, status, created_at.
+    // id, org_id, title, genre, rating, format, status, created_at.
+    // Every document is scoped to the one private vault (org_id == 'LJRgroupORG').
     // Admin SDK backend access bypasses Firestore rules. Client writes are
     // restricted to a trusted Firebase Auth custom claim set by a secure admin.
-    // Reads are available to signed-in clients; without an owner field this is
-    // project-wide visibility for authenticated users, so review before deploy.
     match /MovieJobs/{movieId} {
-      allow read: if signedIn();
+      allow read: if signedIn() && resource.data.org_id == 'LJRgroupORG';
       allow create, update: if signedIn()
         && request.auth.token.admin == true
         && request.resource.data.keys().hasOnly([
-          'id', 'title', 'genre', 'rating', 'format', 'status', 'created_at'
+          'id', 'org_id', 'title', 'genre', 'rating', 'format', 'status', 'created_at'
         ])
         && request.resource.data.keys().hasAll([
-          'id', 'title', 'genre', 'rating', 'format', 'status', 'created_at'
+          'id', 'org_id', 'title', 'genre', 'rating', 'format', 'status', 'created_at'
         ])
         && request.resource.data.id is string
         && request.resource.data.id == movieId
+        && request.resource.data.org_id == 'LJRgroupORG'
         && request.resource.data.title is string
         && request.resource.data.genre is string
         && request.resource.data.rating is string
@@ -45,19 +45,20 @@ service cloud.firestore {
     }
 
     // Draft aligned with src/direk/factoryDb.ts SceneDoc:
-    // id, movie_id, scene_number, status, video_path.
+    // id, org_id, movie_id, scene_number, status, video_path.
     match /SceneJobs/{sceneId} {
-      allow read: if signedIn();
+      allow read: if signedIn() && resource.data.org_id == 'LJRgroupORG';
       allow create, update: if signedIn()
         && request.auth.token.admin == true
         && request.resource.data.keys().hasOnly([
-          'id', 'movie_id', 'scene_number', 'status', 'video_path'
+          'id', 'org_id', 'movie_id', 'scene_number', 'status', 'video_path'
         ])
         && request.resource.data.keys().hasAll([
-          'id', 'movie_id', 'scene_number', 'status', 'video_path'
+          'id', 'org_id', 'movie_id', 'scene_number', 'status', 'video_path'
         ])
         && request.resource.data.id is string
         && request.resource.data.id == sceneId
+        && request.resource.data.org_id == 'LJRgroupORG'
         && request.resource.data.movie_id is string
         && request.resource.data.scene_number is int
         && request.resource.data.scene_number >= 1

@@ -98,9 +98,10 @@ test('movieDoc carries the exact MovieJobs columns Copilot Firestore uses', () =
 
   const doc = db.movieDoc(job.id)!;
   assert.deepEqual(Object.keys(doc).sort(), [
-    'created_at', 'format', 'genre', 'id', 'rating', 'status', 'title',
+    'created_at', 'format', 'genre', 'id', 'org_id', 'rating', 'status', 'title',
   ]);
   assert.equal(doc.id, job.id);
+  assert.equal(doc.org_id, 'LJRgroupORG');
   assert.equal(doc.title, job.concept.title);
   assert.equal(doc.genre, job.concept.genre);
   assert.equal(doc.rating, job.concept.rating);
@@ -125,8 +126,9 @@ test('sceneDocs carries the exact SceneJobs columns, scene_number 1-18', () => {
   const docs = db.sceneDocs(job.id);
   assert.equal(docs.length, 18);
   assert.deepEqual(Object.keys(docs[0]).sort(), [
-    'id', 'movie_id', 'scene_number', 'status', 'video_path',
+    'id', 'movie_id', 'org_id', 'scene_number', 'status', 'video_path',
   ]);
+  assert.ok(docs.every(d => d.org_id === 'LJRgroupORG'));
   assert.deepEqual(docs.map(d => d.scene_number), Array.from({ length: 18 }, (_, i) => i + 1));
   assert.ok(docs.every(d => d.movie_id === job.id));
   assert.equal(docs[0].status, 'pending');
@@ -189,6 +191,7 @@ test('a database written before the alignment is migrated and backfilled', () =>
   // Opening it with FactoryDb adds the columns and backfills them.
   const db = new FactoryDb(file);
   const doc = db.movieDoc('FILM-old')!;
+  assert.equal(doc.org_id, 'LJRgroupORG', 'org_id backfilled onto a legacy row');
   assert.equal(doc.title, 'Luma');
   assert.equal(doc.genre, 'drama');
   assert.equal(doc.rating, 'PG');
@@ -196,8 +199,37 @@ test('a database written before the alignment is migrated and backfilled', () =>
   assert.equal(doc.created_at, 1234, 'created_at backfilled from started_at');
 
   const scenes = db.sceneDocs('FILM-old');
+  assert.equal(scenes[0].org_id, 'LJRgroupORG', 'scene org_id backfilled too');
   assert.equal(scenes[0].scene_number, 1);
   assert.equal(scenes[0].id, 'FILM-old-S01');
   assert.equal(scenes[0].video_path, 'old-scene.mp4', 'video_path backfilled from asset_name');
+  db.close();
+});
+
+test('every read is scoped to LJRgroupORG, so another org cannot leak in', () => {
+  tmpStore();
+  const db = tmpDb();
+  const factory = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS }),
+    ffmpegAvailable: async () => true,
+    db,
+  });
+  const job = factory.create({ brief: 'Isang vault test.' });
+  assert.equal(job.orgId, 'LJRgroupORG', 'a created job carries the vault id');
+
+  // A film from a different org, written straight into the same database.
+  const foreign = (db as unknown as { db: DatabaseSync }).db;
+  foreign
+    .prepare(
+      `INSERT INTO movie_jobs (id, org_id, concept, status, started_at)
+       VALUES ('FILM-ibang-org', 'IBANGORG', '{}', 'idle', 1)`,
+    )
+    .run();
+
+  assert.equal(db.count(), 1, 'count() ignores the other org');
+  assert.equal(db.load('FILM-ibang-org'), undefined, 'load() refuses the other org');
+  assert.equal(db.movieDoc('FILM-ibang-org'), undefined, 'movieDoc() refuses the other org');
+  assert.ok(db.list().every(j => j.id !== 'FILM-ibang-org'), 'list() never lists the other org');
+  assert.ok(db.list().some(j => j.id === job.id), 'list() still returns our own film');
   db.close();
 });

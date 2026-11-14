@@ -556,6 +556,8 @@ export interface FeatureSceneView {
 
 export interface FeatureJobView {
   id: string;
+  /** The private vault this job belongs to (`LJRgroupORG`). */
+  orgId: string;
   concept: { title: string; genre: string; rating: string; format: string; brief: string };
   status: 'idle' | 'running' | 'paused' | 'done' | 'error';
   percent: number;

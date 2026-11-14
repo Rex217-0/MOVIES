@@ -17,7 +17,7 @@ import { classifyTask, planExecution, route_to_cloud, type TaskRoute } from './t
 import { saveAsset, assetPath, listAssets, type ReviewStatus } from './assets.ts';
 import { concatCopy } from './render.ts';
 import { saveRender, type StoredRender } from './renderStore.ts';
-import type { FactoryDb } from './factoryDb.ts';
+import { ORG_ID, type FactoryDb } from './factoryDb.ts';
 import { buildConcept, buildScenes, mergeScenes, type ConceptOptions } from './featureFilm.ts';
 import type { Mood } from '../movieMeta.ts';
 import {
@@ -53,6 +53,8 @@ export type FeatureStatus = 'idle' | 'running' | 'paused' | 'done' | 'error';
 
 export interface FeatureJobView {
   id: string;
+  /** The private vault this job belongs to (`LJRgroupORG`). */
+  orgId: string;
   concept: MovieConcept;
   status: FeatureStatus;
   /** 0-100 across the whole film. */
@@ -124,6 +126,7 @@ export class FeatureFactory {
     const id = `FILM-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const job: FeatureJobView = {
       id,
+      orgId: ORG_ID,
       concept,
       status: 'idle',
       percent: 0,
