@@ -544,6 +544,8 @@ export interface FeatureSceneView {
   visual: string;
   mood: string;
   status: 'pending' | 'rendering' | 'rendered' | 'failed' | 'approved' | 'rejected';
+  /** Which pipeline stage the scene is in (scripting -> rendering -> audio -> completed). */
+  stage: 'scripting' | 'rendering' | 'audio' | 'completed';
   percent: number;
   seconds: number;
   assetId?: string;

@@ -87,6 +87,31 @@ test('start renders all 18 scenes, one at a time, in order', async () => {
   assert.ok(done.scenes.every(s => s.status === 'rendered' && s.assetName));
 });
 
+test('a scene reports its real pipeline stages as the renderer reaches them', async () => {
+  freshStore();
+  const seen: Record<number, string[]> = {};
+  const factory = new FeatureFactory({
+    renderScene: async ({ index, onStage }) => {
+      seen[index] = [];
+      for (const stage of ['scripting', 'rendering', 'audio', 'completed'] as const) {
+        onStage?.(stage);
+        seen[index].push(stage);
+      }
+      return { data: Buffer.from(`scene-${index}`), seconds: FEATURE_SCENE_SECONDS, voiced: false };
+    },
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+  });
+  const job = factory.create({ brief: 'Isang musikal sa Maynila.' });
+  assert.ok(job.scenes.every(s => s.stage === 'scripting'), 'scenes start at scripting');
+  factory.start(job.id);
+  const done = await settle(factory, job.id);
+
+  // Every scene ran through all four stages, in order, and ends completed.
+  assert.deepEqual(seen[1], ['scripting', 'rendering', 'audio', 'completed']);
+  assert.ok(done.scenes.every(s => s.stage === 'completed'));
+});
+
 test('a scene that fails is logged, skipped, and the batch continues', async () => {
   freshStore();
   const { factory, rendered } = makeFactory({ failOn: [3, 11] });

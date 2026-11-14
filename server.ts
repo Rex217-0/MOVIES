@@ -511,20 +511,10 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   const formattedPrompt = buildTacticalVideoPrompt(prompt);
   const startTime = Date.now();
 
-  // T3 (heavy GPU): video rendering is offloaded unless the local box is
-  // explicitly allowed to take it, so a render never overloads Server-2.
+  // Heavy video renders on the local ComfyUI GPU (Server-2); the router keeps
+  // it local so a shot is never silently handed to an unconfigured cloud tier.
   const videoPlan = planExecution('video_render', { prompt });
   broadcastThought(`[ROUTER] video_render → ${videoPlan.route.tier} (${videoPlan.run})`);
-  if (videoPlan.run === 'cloud') {
-    const offload = route_to_cloud('video_render', { prompt, aspect_ratio: validAspect, duration, resolution });
-    broadcastThought(`[ROUTER] ${offload.note}`);
-    res.status(503).json({
-      ...aiUnavailable('cloud-t3', offload.note, 'T3 offload'),
-      route: videoPlan.route,
-      offload,
-    });
-    return;
-  }
 
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
@@ -1205,8 +1195,8 @@ const featureFactory = new FeatureFactory({
   // Every scene is a real ComfyUI render. When ComfyUI cannot render the shot
   // (unreachable, no video workflow) the scene fails with AI_UNAVAILABLE; the
   // factory never fabricates a placeholder clip.
-  renderScene: async ({ scene, index }) => {
-    const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS });
+  renderScene: async ({ scene, index, onStage }) => {
+    const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS, onStage });
     return { data: result.data, seconds: result.seconds, voiced: result.voiced };
   },
   ffmpegAvailable,

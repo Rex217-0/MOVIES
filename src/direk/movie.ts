@@ -23,6 +23,7 @@ import { defaultPython } from './platform.ts';
 import { saveAsset, type AssetMeta } from './assets.ts';
 import { MOODS, MOOD_LABELS, TTS_VOICES, type Mood, type MovieOptions, type TtsVoice, sceneCount } from '../movieMeta.ts';
 import { comfyAvailable, comfyUrl, comfyVideoConfigured, generateVideoWithComfy } from './comfyui.ts';
+import type { SceneStage } from './factory.ts';
 import { buildVeoStylePrompt, buildVeoStyleNegative } from '../tactical/rules.ts';
 
 export { MOODS, MOOD_LABELS, TTS_VOICES, type Mood, type MovieOptions, type TtsVoice, sceneCount };
@@ -849,17 +850,20 @@ async function mixScene(shot: string, narration: string | null, bed: string, sec
  */
 export async function renderFeatureScene(
   scene: MovieScene,
-  opts: { index: number; voice?: TtsVoice; seconds?: number } = { index: 1 },
+  opts: { index: number; voice?: TtsVoice; seconds?: number; onStage?: (stage: SceneStage) => void } = { index: 1 },
 ): Promise<SceneRenderResult> {
   const dir = workDir();
+  const stage = opts.onStage ?? (() => {});
   try {
     const voice = opts.voice ?? 'Kore';
     const seconds = opts.seconds ?? MAX_SCENE_SECONDS;
 
     // 1. The picture must come from ComfyUI. No backend -> no scene.
+    stage('scripting');
     if (!(await videoBackendReady())) {
       throw new VideoBackendUnavailable(videoBackendDetail());
     }
+    stage('rendering');
     const prompt = buildVeoStylePrompt(`${scene.heading}. ${scene.visual}`);
     const { data } = await generateVideoWithComfy(prompt, { negative: buildVeoStyleNegative() });
     const clip = path.join(dir, 'comfy.mp4');
@@ -869,6 +873,7 @@ export async function renderFeatureScene(
     const shot = await normaliseShot(clip, dir, seconds);
 
     // 3. Narration, from the first voice that answers; a caption otherwise.
+    stage('audio');
     const backends = narrationBackends();
     let narrationFile: string | null = null;
     let voiceSource: NarrationSource = 'none';
@@ -885,6 +890,7 @@ export async function renderFeatureScene(
     const bed = await musicBed(seconds, scene.mood, dir);
     const out = path.join(dir, 'scene.mp4');
     await mixScene(shot, narrationFile, bed, seconds, out);
+    stage('completed');
     return { data: fs.readFileSync(out), seconds, voiced: Boolean(narrationFile), voiceSource };
   } finally {
     cleanup(dir);
