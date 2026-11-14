@@ -37,7 +37,7 @@ function saveSession(session: AuthSession) {
   localStorage.setItem(AUTH_KEY, JSON.stringify(session));
 }
 
-async function authRequest(path: string, body: Record<string, string>): Promise<any> {
+async function authRequest(path: string, body: Record<string, unknown>): Promise<any> {
   const response = await fetch(`https://identitytoolkit.googleapis.com/v1/${path}?key=${encodeURIComponent(firebaseWebConfig.apiKey)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -79,7 +79,8 @@ export async function ensureAnonymousSession(): Promise<AuthSession> {
     }
   }
 
-  const result = await authRequest('accounts:signUp', { returnSecureToken: 'true' });
+  // Firebase Identity Toolkit requires a JSON boolean here (not the string "true").
+  const result = await authRequest('accounts:signUp', { returnSecureToken: true });
   const session = {
     uid: result.localId,
     idToken: result.idToken,

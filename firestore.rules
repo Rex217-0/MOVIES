@@ -1,10 +1,16 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Each browser's anonymous Firebase Auth account can access only its own
-    // Movie Maker history. Never use a UID supplied in an unauthenticated body.
+    // Anonymous Firebase Auth identities can access only their own Movie Maker history.
     match /users/{userId}/movie_history/{movieId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create, update: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['payload', 'createdAt'])
+        && request.resource.data.payload is string
+        && request.resource.data.payload.size() <= 20000
+        && request.resource.data.createdAt is timestamp;
+      allow delete: if request.auth != null && request.auth.uid == userId;
     }
   }
 }
