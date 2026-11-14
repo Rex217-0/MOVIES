@@ -376,3 +376,155 @@ export function assetDownloadUrl(name: string): string {
   const query = token ? `?token=${encodeURIComponent(token)}` : '';
   return `/api/direk/assets/${encodeURIComponent(name)}/download${query}`;
 }
+
+// ---------------------------------------------------------------------------
+// Render Vault (staging review)
+// ---------------------------------------------------------------------------
+
+export type ReviewStatus = 'pending' | 'approved' | 'rejected';
+
+export interface AssetItem {
+  id: string;
+  name: string;
+  ext: string;
+  mime: string;
+  bytes: number;
+  kind: 'video' | 'image' | 'audio' | 'other';
+  title: string;
+  prompt?: string;
+  source: string;
+  createdAt: string;
+  reviewStatus?: ReviewStatus;
+}
+
+export async function direkAssets(): Promise<AssetItem[]> {
+  const res = await apiFetch('/api/direk/assets');
+  if (!res.ok) throw new Error(`Assets request failed (${res.status})`);
+  const data = await res.json();
+  return data.assets ?? [];
+}
+
+export async function direkReviewAsset(
+  id: string,
+  action: 'approve' | 'reject' | 'pending',
+): Promise<AssetItem> {
+  const res = await apiFetch('/api/direk/assets/review', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, action }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Review failed (${res.status})`);
+  return body.asset as AssetItem;
+}
+
+// ---------------------------------------------------------------------------
+// Task routing (T1/T2/T3)
+// ---------------------------------------------------------------------------
+
+export interface TaskRoute {
+  task: string;
+  tier: 'T1' | 'T2' | 'T3';
+  placement: 'local' | 'cloud';
+  reason: string;
+}
+
+export interface RoutingReport {
+  tiers: Record<string, string>;
+  t3_allow_local: boolean;
+  cloud_configured: boolean;
+  table: { task: string; tier: 'T1' | 'T2' | 'T3'; placement: 'local' | 'cloud' }[];
+}
+
+export async function direkRouting(): Promise<RoutingReport | null> {
+  const res = await apiFetch('/api/direk/routing');
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Movie Creator
+// ---------------------------------------------------------------------------
+
+export interface MovieJobView {
+  id: string;
+  brief: string;
+  minutes: number;
+  stage: string;
+  percent: number;
+  detail?: string;
+  status: 'running' | 'done' | 'error';
+  title?: string;
+  scenes?: number;
+  seconds?: number;
+  narrated?: boolean;
+  voiceSource?: 'fish' | 'gemini' | 'tagalog' | 'piper' | 'none';
+  note?: string;
+  asset?: { name: string; bytes: number; kind: string; title: string };
+  error?: string;
+  startedAt: number;
+  endedAt?: number;
+}
+
+export interface MovieStatus {
+  available: boolean;
+  narration: boolean;
+  narration_fish: boolean;
+  narration_cloud: boolean;
+  narration_tagalog: boolean;
+  narration_offline: boolean;
+  piper_voice?: string;
+  tagalog_model?: string;
+  tts_model: string;
+  voices: string[];
+  moods: string[];
+  min_minutes: number;
+  max_minutes: number;
+  ffmpeg: boolean;
+  jobs: MovieJobView[];
+}
+
+export async function movieStatus(): Promise<MovieStatus> {
+  const res = await apiFetch('/api/direk/movie/status');
+  if (!res.ok) throw new Error(`Movie status failed (${res.status})`);
+  return res.json();
+}
+
+export async function movieStart(input: {
+  brief: string;
+  minutes: number;
+  mood?: string;
+  voice?: string;
+}): Promise<{ job: string }> {
+  const res = await apiFetch('/api/direk/movie', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Movie start failed (${res.status})`);
+  return body;
+}
+
+/** Poll one job until it settles, reporting progress as it goes. */
+export async function movieWait(
+  id: string,
+  onProgress?: (job: MovieJobView) => void,
+  intervalMs = 2000,
+  timeoutMs = 30 * 60 * 1000,
+): Promise<MovieJobView> {
+  const deadline = Date.now() + timeoutMs;
+  let last: MovieJobView | null = null;
+  while (Date.now() < deadline) {
+    const status = await movieStatus();
+    const job = status.jobs.find(j => j.id === id);
+    if (job) {
+      last = job;
+      onProgress?.(job);
+      if (job.status !== 'running') return job;
+    }
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+  if (last) return last;
+  throw new Error('Hindi natapos ang pelikula sa oras.');
+}

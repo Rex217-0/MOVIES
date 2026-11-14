@@ -10,8 +10,17 @@ import { GoogleGenAI } from '@google/genai';
 import { IMAGE_MODEL, IMAGE_MODEL_FREE } from '../config.ts';
 import { buildVeoStylePrompt, buildVeoStyleNegative } from '../tactical/rules.ts';
 import { generateWithComfy, comfyAvailable } from './comfyui.ts';
+import { toPng } from './render.ts';
 
-export type ImageBackend = 'comfyui' | 'gemini' | 'none';
+export type ImageBackend = 'comfyui' | 'gemini' | 'pollinations' | 'none';
+
+/**
+ * The Pollinations base URL. Overridable so a deployment can point at a proxy,
+ * and so the tests can serve a local stand-in instead of the real service.
+ */
+export function pollinationsUrl(): string {
+  return (process.env.POLLINATIONS_URL || 'https://image.pollinations.ai').replace(/\/+$/, '');
+}
 
 let client: GoogleGenAI | null = null;
 
@@ -32,6 +41,8 @@ export async function imageBackend(): Promise<ImageBackend> {
     if (comfyCache.ok) return 'comfyui';
   }
   if (process.env.GEMINI_API_KEY && IMAGE_MODEL_FREE) return 'gemini';
+  // Pollinations needs no key and no GPU, so it is the free default.
+  if (process.env.POLLINATIONS_DISABLE !== '1') return 'pollinations';
   return 'none';
 }
 
@@ -78,6 +89,17 @@ export async function imagine(prompt: string): Promise<GeneratedImage> {
     const data = extractImage(interaction);
     if (!data) throw new Error('Walang image na ibinalik ang model.');
     return { data, ext: 'png', mime: 'image/png', backend };
+  }
+
+  if (backend === 'pollinations') {
+    const url = `${pollinationsUrl()}/prompt/${encodeURIComponent(enhanced)}` +
+      `?width=1024&height=1024&nologo=true&model=flux`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
+    if (!res.ok) throw new Error(`Pollinations returned ${res.status}`);
+    const raw = Buffer.from(await res.arrayBuffer());
+    if (raw.length < 1024) throw new Error('Pollinations returned an empty image.');
+    // Pollinations answers with a JPEG whatever the URL asks for; store a PNG.
+    return { data: await toPng(raw), ext: 'png', mime: 'image/png', backend };
   }
 
   throw new Error('Walang available na image backend. Patakbuhin ang ComfyUI o mag-set ng GEMINI_API_KEY.');

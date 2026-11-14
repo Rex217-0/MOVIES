@@ -30,8 +30,8 @@ import {
 import { ReferenceCatalog } from './src/direk/reference.ts';
 import { MarketIntel } from './src/direk/market.ts';
 import { runConnector, connectorCatalog, allAssets } from './src/direk/connectors.ts';
-import { ffmpegAvailable, ffmpegPath } from './src/direk/render.ts';
-import { assetsDir, assetPath } from './src/direk/assets.ts';
+import { ffmpegAvailable, ffmpegPath, toPng } from './src/direk/render.ts';
+import { assetsDir, assetPath, reviewAsset, type ReviewStatus } from './src/direk/assets.ts';
 import { driveStatus, authUrl, redirectUri, exchangeCode } from './src/direk/gdrive.ts';
 import { DirekService, type ChatMessage } from './src/direk/service.ts';
 import { PIPELINE, STAGE_SKILL } from './src/direk/pipeline.ts';
@@ -46,6 +46,7 @@ import {
   comfyAvailable, generateWithComfy, comfyUrl, generateVideoWithComfy, comfyVideoConfigured,
   publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
 } from './src/direk/comfyui.ts';
+import { pollinationsUrl } from './src/direk/imagine.ts';
 import {
   LoRATrainer, trainerStatus, trainingConfig, buildTrainCommand,
 } from './src/direk/trainer.ts';
@@ -56,6 +57,18 @@ import {
 import {
   ollamaStatus, ollamaChat, preferredTextBackend, ollamaUrl, ollamaModel,
 } from './src/direk/llm.ts';
+import {
+  renderMovie, scriptPrompt, parseScript, fallbackScript, narrationBackends,
+  TTS_MODEL, TTS_VOICES, MOODS,
+  type MovieProgress, type MovieScript, type MovieOptions, type Mood, type TtsVoice,
+  type NarrationSource,
+} from './src/direk/movie.ts';
+import { MIN_MINUTES, MAX_MINUTES } from './src/movieMeta.ts';
+import {
+  classifyTask, classifyLoraTraining, planExecution, route_to_cloud,
+  routingTable, t3LocalAllowed, TIER_LABELS,
+} from './src/direk/taskRouter.ts';
+import type { AssetMeta } from './src/direk/assets.ts';
 
 dotenv.config();
 
@@ -479,6 +492,21 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   const formattedPrompt = buildTacticalVideoPrompt(prompt);
   const startTime = Date.now();
 
+  // T3 (heavy GPU): video rendering is offloaded unless the local box is
+  // explicitly allowed to take it, so a render never overloads Server-2.
+  const videoPlan = planExecution('video_render', { prompt });
+  broadcastThought(`[ROUTER] video_render → ${videoPlan.route.tier} (${videoPlan.run})`);
+  if (videoPlan.run === 'cloud') {
+    const offload = route_to_cloud('video_render', { prompt, aspect_ratio: validAspect, duration, resolution });
+    broadcastThought(`[ROUTER] ${offload.note}`);
+    res.status(503).json({
+      ...aiUnavailable('cloud-t3', offload.note, 'T3 offload'),
+      route: videoPlan.route,
+      offload,
+    });
+    return;
+  }
+
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
   // Free path first: a local ComfyUI with an AnimateDiff/SVD workflow. This is
@@ -631,6 +659,10 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
   // Veo-grade scaffolding: adds camera, lighting and film look when the user
   // did not specify them. Their own wording always wins.
   const enhancedPrompt = buildVeoStylePrompt(prompt);
+
+  // T2 (medium GPU): image generation runs locally on Server-2.
+  const imagePlan = planExecution('image_generation', { prompt });
+  broadcastThought(`[ROUTER] image_generation → ${imagePlan.route.tier} (${imagePlan.run})`);
 
   broadcastThought(`[IMAGE PIPELINE] Image request: "${prompt.slice(0, 45)}..."`);
 
@@ -886,7 +918,7 @@ async function refreshTextBackend(): Promise<void> {
 async function generateText(
   system: string,
   messages: ChatMessage[] | string,
-  opts: { json?: boolean; temperature?: number } = {},
+  opts: { json?: boolean; temperature?: number; maxTokens?: number } = {},
 ): Promise<string> {
   await refreshTextBackend();
   if (!textBackendAvailable) {
@@ -923,7 +955,7 @@ async function generateText(
           systemInstruction: system,
           temperature: opts.temperature ?? 0.7,
           topP: 0.9,
-          maxOutputTokens: 1024,
+          maxOutputTokens: opts.maxTokens ?? 1024,
           ...(opts.json ? { responseMimeType: 'application/json' } : {}),
         },
       });
@@ -962,6 +994,17 @@ app.get('/api/direk/status', async (_req: Request, res: Response) => {
     image_backend: backend,
     comfyui_url: comfyUrl(),
     ...direkService.health(),
+  });
+});
+
+// The T1/T2/T3 routing table: where each task type is allowed to run. The UI
+// shows this so it is always clear which jobs load the local GPU.
+app.get('/api/direk/routing', (_req: Request, res: Response) => {
+  res.json({
+    tiers: TIER_LABELS,
+    t3_allow_local: process.env.T3_ALLOW_LOCAL !== '0',
+    cloud_configured: Boolean(process.env.CLOUD_T3_URL),
+    table: routingTable(),
   });
 });
 
@@ -1004,6 +1047,115 @@ app.post('/api/direk/chat', async (req: Request, res: Response) => {
     res.status(503).json(
       aiUnavailable(TEXT_MODEL, 'Check the server logs and the Gemini API key.', reason)
     );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Movie Creator: one brief in, one downloadable film out.
+// ---------------------------------------------------------------------------
+const movieJobs = new Map<string, MovieJob>();
+
+interface MovieJob {
+  id: string;
+  brief: string;
+  minutes: number;
+  stage: string;
+  percent: number;
+  detail?: string;
+  status: 'running' | 'done' | 'error';
+  title?: string;
+  scenes?: number;
+  seconds?: number;
+  narrated?: boolean;
+  voiceSource?: NarrationSource;
+  note?: string;
+  asset?: AssetMeta;
+  error?: string;
+  startedAt: number;
+  endedAt?: number;
+}
+
+app.get('/api/direk/movie/status', (_req: Request, res: Response) => {
+  const backends = narrationBackends();
+  res.json({
+    available: true,
+    narration: backends.fish || backends.cloud || backends.tagalog || backends.offline,
+    narration_fish: backends.fish,
+    narration_cloud: backends.cloud,
+    narration_tagalog: backends.tagalog,
+    narration_offline: backends.offline,
+    narration_order: backends.order,
+    piper_voice: backends.piper_voice,
+    tagalog_model: backends.tagalog_model,
+    tts_model: TTS_MODEL,
+    voices: TTS_VOICES,
+    moods: MOODS,
+    min_minutes: MIN_MINUTES,
+    max_minutes: MAX_MINUTES,
+    ffmpeg: Boolean(ffmpegPath()),
+    jobs: [...movieJobs.values()].slice(-10).reverse(),
+  });
+});
+
+app.post('/api/direk/movie', async (req: Request, res: Response) => {
+  const body = req.body as { brief?: string; minutes?: number; mood?: string; voice?: string; title?: string };
+  const brief = typeof body.brief === 'string' ? body.brief.trim() : '';
+  if (!brief) {
+    res.status(400).json({ error: 'Kailangan ng brief (isang pangungusap na ideya).' });
+    return;
+  }
+  const minutes = Math.min(MAX_MINUTES, Math.max(MIN_MINUTES, Number(body.minutes) || 1));
+  const mood = (MOODS as string[]).includes(String(body.mood)) ? (body.mood as Mood) : undefined;
+  const voice = (TTS_VOICES as readonly string[]).includes(String(body.voice)) ? (body.voice as TtsVoice) : undefined;
+  const opts: MovieOptions = { minutes, mood, voice, title: body.title };
+
+  const id = `MOV-${Date.now()}`;
+  const job: MovieJob = { id, brief, minutes, stage: 'Simula', percent: 0, status: 'running', startedAt: Date.now() };
+  movieJobs.set(id, job);
+  while (movieJobs.size > 30) movieJobs.delete(movieJobs.keys().next().value as string);
+
+  res.status(202).json({ status: 'accepted', job: id });
+
+  const tick = (p: MovieProgress) => {
+    job.stage = p.stage;
+    job.percent = p.percent;
+    job.detail = p.detail;
+    broadcastThought(`[MOVIE ${p.percent}%] ${p.stage}${p.detail ? ` · ${p.detail}` : ''}`);
+  };
+
+  try {
+    // Screenplay first: a text model when one is available, otherwise the
+    // built-in beat sheet, so a film still comes out with no model at all.
+    tick({ stage: 'Script', percent: 1 });
+    let script: MovieScript | null = null;
+    try {
+      const raw = await generateText(scriptPrompt(brief, opts), [{ role: 'user', content: brief }], {
+        json: true,
+        temperature: 0.9,
+        maxTokens: 8192,
+      });
+      script = parseScript(raw);
+    } catch (error: any) {
+      broadcastThought(`[MOVIE] Walang text model (${error?.message || 'error'}) — gagamitin ang built-in na beats.`);
+    }
+    if (!script) script = fallbackScript(brief, opts);
+
+    const result = await renderMovie(script, opts, tick);
+    job.status = 'done';
+    job.title = script.title;
+    job.scenes = result.scenes;
+    job.seconds = result.seconds;
+    job.narrated = result.narrated;
+    job.voiceSource = result.voice_source;
+    job.note = result.note;
+    job.asset = result.asset;
+    job.endedAt = Date.now();
+    broadcastThought(`[MOVIE DONE] ${script.title} · ${result.seconds.toFixed(0)}s`);
+  } catch (error: any) {
+    job.status = 'error';
+    job.error = error?.message || 'Hindi nagawa ang pelikula.';
+    job.endedAt = Date.now();
+    broadcastThought(`[MOVIE ERROR] ${job.error}`);
   }
 });
 
@@ -1101,7 +1253,7 @@ function parseLoraBody(body: LoraRequestBody) {
 // ComfyUI (local, free) is preferred; the paid Gemini image model is a
 // fallback. With neither, image features are honestly reported as unavailable.
 // ---------------------------------------------------------------------------
-type ImageBackend = 'comfyui' | 'gemini' | 'none';
+type ImageBackend = 'comfyui' | 'gemini' | 'pollinations' | 'none';
 
 let comfyOk: { ok: boolean; at: number } | null = null;
 
@@ -1114,7 +1266,37 @@ async function resolveImageBackend(): Promise<ImageBackend> {
     if (comfyOk.ok) return 'comfyui';
   }
   if (process.env.GEMINI_API_KEY && IMAGE_MODEL_FREE) return 'gemini';
+  // Pollinations needs no key and no GPU, so it is the free default.
+  if (process.env.POLLINATIONS_DISABLE !== '1') return 'pollinations';
   return 'none';
+}
+
+/**
+ * Generate one image with Pollinations (free, no key, no GPU needed).
+ *
+ * The free tier allows one image every 45 seconds per IP and answers 402 with
+ * the wait it wants, so honour that wait and retry instead of losing the image.
+ */
+async function generatePollinationsImage(prompt: string, seed = 0): Promise<Buffer> {
+  const url = `${pollinationsUrl()}/prompt/${encodeURIComponent(prompt)}` +
+    `?width=1024&height=1024&nologo=true&seed=${seed}`;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(180000) });
+    if (res.ok) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 1024) throw new Error('Pollinations returned an empty image');
+      return buf;
+    }
+    if (res.status === 402) {
+      const body = await res.text().catch(() => '');
+      const wait = Number(/retry after (\d+)/i.exec(body)?.[1] ?? 45) + 2;
+      broadcastThought(`[DIREK] Pollinations rate limit — hinihintay ${wait}s...`);
+      await new Promise(r => setTimeout(r, wait * 1000));
+      continue;
+    }
+    throw new Error(`Pollinations returned ${res.status}`);
+  }
+  throw new Error('Pollinations: naabot ang rate limit');
 }
 
 /** Generate one image with the paid Gemini image model. */
@@ -1135,17 +1317,20 @@ function generateLoraImage(
   prompt: string,
   backend: ImageBackend,
   lora?: LoraChoice,
+  seed = 0,
 ): Promise<Buffer | null> {
-  // The LoRA only applies to ComfyUI; the Gemini path has no LoRA concept.
-  return backend === 'comfyui'
-    ? generateWithComfy(prompt, { lora })
-    : generateGeminiImage(prompt);
+  // The LoRA only applies to ComfyUI; the hosted paths have no LoRA concept.
+  // Every path ends in toPng: the hosted backends answer with a JPEG, and a
+  // JPEG under a `.png` name is not a usable LoRA training image.
+  if (backend === 'comfyui') return generateWithComfy(prompt, { lora });
+  if (backend === 'pollinations') return generatePollinationsImage(prompt, seed).then(toPng);
+  return generateGeminiImage(prompt).then(png => (png ? toPng(png) : null));
 }
 
 function noImageNote(): string {
   return (
     `Walang larawan: walang image backend. Magpatakbo ng ComfyUI (COMFYUI_URL=${comfyUrl()}) ` +
-    `para sa libreng generation, o mag-enable ng billing para sa Gemini image model.`
+    `para sa libreng local na generation, o hayaan ang libreng Pollinations backend.`
   );
 }
 
@@ -1158,6 +1343,11 @@ app.post('/api/direk/lora/plan', async (req: Request, res: Response) => {
   }
   const { plan } = parsed;
   const backend = await resolveImageBackend();
+  // Where this set's pieces are routed: the text half is T1, the images T2, and
+  // a training run is T2 or T3 depending on its size.
+  const textRoute = classifyTask('lora_text');
+  const imageRoute = classifyTask('image_generation');
+  const trainRoute = classifyLoraTraining({ samples: plan.brief.samples.length });
   res.json({
     trigger: plan.brief.trigger,
     genre: plan.brief.genre,
@@ -1171,6 +1361,7 @@ app.post('/api/direk/lora/plan', async (req: Request, res: Response) => {
     images_available: backend !== 'none',
     image_backend: backend,
     max_images: MAX_LORA_IMAGES,
+    routing: { text: textRoute, images: imageRoute, training: trainRoute },
   });
 });
 
@@ -1223,11 +1414,13 @@ async function generateLoraImages(
     broadcastThought(`[DIREK] LoRA set: ${targets.length} images via ${backend}...`);
     const names = targets.map((_s, i) => numberedName(plan.brief.trigger, i));
     // ComfyUI serialises on one GPU, so keep it to one job at a time.
-    const limit = backend === 'comfyui' ? 1 : 3;
+    // ComfyUI serialises on one GPU and Pollinations allows one image per IP
+    // every 45s, so both run one at a time; Gemini can take a few at once.
+    const limit = backend === 'gemini' ? 3 : 1;
     await mapLimited(targets, limit, async (sample, i) => {
       const name = names[i];
       try {
-        const png = await generateLoraImage(sample.prompt, backend, lora);
+        const png = await generateLoraImage(sample.prompt, backend, lora, i + 1);
         if (png) images.set(name, png);
         else skipped.push(name);
       } catch (error: any) {
@@ -1338,6 +1531,30 @@ app.post('/api/direk/connectors/run', async (req: Request, res: Response) => {
 
 app.get('/api/direk/assets', (_req: Request, res: Response) => {
   res.json({ assets: allAssets() });
+});
+
+// Approve or reject a rendered asset in the Staging Vault. The decision is
+// written back to the asset's sidecar, so it survives a restart and the
+// Published view keeps only what was really approved.
+app.post('/api/direk/assets/review', (req: Request, res: Response) => {
+  const body = req.body as { id?: string; name?: string; assetId?: string; action?: string };
+  const target = body.id || body.assetId || body.name;
+  const action = body.action;
+  if (!target || !['approve', 'reject', 'pending'].includes(String(action))) {
+    res.status(400).json({
+      error: 'Kailangan ang asset id (o name) at action: "approve" | "reject" | "pending".',
+    });
+    return;
+  }
+  const status: ReviewStatus =
+    action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'pending';
+  const updated = reviewAsset(target, status);
+  if (!updated) {
+    res.status(404).json({ error: `Hindi mahanap ang asset na '${target}'.` });
+    return;
+  }
+  broadcastThought(`[RENDER VAULT] ${updated.name} → ${status}`);
+  res.json({ ok: true, asset: updated });
 });
 
 app.get('/api/direk/assets/:name/download', (req: Request, res: Response) => {
@@ -1469,6 +1686,27 @@ app.post('/api/direk/train/start', async (req: Request, res: Response) => {
   }
   const { plan } = parsed;
   const lora = parseLoraChoice(body);
+
+  // T2/T3: classify the training run from its shape. A massive run is T3 and is
+  // offloaded; a small one stays on the local GPU.
+  const trainingRoute = classifyLoraTraining({
+    samples: plan.brief.samples.length,
+    resolution: Number(body.resolution) || 1024,
+    networkDim: Number(body.networkDim) || 32,
+    epochs: Number(body.epochs) || 10,
+  });
+  broadcastThought(`[ROUTER] ${trainingRoute.task} → ${trainingRoute.tier} (${trainingRoute.placement})`);
+  if (trainingRoute.placement === 'cloud' && !t3LocalAllowed()) {
+    const offload = route_to_cloud(trainingRoute.task, { trigger: plan.brief.trigger });
+    res.status(503).json({
+      error: offload.note,
+      code: 'T3_OFFLOAD',
+      route: trainingRoute,
+      offload,
+    });
+    return;
+  }
+
   const { images } = await generateLoraImages(plan, body.images !== false, lora);
   if (images.size === 0) {
     res.status(400).json({

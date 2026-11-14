@@ -48,14 +48,40 @@ generation and LoRA sample images cost nothing. Point the app at it:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `COMFYUI_URL` | `http://127.0.0.1:8188` | Where ComfyUI listens |
+| `COMFYUI_URL` | `http://127.0.0.1:8188` | Where ComfyUI listens (a Tailscale IP works too) |
 | `COMFYUI_CHECKPOINT` | `sd_xl_base_1.0.safetensors` | Checkpoint for the built-in workflow |
 | `COMFYUI_WORKFLOW` | (built-in SDXL graph) | Path to your own workflow JSON (API format) with `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`, `__HEIGHT__`, `__CHECKPOINT__` placeholders |
+| `COMFYUI_VIDEO_WORKFLOW` | (unset) | AnimateDiff/SVD workflow (API format) for local video |
+| `COMFYUI_LORAS_DIR` | `<ComfyUI>/models/loras` | Where trained LoRAs are published |
 | `COMFYUI_TIMEOUT_MS` | `180000` | Per-image timeout |
 | `COMFYUI_DISABLE` | (unset) | Set to `1` to ignore ComfyUI and use Gemini |
 
-The backend order is ComfyUI → Gemini (if billed) → unavailable. `GET
-/api/direk/status` reports the active `image_backend`.
+The image backend order is ComfyUI → Gemini (if billed) → Pollinations (free,
+no key) → unavailable. So when ComfyUI is not reachable, **images still work**
+through the free Pollinations backend. Video has no free fallback: it returns an
+honest `503` rather than a fake clip. `GET /api/direk/status` reports the active
+`image_backend`.
+
+Every hosted image (Pollinations, Gemini) is re-encoded to a real PNG before it
+is stored or zipped: Pollinations answers with a JPEG whatever the URL asks for,
+and a JPEG saved under a `.png` name is not a usable LoRA training image.
+
+### Task routing (T1/T2/T3)
+
+Server-2 has one AMD GPU, so every job is classified before it is dispatched and
+the placement is reported in the UI and in the thought stream:
+
+| Tier | Work | Runs on |
+| --- | --- | --- |
+| **T1** | chat, text generation, webhooks, the LoRA text half | local (CPU) |
+| **T2** | image generation (SDXL/Pollinations), Piper TTS, small LoRA training | local GPU |
+| **T3** | video rendering (AnimateDiff/SVD), large TTS (Qwen3/Fish), massive LoRA training | cloud free tier |
+
+`GET /api/direk/routing` returns the full table. T3 work is offloaded through
+`route_to_cloud()`; set `CLOUD_T3_URL` to point it at a real worker. Set
+`T3_ALLOW_LOCAL=0` to make a T3 job answer with an offload notice instead of
+touching the local GPU (the default is to fall back locally when no cloud worker
+is configured yet).
 
 When the Gemini key is missing or a call fails, AI endpoints answer with HTTP
 `503` and a body like:
@@ -142,6 +168,47 @@ The SSE stream (`/api/pilot/thought-stream`) also accepts `?token=` because
 The gate is deterministic: with no key, an incomplete request (missing haba or
 mood) still gets a real question back, and a complete request returns
 `503 AI_UNAVAILABLE` rather than fabricated output.
+
+## Narration (the film's voice)
+
+A film's narration comes from the first voice that answers, in this order:
+
+1. **Fish Audio** — best Tagalog, and can clone a voice. Needs `FISH_AUDIO_API_KEY`.
+2. **Offline Tagalog voice** (Meta MMS VITS) — free, CPU, real Tagalog, no quota.
+   On by default when `scripts/tagalog_tts.py` is present.
+3. **Gemini cloud voice** — good quality, but the free tier caps it per day.
+4. **Piper** — an English backup voice. Point `TTS_PIPER_VOICE` at a `.onnx` file.
+
+When none of them answers, the shot carries the line as a burned-in **caption**
+instead of failing the render. Set `TTS_ORDER=fish,piper` to force a strict
+Fish → Piper chain (anything not listed is skipped), or `TTS_DISABLE=1` to turn
+the cloud voice off. `GET /api/direk/movie/status` reports `narration_order`.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FISH_AUDIO_API_KEY` | (unset) | Enables the Fish Audio Tagalog voice |
+| `FISH_AUDIO_REFERENCE_ID` | (unset) | A cloned voice id from your Fish Audio library |
+| `FISH_AUDIO_MODEL` | provider default | Fish Audio model id |
+| `TTS_ORDER` | `fish,tagalog,gemini,piper` | Comma-separated voice priority |
+| `TTS_PIPER_BIN` | `piper` | Piper executable |
+| `TTS_PIPER_VOICE` | (unset) | Piper `.onnx` voice file |
+| `TTS_TAGALOG_MODEL` | `tagalog` | `tagalog` \| `filipino`, or a full model id |
+| `TTS_PYTHON` | `python3` | Interpreter with `transformers` installed |
+
+## Staging Vault (render review)
+
+The **Staging Vault** tab lists every render the app really produced, read from
+`GET /api/direk/assets`. Each video, image and audio asset starts as `pending`
+and carries two actions:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/direk/assets` | Every asset, newest first, with its review status |
+| `POST /api/direk/assets/review` | `{ id, action: "approve" \| "reject" \| "pending" }` |
+| `GET /api/direk/assets/:name/download` | Download one asset |
+
+The decision is written back to the asset's sidecar (`<name>.asset.json`), so it
+survives a restart. An asset saved before the vault existed counts as `pending`.
 
 ## LoRA training sets
 

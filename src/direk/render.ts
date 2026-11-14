@@ -134,6 +134,38 @@ async function readResult(file: string, kind: typeof MP4 | typeof PNG): Promise<
   return { data, ...kind };
 }
 
+/** True when the buffer already carries the PNG signature. */
+export function isPng(data: Buffer): boolean {
+  return (
+    data.length >= 8 &&
+    data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47
+  );
+}
+
+/**
+ * Re-encode any image ffmpeg can read into a real PNG.
+ *
+ * The free Pollinations backend answers with a JPEG whatever the URL asks for,
+ * and a JPEG saved under a `.png` name trains a LoRA badly (and some loaders
+ * reject it outright), so every hosted image goes through here before it is
+ * stored or zipped. A buffer that is already PNG is returned untouched.
+ */
+export async function toPng(data: Buffer): Promise<Buffer> {
+  if (isPng(data)) return data;
+  const dir = workDir();
+  try {
+    const inFile = path.join(dir, 'in.img');
+    const outFile = path.join(dir, 'out.png');
+    fs.writeFileSync(inFile, data);
+    await run(['-y', '-loglevel', 'error', '-i', inFile, outFile], 60000);
+    const png = fs.readFileSync(outFile);
+    if (!isPng(png)) throw new Error('ffmpeg did not produce a PNG');
+    return png;
+  } finally {
+    cleanup(dir);
+  }
+}
+
 /** Write text to a file so drawtext never has to escape it. */
 function textFile(dir: string, text: string): string {
   const file = path.join(dir, 'text.txt');
