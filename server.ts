@@ -46,7 +46,7 @@ import {
   comfyAvailable, generateWithComfy, comfyUrl,
   publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
 } from './src/direk/comfyui.ts';
-import { pollinationsUrl } from './src/direk/imagine.ts';
+import { pollinationsUrl, resetComfyCache } from './src/direk/imagine.ts';
 import {
   LoRATrainer, trainerStatus, trainingConfig, buildTrainCommand,
 } from './src/direk/trainer.ts';
@@ -2075,7 +2075,7 @@ app.get('/api/direk/settings', (_req: Request, res: Response) => {
 app.put('/api/direk/settings', (req: Request, res: Response) => {
   const body = (req.body || {}) as DirekSettings;
   const allowed: (keyof DirekSettings)[] = [
-    'comfyui_url', 'comfyui_checkpoint', 'comfyui_workflow', 'comfyui_loras_dir',
+    'comfyui_url', 'comfyui_enabled', 'comfyui_checkpoint', 'comfyui_workflow', 'comfyui_loras_dir',
     'kohya_dir', 'kohya_base_model', 'kohya_python', 'kohya_accelerate', 'kohya_output_dir',
     'ollama_url', 'ollama_model',
   ];
@@ -2087,6 +2087,7 @@ app.put('/api/direk/settings', (req: Request, res: Response) => {
   // Apply live so the next request already uses the new paths.
   applySettings(clean, true);
   comfyOk = null;
+  resetComfyCache();
   textBackendCache = null;
   res.json({ saved: true, config_path: configPath(), settings: clean });
 });

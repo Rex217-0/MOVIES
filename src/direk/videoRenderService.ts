@@ -6,14 +6,18 @@
  *   PREFERRED_RENDER_ENGINE=fal      Cloud-first: route straight to Wan 2.2 on
  *                                    fal.ai and do NOT ping ComfyUI.
  *   PREFERRED_RENDER_ENGINE=comfyui  Local-first: try the local ComfyUI
- *                                    (Server-2 GPU) first, then Wan 2.2 on
- *                                    fal.ai.
+ *                                    (Server-2 GPU) first, then the free motion
+ *                                    engine, then Wan 2.2 on fal.ai.
  *   PREFERRED_RENDER_ENGINE=motion   No cost: a real clip from a free image
  *                                    backend (ComfyUI, else Pollinations, which
  *                                    needs no key and no GPU) animated with
  *                                    ffmpeg. No cloud spend, no account.
  * Unset defaults to `fal`, so the factory is cloud-first until ComfyUI is live
  * on Server-2.
+ *
+ * ComfyUI has a master on/off switch (`comfyui_enabled` in the UI, which sets
+ * `COMFYUI_DISABLE`). Turning it off never blocks a render: the free motion
+ * engine catches the job, so a film still gets made.
  *
  * Editing is an optional post-process on a finished clip:
  *   OpenCut on fal.ai — cuts, transitions and colour grading.
@@ -103,14 +107,16 @@ export function comfyVideoDetail(): string {
 }
 
 /**
- * True when the preferred engine can render right now. Cloud-first (fal) needs
- * only FAL_KEY; local-first (comfyui) also accepts Wan 2.2 as a fallback; the
- * no-cost motion engine needs only a free image backend.
+ * True when the preferred engine can render right now. Local-first (comfyui,
+ * the free default) is ready when any engine in its failover chain can run:
+ * ComfyUI, the free motion engine, or Wan 2.2. The no-cost motion engine needs
+ * only a free image backend.
  */
 export async function videoRenderReady(): Promise<boolean> {
-  if (preferredRenderEngine() === 'fal') return wanConfigured();
-  if (preferredRenderEngine() === 'motion') return motionReady();
-  return (await comfyVideoReady()) || wanConfigured();
+  const preferred = preferredRenderEngine();
+  if (preferred === 'fal') return wanConfigured();
+  if (preferred === 'motion') return motionReady();
+  return (await comfyVideoReady()) || (await motionReady()) || wanConfigured();
 }
 
 /** Why no video engine can render, for an honest error message. */
@@ -126,7 +132,7 @@ export async function videoRenderDetail(): Promise<string> {
       ? 'PREFERRED_RENDER_ENGINE=motion ngunit walang image backend (i-enable ang ComfyUI o Pollinations)'
       : `PREFERRED_RENDER_ENGINE=motion ngunit hindi makapag-render (image backend: ${backend})`;
   }
-  return `${comfyVideoDetail()}; at walang FAL_KEY para sa Wan 2.2 fallback`;
+  return `ComfyUI (${comfyVideoDetail()}), libreng motion engine, at Wan 2.2 fallback — wala sa kanila ang makakapag-render`;
 }
 
 /**
@@ -171,9 +177,23 @@ async function generateRaw(input: VideoRenderInput): Promise<{ data: Buffer; eng
     }
   }
 
-  // Local-first: try ComfyUI, then fall back to Wan 2.2 on fal.ai.
+  // Local-first: try ComfyUI, then the free motion engine, then Wan 2.2. Each
+  // step only runs when the one before it could not, so a ComfyUI that is off,
+  // unreachable or has no video workflow still ends in a real clip.
   const comfyFailure = await comfyAttempt(input);
   if (comfyFailure.data) return { data: comfyFailure.data, engine: 'comfyui' };
+
+  // The free engine is the first thing that catches a missing ComfyUI: it needs
+  // no key, no GPU and no account.
+  if (await motionReady()) {
+    try {
+      const { data } = await generateMotionClip(input);
+      console.log(`[RENDER] ComfyUI hindi available (${comfyFailure.reason}); libreng motion engine ang sumalo.`);
+      return { data, engine: 'motion' };
+    } catch (error: any) {
+      console.log(`[RENDER] motion engine nabigo: ${error?.message || error}`);
+    }
+  }
 
   if (wanConfigured()) {
     try {
@@ -186,7 +206,7 @@ async function generateRaw(input: VideoRenderInput): Promise<{ data: Buffer; eng
       return { data, engine: 'wan' };
     } catch (error: any) {
       throw new VideoBackendUnavailable(
-        `ComfyUI (${comfyFailure.reason}) at Wan 2.2 (${wanEndpoint()}) nabigo: ${error?.message || error}`,
+        `ComfyUI (${comfyFailure.reason}), libreng motion engine, at Wan 2.2 (${wanEndpoint()}) nabigo: ${error?.message || error}`,
       );
     }
   }

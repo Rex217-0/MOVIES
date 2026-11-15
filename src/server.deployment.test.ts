@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
+import net from 'node:net';
 import { inflateRawSync } from 'node:zlib';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -34,8 +35,23 @@ function jpeg(): Buffer {
   return jpegCache;
 }
 
-function startServer(env: Record<string, string>) {
-  const port = 4900 + Math.floor(Math.random() * 500);
+/**
+ * Ask the OS for a free port. A fixed or random range collides when several
+ * server tests run in parallel, which made an unrelated test fail at random.
+ */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const port = (srv.address() as any).port;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+async function startServer(env: Record<string, string>) {
+  const port = await freePort();
   const assetsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-'));
   const rendersDir = fs.mkdtempSync(path.join(os.tmpdir(), 'renders-'));
   const child = spawn('node', ['server.ts'], {
@@ -131,7 +147,7 @@ function zipEntry(zip: Buffer, wanted: string): Buffer | null {
 test('the Pollinations JPEG is stored as a real PNG inside the LoRA ZIP', async (t) => {
   const poll = await fakePollinations();
   t.after(poll.close);
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', POLLINATIONS_URL: poll.url });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', POLLINATIONS_URL: poll.url });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -158,7 +174,7 @@ test('the Pollinations JPEG is stored as a real PNG inside the LoRA ZIP', async 
 });
 
 test('the Staging Vault lists assets and records an approve / reject decision', async (t) => {
-  const { child, port, assetsDir } = startServer({ APP_AUTH_TOKEN: '' });
+  const { child, port, assetsDir } = await startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -195,7 +211,7 @@ test('the Staging Vault lists assets and records an approve / reject decision', 
 });
 
 test('the review endpoint rejects a bad request and a missing asset', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -213,7 +229,7 @@ test('the review endpoint rejects a bad request and a missing asset', async (t) 
 });
 
 test('the routing endpoint reports the T1/T2/T3 table and the T3 policy', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', T3_ALLOW_LOCAL: '0' });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', T3_ALLOW_LOCAL: '0' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -234,7 +250,7 @@ test('the routing endpoint reports the T1/T2/T3 table and the T3 policy', async 
 });
 
 test('video is never offloaded to the cloud, even when T3 is forbidden locally', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', T3_ALLOW_LOCAL: '0', CLOUD_T3_URL: '' });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', T3_ALLOW_LOCAL: '0', CLOUD_T3_URL: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -249,7 +265,7 @@ test('video is never offloaded to the cloud, even when T3 is forbidden locally',
 });
 
 test('the LoRA plan reports where its text, image and training work will run', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -342,7 +358,7 @@ async function startMockPilot(): Promise<{ url: string; close: () => Promise<voi
 }
 
 test('the factory builds an 18-scene concept from one brief', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -366,7 +382,7 @@ test('the factory builds an 18-scene concept from one brief', async (t) => {
 });
 
 test('starting a batch without a video backend answers 503 AI_UNAVAILABLE', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '1' });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '1' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -384,7 +400,7 @@ test('starting a batch without a video backend answers 503 AI_UNAVAILABLE', asyn
 });
 
 test('the pilot status reports not-configured and the bridge answers 503 without a URL', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', KAGGLE_PILOT_URL: '' });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', KAGGLE_PILOT_URL: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -417,7 +433,7 @@ test('the pilot status reports not-configured and the bridge answers 503 without
 test('a reachable Kaggle Pilot writes the script and 18 scenes onto the job', async (t) => {
   const pilot = await startMockPilot();
   t.after(() => pilot.close());
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', KAGGLE_PILOT_URL: pilot.url });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', KAGGLE_PILOT_URL: pilot.url });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -452,7 +468,7 @@ test('a configured-but-unreachable Pilot fails START BATCH with 503, never a fak
   const pilot = await startMockPilot();
   const deadUrl = pilot.url;
   await pilot.close();
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', KAGGLE_PILOT_URL: deadUrl });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', KAGGLE_PILOT_URL: deadUrl });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -476,7 +492,7 @@ test('a configured-but-unreachable Pilot fails START BATCH with 503, never a fak
 test('the batch renders all 18 scenes and stitches the approved ones with -c copy', async (t) => {
   const mock = await startMockComfyUI();
   t.after(mock.close);
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', ...comfyEnv(mock, comfyWorkflow()) });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', ...comfyEnv(mock, comfyWorkflow()) });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -520,7 +536,7 @@ test('the batch renders all 18 scenes and stitches the approved ones with -c cop
 });
 
 test('assemble without two approved scenes returns a clear 400', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -536,7 +552,7 @@ test('assemble without two approved scenes returns a clear 400', async (t) => {
 });
 
 test('create needs a brief, and start needs a real job', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -552,7 +568,7 @@ test('create needs a brief, and start needs a real job', async (t) => {
 });
 
 test('the factory writes MovieJobs and SceneJobs to factory.db', async (t) => {
-  const { child, port, assetsDir } = startServer({ APP_AUTH_TOKEN: '' });
+  const { child, port, assetsDir } = await startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -571,7 +587,7 @@ test('the factory writes MovieJobs and SceneJobs to factory.db', async (t) => {
 test('stitchMovie joins the approved scenes and serves the file from /renders/', async (t) => {
   const mock = await startMockComfyUI();
   t.after(mock.close);
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', ...comfyEnv(mock, comfyWorkflow()) });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', ...comfyEnv(mock, comfyWorkflow()) });
   t.after(() => child.kill());
   await waitForServer(port);
 

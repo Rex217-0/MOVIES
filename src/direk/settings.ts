@@ -17,6 +17,8 @@ import { comfyUrl } from './comfyui.ts';
 export interface DirekSettings {
   /** ComfyUI base URL, e.g. http://127.0.0.1:8188 */
   comfyui_url?: string;
+  /** Master on/off for ComfyUI. Off means every free engine steps in instead. */
+  comfyui_enabled?: boolean;
   /** Checkpoint for the built-in workflow. */
   comfyui_checkpoint?: string;
   /** Optional path to a custom ComfyUI workflow JSON template. */
@@ -54,6 +56,8 @@ export interface DirekSettings {
 /** Settings key -> environment variable. */
 const ENV_MAP: Record<keyof DirekSettings, string> = {
   comfyui_url: 'COMFYUI_URL',
+  // The UI speaks `enabled`; the engine speaks `COMFYUI_DISABLE`. One switch.
+  comfyui_enabled: 'COMFYUI_DISABLE',
   comfyui_checkpoint: 'COMFYUI_CHECKPOINT',
   comfyui_workflow: 'COMFYUI_WORKFLOW',
   comfyui_loras_dir: 'COMFYUI_LORAS_DIR',
@@ -99,6 +103,12 @@ export function applySettings(settings: DirekSettings, override = false): void {
     const value = settings[key as keyof DirekSettings];
     if (value === undefined || value === null || value === '') continue;
     if (!override && process.env[env]) continue;
+    if (key === 'comfyui_enabled') {
+      // `enabled` is the inverse of `COMFYUI_DISABLE`, so the engine keeps one
+      // env var whether the operator used the UI or the environment.
+      process.env[env] = value === false || value === 'false' || value === '0' ? '1' : '0';
+      continue;
+    }
     process.env[env] = typeof value === 'boolean' ? (value ? '1' : '0') : String(value);
   }
 }
@@ -113,7 +123,12 @@ export function effectiveSettings(): { settings: DirekSettings; source: Record<s
     const k = key as keyof DirekSettings;
     if (process.env[env] !== undefined && process.env[env] !== '') {
       const raw = process.env[env] as string;
-      (settings as any)[k] = k === 'kohya_accelerate' ? raw === '1' : raw;
+      if (k === 'comfyui_enabled') {
+        // The file stores `enabled`; the env var is `COMFYUI_DISABLE`.
+        (settings as any)[k] = raw !== '1';
+      } else {
+        (settings as any)[k] = k === 'kohya_accelerate' ? raw === '1' : raw;
+      }
       source[k] = 'env';
     } else if (file[k] !== undefined) {
       (settings as any)[k] = file[k];

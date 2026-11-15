@@ -57,13 +57,20 @@ generation and LoRA sample images cost nothing. Point the app at it:
 | `COMFYUI_VIDEO_WORKFLOW` | (unset) | AnimateDiff/SVD workflow (API format) for local video |
 | `COMFYUI_LORAS_DIR` | `<ComfyUI>/models/loras` | Where trained LoRAs are published |
 | `COMFYUI_TIMEOUT_MS` | `180000` | Per-image timeout |
-| `COMFYUI_DISABLE` | (unset) | Set to `1` to ignore ComfyUI and use Gemini |
+| `COMFYUI_DISABLE` | (unset) | Master on/off. Set to `1` to switch ComfyUI off |
+
+The same switch is in the app: **SETUP → ComfyUI** writes `comfyui_enabled` to
+`direk.config.json`, which is the inverse of `COMFYUI_DISABLE`. Turning it off
+does **not** stop the factory — the free engines below catch the job.
 
 The image backend order is ComfyUI → Gemini (if billed) → Pollinations (free,
 no key) → unavailable. So when ComfyUI is not reachable, **images still work**
-through the free Pollinations backend. Video has no free fallback: it returns an
-honest `503` rather than a fake clip. `GET /api/direk/status` reports the active
-`image_backend`.
+through the free Pollinations backend.
+
+Video follows the same free-first idea. With `PREFERRED_RENDER_ENGINE=comfyui`
+the chain is **ComfyUI → free motion engine → Wan 2.2**, so switching ComfyUI
+off hands the job to the free engine instead of failing; the render still ends
+in a real MP4. `GET /api/direk/status` reports the active `image_backend`.
 
 Every hosted image (Pollinations, Gemini) is re-encoded to a real PNG before it
 is stored or zipped: Pollinations answers with a JPEG whatever the URL asks for,

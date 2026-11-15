@@ -292,3 +292,38 @@ test('the free motion engine refuses honestly when no image backend exists', asy
     );
   });
 });
+
+test('with ComfyUI OFF, the free motion engine catches the job (real failover)', async (t) => {
+  const poll = await startFakePollinations();
+  t.after(() => poll.close());
+  await withEnv({
+    PREFERRED_RENDER_ENGINE: 'comfyui',
+    COMFYUI_DISABLE: '1',
+    POLLINATIONS_URL: poll.url,
+  }, async () => {
+    assert.equal(await videoRenderReady(), true, 'a free engine is still ready');
+    const out = await renderVideo({ prompt: 'isang eksena sa gubat', seconds: 2 });
+    assert.equal(out.engine, 'motion', 'the free engine caught the job ComfyUI dropped');
+    assert.equal(out.data.subarray(4, 8).toString('ascii'), 'ftyp', 'genuine MP4');
+  });
+});
+
+test('ComfyUI on and answering wins over the free engine (no silent downgrade)', async (t) => {
+  const clip = await startClipServer(tinyMp4());
+  t.after(() => clip.close());
+  const comfy = await startMockComfyUI();
+  t.after(() => comfy.close());
+  const workflow = writeVideoWorkflow(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-')));
+  const poll = await startFakePollinations();
+  t.after(() => poll.close());
+
+  await withEnv({
+    PREFERRED_RENDER_ENGINE: 'comfyui',
+    COMFYUI_URL: comfy.url,
+    COMFYUI_VIDEO_WORKFLOW: workflow,
+    POLLINATIONS_URL: poll.url,
+  }, async () => {
+    const out = await renderVideo({ prompt: 'isang eksena' });
+    assert.equal(out.engine, 'comfyui', 'ComfyUI answers, so it is used');
+  });
+});

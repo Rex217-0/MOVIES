@@ -176,6 +176,13 @@ export const SetupModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
  <div className="text-[10px] text-primary uppercase tracking-wider">
  ComfyUI (libreng images)
  </div>
+ <Field label="ComfyUI" hint="Kung patayin, awtomatikong sasalo ang libreng engine para makagawa pa rin ng pelikula.">
+ <label className="flex items-center gap-2 text-xs">
+ <input type="checkbox" checked={settings.comfyui_enabled !== false}
+ onChange={e => setSettings(s => ({ ...s, comfyui_enabled: e.target.checked }))} />
+ <span>{settings.comfyui_enabled !== false ? 'Buhay (default)' : 'Naka-off — libreng engine ang sasalo'}</span>
+ </label>
+ </Field>
  <Field label="ComfyUI URL" hint="Kung sa ibang PC naka-ComfyUI, gamitin ang LAN IP nito.">
  <input value={settings.comfyui_url || ''} onChange={set('comfyui_url')}
  placeholder="http://127.0.0.1:8188" className={inputCls} />

@@ -297,6 +297,7 @@ export interface LoraFile {
 
 export interface DirekSettings {
   comfyui_url?: string;
+  comfyui_enabled?: boolean;
   comfyui_checkpoint?: string;
   comfyui_workflow?: string;
   comfyui_loras_dir?: string;
