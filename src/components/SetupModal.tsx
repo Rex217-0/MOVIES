@@ -194,6 +194,15 @@ export const SetupModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
  <input value={settings.comfyui_loras_dir || ''} onChange={set('comfyui_loras_dir')}
  placeholder="C:\\ComfyUI\\models\\loras" className={inputCls} />
  </Field>
+ <Field label="Video workflow" hint="AnimateDiff/SVD workflow (API format) para sa video. Dapat may __PROMPT__, __NEGATIVE__, __SEED__, __WIDTH__, __HEIGHT__, __FRAMES__, __CHECKPOINT__.">
+ <input value={settings.comfyui_video_workflow || ''} onChange={set('comfyui_video_workflow')}
+ placeholder="C:\\ComfyUI\\workflows\\video.json" className={inputCls} />
+ </Field>
+ {report && report.comfyui.video_workflow && !report.comfyui.video_workflow_exists && (
+ <div className="text-[9px] text-red-300">
+ Hindi mahanap ang video workflow file na iyon. Ilagay ang tamang path.
+ </div>
+ )}
  </div>
 
  {/* KOHYA */}

@@ -342,6 +342,7 @@ export class FeatureFactory {
         state.percent = 100;
         state.error = error?.message || 'Nabigo ang render.';
         state.endedAt = Date.now();
+        console.error(`[FILM ERROR] Eksena ${state.index} ("${state.heading}") nabigo: ${state.error}`);
       }
       this.recompute(job);
       this.persist(job);
@@ -486,6 +487,7 @@ export class FeatureFactory {
     } catch (error: any) {
       state.status = 'failed';
       state.error = error?.message || 'Nabigo ang render.';
+      console.error(`[FILM ERROR] Eksena ${index} ("${scene.heading}") nabigo: ${state.error}`);
     }
     this.recompute(job);
     this.persist(job);

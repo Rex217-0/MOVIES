@@ -43,7 +43,7 @@ import {
   numberedName, MAX_LORA_IMAGES,
 } from './src/direk/lora.ts';
 import {
-  comfyAvailable, generateWithComfy, comfyUrl,
+  comfyAvailable, generateWithComfy, comfyUrl, diagnoseComfyVideo,
   publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
 } from './src/direk/comfyui.ts';
 import { pollinationsUrl } from './src/direk/imagine.ts';
@@ -65,6 +65,7 @@ import {
   type NarrationSource,
 } from './src/direk/movie.ts';
 import { renderVideo, preferredRenderEngine } from './src/direk/videoRenderService.ts';
+import { wanEndpoint } from './src/direk/fal.ts';
 import { MIN_MINUTES, MAX_MINUTES, sceneCount } from './src/movieMeta.ts';
 import { groundMovie, groundingBlock } from './src/direk/grounding.ts';
 import { FactoryDb, factoryDbPath } from './src/direk/factoryDb.ts';
@@ -561,6 +562,36 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
     broadcastThought(`[VIDEO ERROR] ${reason}`);
     res.status(503).json(aiUnavailable('video', detail, reason));
   }
+});
+
+// Why the video backend is or is not working, in one place. The UI and the
+// operator both read this instead of guessing: it reports the preferred engine
+// and, for ComfyUI, the exact cause (disabled, no workflow, workflow file
+// missing, unfilled placeholder, or the URL unreachable).
+app.get('/api/direk/video/backend', async (_req: Request, res: Response) => {
+  const preferred = preferredRenderEngine();
+  const comfy = await diagnoseComfyVideo();
+  const falReady = Boolean(process.env.FAL_KEY?.trim());
+  res.json({
+    ready: await videoBackendReady(),
+    preferred_engine: preferred,
+    detail: await videoBackendDetail(),
+    comfyui: {
+      enabled: process.env.COMFYUI_DISABLE !== '1',
+      url: comfy.url,
+      workflow: comfy.workflow,
+      workflow_exists: comfy.workflow_exists,
+      reachable: comfy.reachable,
+      ready: comfy.ready,
+      problem: comfy.problem,
+      unfilled_placeholders: comfy.unfilled,
+      detail: comfy.detail,
+    },
+    fal: {
+      key_configured: falReady,
+      endpoint: wanEndpoint(),
+    },
+  });
 });
 
 // ==========================================
@@ -1154,6 +1185,36 @@ app.get('/api/direk/feature/status', async (req: Request, res: Response) => {
   });
 });
 
+// Per-scene error report for one film: every scene that failed, with the exact
+// reason the render refused. This is what an operator reads after a batch, and
+// what the UI shows per scene, so a failure is never a silent blank frame.
+app.get('/api/direk/feature/scene-errors', async (req: Request, res: Response) => {
+  const id = typeof req.query.id === 'string' ? req.query.id : '';
+  const job = id ? featureFactory.refresh(id) : featureFactory.latest();
+  if (!job) {
+    res.status(404).json({ error: 'Walang ganoong pelikula.' });
+    return;
+  }
+  const failed = job.scenes.filter(s => s.status === 'failed');
+  res.json({
+    movie_id: job.id,
+    title: job.concept.title,
+    status: job.status,
+    total: job.total,
+    failed: failed.length,
+    job_error: job.error ?? null,
+    video_backend: await videoBackendDetail(),
+    scenes: failed.map(s => ({
+      index: s.index,
+      heading: s.heading,
+      visual: s.visual,
+      error: s.error || 'Nabigo ang render (walang detalye).',
+      startedAt: s.startedAt ?? null,
+      endedAt: s.endedAt ?? null,
+    })),
+  });
+});
+
 app.post('/api/direk/feature/create', async (req: Request, res: Response) => {
   const body = req.body as {
     brief?: string; title?: string; genre?: string; rating?: string; format?: string; mood?: string;
@@ -1273,9 +1334,11 @@ app.post('/api/direk/feature/start', async (req: Request, res: Response) => {
   // Step 2 — a real video backend, or every scene would fail. Answer 503 up
   // front instead of starting 18 doomed renders.
   if (!(await videoBackendReady())) {
-    broadcastThought(`[FILM] Batch START tinanggihan: walang video backend.`);
+    const detail = await videoBackendDetail();
+    broadcastThought(`[FILM] Batch START tinanggihan: walang video backend. ${detail}`);
+    console.error(`[FILM ERROR] Batch START tinanggihan: ${detail}`);
     res.status(503).json({
-      ...aiUnavailable('comfyui', videoBackendDetail(), 'Walang video backend'),
+      ...aiUnavailable('comfyui', detail, 'Walang video backend'),
       route: classifyTask('video_render'),
     });
     return;
@@ -1824,7 +1887,7 @@ app.get('/api/direk/settings', (_req: Request, res: Response) => {
 app.put('/api/direk/settings', (req: Request, res: Response) => {
   const body = (req.body || {}) as DirekSettings;
   const allowed: (keyof DirekSettings)[] = [
-    'comfyui_url', 'comfyui_checkpoint', 'comfyui_workflow', 'comfyui_loras_dir',
+    'comfyui_url', 'comfyui_checkpoint', 'comfyui_workflow', 'comfyui_video_workflow', 'comfyui_loras_dir',
     'kohya_dir', 'kohya_base_model', 'kohya_python', 'kohya_accelerate', 'kohya_output_dir',
     'ollama_url', 'ollama_model',
   ];
@@ -1869,6 +1932,8 @@ app.get('/api/direk/setup', async (_req: Request, res: Response) => {
       checkpoints: comfy.checkpoints,
       loras: comfy.loras,
       error: comfy.error,
+      video_workflow: process.env.COMFYUI_VIDEO_WORKFLOW || '',
+      video_workflow_exists: Boolean(process.env.COMFYUI_VIDEO_WORKFLOW && fs.existsSync(process.env.COMFYUI_VIDEO_WORKFLOW)),
     },
     trainer: { available: trainer.available, reason: trainer.reason, base_model: trainer.base_model },
     loras_dir: lorasDir(),

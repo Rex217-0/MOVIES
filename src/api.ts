@@ -288,6 +288,7 @@ export interface DirekSettings {
   comfyui_url?: string;
   comfyui_checkpoint?: string;
   comfyui_workflow?: string;
+  comfyui_video_workflow?: string;
   comfyui_loras_dir?: string;
   kohya_dir?: string;
   kohya_base_model?: string;
@@ -320,6 +321,8 @@ export interface SetupReport {
     checkpoints: string[];
     loras: string[];
     error?: string;
+    video_workflow: string;
+    video_workflow_exists: boolean;
   };
   trainer: { available: boolean; reason?: string; base_model: string | null };
   loras_dir: string;

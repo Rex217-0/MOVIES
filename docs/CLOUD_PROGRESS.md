@@ -21,6 +21,15 @@ This note gives OpenHands and other contributors the current repository context 
 
 The checked-in code, config, rules, and setup docs establish that these integrations have been built into the project. They do **not** by themselves establish that Firestore rules have been deployed, Anonymous Auth/Firestore are enabled, Google Drive API is enabled, OAuth consent has completed, or any cloud operation was tested successfully. Verify live status before marking those tasks complete. Do not invent achievements or report unverified cloud-console changes as fact.
 
+## Video render backend (local, not cloud)
+
+The Feature Film Factory needs a **real** video backend; it never writes a placeholder clip. Video is rendered locally by ComfyUI (`COMFYUI_URL` + `COMFYUI_VIDEO_WORKFLOW`), with Wan 2.2 on fal.ai as an opt-in fallback only when `FAL_KEY` is set. This is a local/self-hosted path, not a Google Cloud service.
+
+- `GET /api/direk/video/backend` reports the whole chain: preferred engine, whether ComfyUI is enabled, its URL, the workflow path and whether the file exists, the exact problem (`disabled`, `no-workflow`, `workflow-missing`, `placeholder`, `unreachable`, `ready`), the unfilled placeholders, and whether a `FAL_KEY` fallback is present.
+- The video workflow template must contain the placeholders `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`, `__HEIGHT__`, `__FRAMES__`, `__CHECKPOINT__`. All of them are substituted before the graph is posted to ComfyUI `/prompt`; any other `__TOKEN__` is refused with a clear error rather than sent.
+- When nothing can render, the API returns `503 AI_UNAVAILABLE` with the real reason. Failed scenes are logged as `[FILM ERROR] …` and listed by `GET /api/direk/feature/scene-errors?id=<movie id>`.
+- `COMFYUI_VIDEO_WORKFLOW` is also a runtime setting (`comfyui_video_workflow`), editable in the SETUP panel alongside the other ComfyUI fields.
+
 ## Collaboration checklist
 
 1. Read the relevant existing implementation and tests before coding; avoid rebuilding completed features.

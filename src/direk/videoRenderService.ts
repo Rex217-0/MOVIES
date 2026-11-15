@@ -17,7 +17,7 @@
  * When nothing can render, this throws `VideoBackendUnavailable`. The API turns
  * that into a 503 `AI_UNAVAILABLE`. A placeholder clip is never returned.
  */
-import { comfyAvailable, comfyVideoConfigured, generateVideoWithComfy } from './comfyui.ts';
+import { generateVideoWithComfy, diagnoseComfyVideo } from './comfyui.ts';
 import {
   falKeyConfigured, openCutConfigured, wanConfigured, wanEndpoint,
   generateVideoWithWan, editWithOpenCut, uploadToFal,
@@ -64,18 +64,17 @@ export interface VideoRenderResult {
 
 /** True when a real local ComfyUI video backend can render right now. */
 export async function comfyVideoReady(): Promise<boolean> {
-  if (process.env.COMFYUI_DISABLE === '1') return false;
-  if (!comfyVideoConfigured()) return false;
-  return comfyAvailable();
+  return (await diagnoseComfyVideo()).ready;
 }
 
-/** Why the local ComfyUI video backend is not ready, for an honest message. */
-export function comfyVideoDetail(): string {
-  if (process.env.COMFYUI_DISABLE === '1') return 'COMFYUI_DISABLE=1';
-  if (!comfyVideoConfigured()) {
-    return 'walang COMFYUI_VIDEO_WORKFLOW (kailangan ng AnimateDiff/SVD workflow sa API format)';
-  }
-  return 'hindi maabot ang ComfyUI sa http://127.0.0.1:8188';
+/**
+ * Why the local ComfyUI video backend is not ready, for an honest message. The
+ * exact cause comes from `diagnoseComfyVideo`: the server disabled ComfyUI, no
+ * workflow is configured, the workflow file is missing, the workflow has an
+ * unfilled placeholder, or the URL is unreachable.
+ */
+export async function comfyVideoDetail(): Promise<string> {
+  return (await diagnoseComfyVideo()).detail;
 }
 
 /**
@@ -88,11 +87,11 @@ export async function videoRenderReady(): Promise<boolean> {
 }
 
 /** Why no video engine can render, for an honest error message. */
-export function videoRenderDetail(): string {
+export async function videoRenderDetail(): Promise<string> {
   if (preferredRenderEngine() === 'fal') {
     return `PREFERRED_RENDER_ENGINE=fal: kailangan ng FAL_KEY para sa Wan 2.2 (${wanEndpoint()})`;
   }
-  return `${comfyVideoDetail()}; at walang FAL_KEY para sa Wan 2.2 fallback`;
+  return `${await comfyVideoDetail()}; at walang FAL_KEY para sa Wan 2.2 fallback`;
 }
 
 /**
@@ -161,12 +160,18 @@ async function generateRaw(input: VideoRenderInput): Promise<{ data: Buffer; eng
 
 /** One ComfyUI attempt. Returns the clip, or the reason it could not render. */
 async function comfyAttempt(input: VideoRenderInput): Promise<{ data?: Buffer; reason: string }> {
-  if (!(await comfyVideoReady())) return { reason: comfyVideoDetail() };
+  const diagnosis = await diagnoseComfyVideo();
+  if (!diagnosis.ready) {
+    console.warn(`[RENDER] ComfyUI video backend hindi handa (${diagnosis.problem}): ${diagnosis.detail}`);
+    return { reason: diagnosis.detail };
+  }
   try {
     const { data } = await generateVideoWithComfy(input.prompt, { negative: input.negative });
     return { data, reason: '' };
   } catch (error: any) {
-    return { reason: `ComfyUI render failed: ${error?.message || error}` };
+    const reason = `ComfyUI render failed: ${error?.message || error}`;
+    console.error(`[RENDER] ${reason}`);
+    return { reason };
   }
 }
 

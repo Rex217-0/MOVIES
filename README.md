@@ -54,7 +54,7 @@ generation and LoRA sample images cost nothing. Point the app at it:
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | Where ComfyUI listens (a Tailscale IP works too) |
 | `COMFYUI_CHECKPOINT` | `sd_xl_base_1.0.safetensors` | Checkpoint for the built-in workflow |
 | `COMFYUI_WORKFLOW` | (built-in SDXL graph) | Path to your own workflow JSON (API format) with `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`, `__HEIGHT__`, `__CHECKPOINT__` placeholders |
-| `COMFYUI_VIDEO_WORKFLOW` | (unset) | AnimateDiff/SVD workflow (API format) for local video |
+| `COMFYUI_VIDEO_WORKFLOW` | (unset) | AnimateDiff/SVD workflow (API format) for local video; placeholders `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`, `__HEIGHT__`, `__FRAMES__`, `__CHECKPOINT__` are filled before `/prompt`, and any other `__TOKEN__` is refused |
 | `COMFYUI_LORAS_DIR` | `<ComfyUI>/models/loras` | Where trained LoRAs are published |
 | `COMFYUI_TIMEOUT_MS` | `180000` | Per-image timeout |
 | `COMFYUI_DISABLE` | (unset) | Set to `1` to ignore ComfyUI and use Gemini |
@@ -311,10 +311,19 @@ so the app leaves them unavailable and points image work at ComfyUI instead.
 Video is not on the Gemini free tier, so the app renders video locally instead.
 Point `COMFYUI_VIDEO_WORKFLOW` at an AnimateDiff or SVD workflow exported in
 API format; the app fills `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`,
-`__HEIGHT__` and `__FRAMES__`. When ComfyUI is reachable and a video workflow is
-set, `/api/pilot/video/generate` renders there and saves the result into the
-Render Vault. Without it, the endpoint honestly returns `503` and tells you to
-run ComfyUI rather than returning a stock clip.
+`__HEIGHT__`, `__FRAMES__` and `__CHECKPOINT__` **before** it posts the graph to
+ComfyUI `/prompt`. Any other `__LIKE_THIS__` token in the template is refused
+with a clear error, so a half-edited workflow is never sent to ComfyUI. When
+ComfyUI is reachable and a video workflow is set, `/api/pilot/video/generate`
+renders there and saves the result into the Render Vault. Without it, the
+endpoint honestly returns `503 AI_UNAVAILABLE` and tells you to run ComfyUI
+rather than returning a stock clip.
+
+`GET /api/direk/video/backend` explains the whole chain in one place: the
+preferred engine, whether ComfyUI is enabled, its URL, the workflow path and
+whether the file exists, the exact problem (`disabled`, `no-workflow`,
+`workflow-missing`, `placeholder`, `unreachable`, or `ready`), the unfilled
+placeholders when there are any, and whether a `FAL_KEY` fallback is present.
 
 ## Feature Film Factory (18 scenes → one 90-minute film)
 
@@ -331,14 +340,19 @@ POST /api/direk/feature/pause     stop the batch; finished scenes are kept
 POST /api/direk/feature/rerender  re-render one scene by index
 POST /api/direk/feature/assemble  stitch the approved scenes into one film
 GET  /api/direk/feature/status    job, scene list, tiers, progress, Dual-Pilot status
+GET  /api/direk/feature/scene-errors  per-scene failures with the exact reason
 GET  /api/direk/feature/pilot     the Dual-Pilot status (Kaggle + local Ollama)
 POST /api/direk/feature/pilot     fetch the script + bible + 18-scene breakdown
 ```
 
 A scene needs a real video backend: ComfyUI reachable and `COMFYUI_VIDEO_WORKFLOW`
-set. When it is not, `start` answers `503 AI_UNAVAILABLE` up front and a scene
-that fails mid-batch is marked **failed** — the factory never writes a
-placeholder clip to pretend a scene rendered.
+set (with the required placeholders filled — see the video section above). When
+it is not, `start` answers `503 AI_UNAVAILABLE` up front and a scene that fails
+mid-batch is marked **failed** — the factory never writes a placeholder clip to
+pretend a scene rendered. Each failed scene is also logged as
+`[FILM ERROR] Eksena <n> ("<heading>") nabigo: <reason>`, and the reason is
+readable from `GET /api/direk/feature/scene-errors?id=<movie id>`, which lists
+every failed scene with its index, heading and exact error.
 
 ### The Dual-Pilot: Kaggle (T3) and the local Ollama (T1)
 

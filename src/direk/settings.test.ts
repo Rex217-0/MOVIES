@@ -65,3 +65,19 @@ test('effectiveSettings reports where each value came from', async () => {
     delete process.env.COMFYUI_URL;
   });
 });
+
+test('the video workflow path round-trips through settings and the environment', async () => {
+  await withConfig(() => {
+    const saved = process.env.COMFYUI_VIDEO_WORKFLOW;
+    delete process.env.COMFYUI_VIDEO_WORKFLOW;
+    try {
+      writeSettings({ comfyui_video_workflow: '/workflows/video.json' });
+      assert.equal(readSettings().comfyui_video_workflow, '/workflows/video.json');
+      applySettings({ comfyui_video_workflow: '/workflows/video.json' }, true);
+      assert.equal(process.env.COMFYUI_VIDEO_WORKFLOW, '/workflows/video.json');
+    } finally {
+      if (saved === undefined) delete process.env.COMFYUI_VIDEO_WORKFLOW;
+      else process.env.COMFYUI_VIDEO_WORKFLOW = saved;
+    }
+  });
+});
