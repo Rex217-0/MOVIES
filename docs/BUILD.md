@@ -161,7 +161,7 @@ are in `data/kaggle/SOURCES.md`; dataset status is in `docs/datasets.md`.
 | MMS VITS Tagalog (speech) | `facebook/mms-tts-tgl` | Python with transformers, torch, soundfile |
 | Piper (speech) | — | `TTS_PIPER_VOICE` (a `.onnx` file; English only) |
 | Google Drive | — | an OAuth client id and secret |
-| Kaggle Pilot (T3 script) | empty | `KAGGLE_PILOT_URL` (a Cloudflare tunnel) |
+| Kaggle Pilot (T3 script) | empty | `KAGGLE_PILOT_URL` (a Cloudflare tunnel to `scripts/direk_kaggle_pilot.ipynb`; see `docs/kaggle-pilot.md`) |
 
 ## 9. Task routing (T1 / T2 / T3)
 
@@ -202,12 +202,13 @@ See `.env.example` for the annotated list. The groups are:
 
 ## 11. Tests
 
-267 tests across 25 files. The largest are `movie.test.ts` (27),
+284 tests across 26 files. The largest are `movie.test.ts` (27),
 `trainBackend.test.ts` (17), `taskRouter.test.ts` (17),
 `pilotService.test.ts` (17), `server.deployment.test.ts` (16),
 `direk.test.ts` (14), `rules.test.ts` (14), `factory.test.ts` (13),
 `comfyui.test.ts` (11), `lora.test.ts` (11), `featureFilm.test.ts` (11),
-`assets.test.ts` (10) and `kaggle.test.ts` (9).
+`assets.test.ts` (10), `kaggle.test.ts` (9) and
+`kagglePilotNotebook.test.ts` (5).
 
 ## 12. Honesty rules
 

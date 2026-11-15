@@ -357,8 +357,9 @@ every failed scene with its index, heading and exact error.
 ### The Dual-Pilot: Kaggle (T3) and the local Ollama (T1)
 
 The screenplay is written by a **Dual-Pilot**. The heavy batch worker is the
-**Kaggle Pilot**: a Qwen 2.5 3B notebook that runs on Kaggle's GPU. It is an
-**external cloud worker** — it is not part of this repository and not on this
+**Kaggle Pilot**: a Qwen 2.5 3B notebook that runs on Kaggle's GPU. The notebook
+**source** lives in this repository at `scripts/direk_kaggle_pilot.ipynb` (see
+`docs/kaggle-pilot.md`); the notebook itself **runs on Kaggle**, not on this
 machine. The app reaches it over the internet through a Cloudflare tunnel whose
 public URL is set in `KAGGLE_PILOT_URL` (`src/services/pilotService.ts` is the
 only bridge).
@@ -510,4 +511,6 @@ side), `kohya_config.toml` with absolute paths, the live log, and the trained
 Direk started as a Python/Kaggle prototype (`notebooks/direk_kaggle_prototype.ipynb`,
 built into a service at commit `e4acafb`). It has since been ported to TypeScript
 under `src/direk/` and merged into this app, so the director and the cockpit ship
-together.
+together. The Kaggle worker itself is kept as `scripts/direk_kaggle_pilot.ipynb`,
+rebuilt to serve the `pilotService.ts` contract rather than the old
+`/v1/chat/completions`-only prototype (see `docs/kaggle-pilot.md`).
