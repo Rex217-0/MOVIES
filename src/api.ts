@@ -241,6 +241,8 @@ export interface TrainStatus {
   python: string;
   base_model: string | null;
   output_dir: string;
+  /** Which trainer is live: `local` kohya_ss, or `colab` through Drive. */
+  backend?: 'local' | 'colab';
   reason?: string;
   job: TrainJob | null;
 }
