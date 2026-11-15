@@ -41,6 +41,9 @@ const FFMPEG_BIN = (() => {
 })();
 
 const COORDINATOR_URL = (process.env.COORDINATOR_URL || '').replace(/\/+$/, '');
+// The coordinator protects /api with APP_AUTH_TOKEN in production. The worker
+// must present that same token or it cannot even register (401).
+const COORDINATOR_TOKEN = process.env.COORDINATOR_TOKEN || '';
 const WORKER_ID = process.env.WORKER_ID || `worker-${process.pid}`;
 const WORKER_TOKEN = process.env.WORKER_TOKEN || '';
 const COMFYUI_URL = (process.env.COMFYUI_URL || 'http://127.0.0.1:8188').replace(/\/+$/, '');
@@ -58,6 +61,13 @@ const HEARTBEAT_MS = Number(process.env.WORKER_HEARTBEAT_MS || '30000');
 /** What this worker tells the coordinator it can do. */
 const capabilities = { gpu: GPU || undefined, vram_gb: VRAM_GB, engines: ENGINES };
 
+/** Headers every coordinator call needs: the bearer token, when configured. */
+function coordinatorHeaders(extra = {}) {
+  const headers = { 'Content-Type': 'application/json', ...extra };
+  if (COORDINATOR_TOKEN) headers.Authorization = `Bearer ${COORDINATOR_TOKEN}`;
+  return headers;
+}
+
 async function register() {
   if (!COORDINATOR_URL) {
     console.error('COORDINATOR_URL is required (e.g. https://movies.example.com).');
@@ -65,7 +75,7 @@ async function register() {
   }
   const res = await fetch(`${COORDINATOR_URL}/api/direk/workers/register`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: coordinatorHeaders(),
     body: JSON.stringify({
       id: WORKER_ID,
       label: `${WORKER_ID} (${GPU || 'cpu'})`,
@@ -94,7 +104,7 @@ async function heartbeat() {
   try {
     await fetch(`${COORDINATOR_URL}/api/direk/workers/heartbeat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: coordinatorHeaders(),
       body: JSON.stringify({ id: WORKER_ID }),
     });
   } catch (error) {

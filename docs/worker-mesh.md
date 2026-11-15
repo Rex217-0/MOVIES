@@ -11,6 +11,7 @@ On a machine with a GPU (or just CPU):
 
 ```bash
 COORDINATOR_URL=https://movies.example.com \
+COORDINATOR_TOKEN=<the coordinator's APP_AUTH_TOKEN> \
 WORKER_ID=gpu-rig-1 \
 WORKER_TOKEN=<secret the coordinator must present> \
 WORKER_PUBLIC_URL=http://10.0.0.5:8090 \
@@ -20,6 +21,10 @@ WORKER_ROLE=gpu \
 COMFYUI_URL=http://127.0.0.1:8188 \
 node scripts/worker.mjs
 ```
+
+`COORDINATOR_TOKEN` must equal the coordinator's `APP_AUTH_TOKEN`; without it
+the worker cannot register (`401`). `WORKER_TOKEN` is the reverse direction: the
+secret the coordinator must present to reach this worker's `/job`.
 
 `WORKER_ROLE` is `gpu`, `cpu`, or `phone`. A `phone` node is a low-tier CPU
 contributor only: the scheduler refuses to place a heavy engine (comfyui, sdxl,
