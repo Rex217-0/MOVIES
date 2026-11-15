@@ -13,6 +13,7 @@
  * it unset, the editing pass is skipped and the raw clip is kept.
  */
 import { fal } from '@fal-ai/client';
+import { paidCloudAllowed, PAID_BLOCKED_DETAIL } from './costPolicy.ts';
 
 /** The verified fal.ai text-to-video endpoint for Wan 2.2. */
 export const DEFAULT_WAN_ENDPOINT = 'fal-ai/wan/v2.2-a14b/text-to-video';
@@ -77,6 +78,8 @@ export interface WanVideoInput {
 export async function generateVideoWithWan(input: WanVideoInput): Promise<{ data: Buffer; url: string }> {
   configureFal();
   if (!wanConfigured()) throw new Error('FAL_KEY is not set');
+  // Hard guard: a paid call must never run without the explicit opt-in.
+  if (!paidCloudAllowed()) throw new Error(PAID_BLOCKED_DETAIL);
   const endpoint = wanEndpoint();
   const { data } = await client.subscribe(endpoint, {
     input: {
@@ -99,6 +102,7 @@ export async function generateVideoWithWan(input: WanVideoInput): Promise<{ data
 export async function editWithOpenCut(videoUrl: string, instructions: string): Promise<{ data: Buffer; url: string }> {
   configureFal();
   if (!openCutConfigured()) throw new Error('OPENCUT_ENDPOINT is not set');
+  if (!paidCloudAllowed()) throw new Error(PAID_BLOCKED_DETAIL);
   const endpoint = openCutEndpoint();
   const { data } = await client.subscribe(endpoint, {
     input: { video_url: videoUrl, prompt: instructions },
@@ -113,6 +117,8 @@ export async function editWithOpenCut(videoUrl: string, instructions: string): P
 export async function uploadToFal(data: Buffer): Promise<string> {
   configureFal();
   if (!falKeyConfigured()) throw new Error('FAL_KEY is not set');
+  // fal storage is a paid service too; never upload without the opt-in.
+  if (!paidCloudAllowed()) throw new Error(PAID_BLOCKED_DETAIL);
   const blob = new Blob([new Uint8Array(data)], { type: 'video/mp4' });
   return client.storage.upload(blob);
 }

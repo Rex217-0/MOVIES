@@ -28,6 +28,7 @@ import {
 } from './videoRenderService.ts';
 import type { SceneStage } from './factory.ts';
 import { buildVeoStylePrompt, buildVeoStyleNegative } from '../tactical/rules.ts';
+import { paidReady } from './costPolicy.ts';
 
 export {
   VideoBackendUnavailable, videoRenderReady as videoBackendReady,
@@ -513,8 +514,8 @@ const KNOWN_VOICES: NarrationSource[] = ['fish', 'tagalog', 'piper', 'gemini'];
  * because it only has English phonemes. When none of them answers the shot
  * carries the line as a burned-in caption instead.
  *
- * `TTS_ORDER=fish,piper,captions` overrides this when a deployment wants the
- * plain Fish → Piper → captions chain and nothing else.
+ * `TTS_ORDER=tagalog,gemini,piper,fish` overrides this when a deployment wants
+ * the plain chain and nothing else.
  */
 export function narrationOrder(): NarrationSource[] {
   const raw = process.env.TTS_ORDER;
@@ -525,12 +526,14 @@ export function narrationOrder(): NarrationSource[] {
       .filter((s): s is NarrationSource => (KNOWN_VOICES as string[]).includes(s));
     if (parsed.length) return parsed;
   }
-  return ['fish', 'tagalog', 'gemini', 'piper'];
+  // Free-first: the bundled Tagalog voice, the Gemini free tier and Piper cost
+  // nothing. Fish Audio is a paid cloud service and comes last.
+  return ['tagalog', 'gemini', 'piper', 'fish'];
 }
 
 /** Whether a voice in the order can actually speak right now. */
 export function voiceReady(source: NarrationSource): boolean {
-  if (source === 'fish') return fishConfigured();
+  if (source === 'fish') return paidReady(fishConfigured());
   if (source === 'tagalog') return Boolean(tagalogVoice());
   if (source === 'piper') return Boolean(piperCommand());
   if (source === 'gemini') return ttsConfigured();
@@ -583,7 +586,7 @@ export function narrationBackends(): {
 } {
   const cmd = piperCommand();
   return {
-    fish: fishConfigured(),
+    fish: paidReady(fishConfigured()),
     cloud: ttsConfigured(),
     tagalog: Boolean(tagalogVoice()),
     offline: Boolean(cmd),

@@ -13,7 +13,7 @@ import { startMockComfyUI, writeVideoWorkflow, tinyMp4 } from '../testing/comfyu
 const ENV_KEYS = [
   'FAL_KEY', 'WAN_VIDEO_ENDPOINT', 'OPENCUT_ENDPOINT',
   'COMFYUI_URL', 'COMFYUI_VIDEO_WORKFLOW', 'COMFYUI_DISABLE',
-  'PREFERRED_RENDER_ENGINE',
+  'PREFERRED_RENDER_ENGINE', 'ALLOW_PAID_CLOUD',
 ];
 
 /** Run `fn` with a clean slate for the video-related environment. */
@@ -118,12 +118,32 @@ test('cloud-first (PREFERRED_RENDER_ENGINE=fal) skips ComfyUI and goes straight 
     COMFYUI_URL: comfy.url,
     COMFYUI_VIDEO_WORKFLOW: workflow,
     FAL_KEY: 'fal-test-key',
+    ALLOW_PAID_CLOUD: '1',
   }, async () => {
     const out = await renderVideo({ prompt: 'isang bagyo', aspectRatio: '16:9', resolution: '720p' });
     assert.equal(out.engine, 'wan', 'fal is primary, so Wan renders');
     assert.equal(calls.length, 1, 'exactly one Wan call, no ComfyUI ping');
     assert.equal(calls[0].endpoint, 'fal-ai/wan/v2.2-a14b/text-to-video');
     assert.equal(comfy.requests(), 0, 'ComfyUI must not be pinged when fal is preferred');
+  });
+});
+
+test('the paid Wan path is blocked unless the deployment opts in', async (t) => {
+  const clip = await startClipServer(tinyMp4());
+  t.after(() => clip.close());
+  const { fake, calls } = fakeFal(clip.url);
+  setFalClientForTests(fake);
+  t.after(() => setFalClientForTests(null));
+
+  // FAL_KEY is set, but ALLOW_PAID_CLOUD is not: the no-cost policy wins and
+  // the call fails honestly instead of spending.
+  await withEnv({ COMFYUI_DISABLE: '1', FAL_KEY: 'fal-test-key' }, async () => {
+    assert.equal(await videoRenderReady(), false, 'paid cloud is not ready without the opt-in');
+    await assert.rejects(
+      () => renderVideo({ prompt: 'isang bagyo' }),
+      (err: any) => err instanceof VideoBackendUnavailable && /ALLOW_PAID_CLOUD/.test(err.message),
+    );
+    assert.equal(calls.length, 0, 'Wan must never be called without the opt-in');
   });
 });
 
@@ -138,6 +158,7 @@ test('Wan 2.2 on fal.ai is the fallback when ComfyUI cannot render', async (t) =
     COMFYUI_DISABLE: '1',
     FAL_KEY: 'fal-test-key',
     WAN_VIDEO_ENDPOINT: 'fal-ai/wan/v2.2-a14b/text-to-video',
+    ALLOW_PAID_CLOUD: '1',
   }, async () => {
     assert.equal(await videoRenderReady(), true, 'Wan makes the pipeline ready');
     const out = await renderVideo({ prompt: 'isang bagyo', aspectRatio: '16:9', resolution: '720p' });
@@ -173,6 +194,7 @@ test('OpenCut edits the clip when configured, and the edited bytes are kept', as
     COMFYUI_DISABLE: '1',
     FAL_KEY: 'fal-test-key',
     OPENCUT_ENDPOINT: 'fal-ai/opencut',
+    ALLOW_PAID_CLOUD: '1',
   }, async () => {
     const out = await renderVideo({ prompt: 'isang eksena', editInstructions: 'putulin sa 4s' });
     assert.equal(out.engine, 'wan');
@@ -207,6 +229,7 @@ test('a failed OpenCut pass keeps the raw clip instead of throwing it away', asy
     COMFYUI_DISABLE: '1',
     FAL_KEY: 'fal-test-key',
     OPENCUT_ENDPOINT: 'fal-ai/opencut',
+    ALLOW_PAID_CLOUD: '1',
   }, async () => {
     const out = await renderVideo({ prompt: 'isang eksena', editInstructions: 'i-grade' });
     assert.equal(out.engine, 'wan');
@@ -224,10 +247,34 @@ test('without an OpenCut endpoint the editing pass is skipped, not faked', async
   setFalClientForTests(fake);
   t.after(() => setFalClientForTests(null));
 
-  await withEnv({ COMFYUI_DISABLE: '1', FAL_KEY: 'fal-test-key' }, async () => {
+  await withEnv({ COMFYUI_DISABLE: '1', FAL_KEY: 'fal-test-key', ALLOW_PAID_CLOUD: '1' }, async () => {
     const out = await renderVideo({ prompt: 'isang eksena', editInstructions: 'i-grade' });
     assert.equal(out.editor, undefined);
     assert.match(out.editNote || '', /OPENCUT_ENDPOINT is not set/);
     assert.equal(calls.length, 1, 'only Wan ran; no editing endpoint was called');
+  });
+});
+
+test('the editing pass is skipped by the no-cost policy even with an endpoint set', async (t) => {
+  const clip = await startClipServer(tinyMp4());
+  t.after(() => clip.close());
+  const { fake, calls } = fakeFal(clip.url);
+  setFalClientForTests(fake);
+  t.after(() => setFalClientForTests(null));
+
+  // The clip is already rendered locally; only the paid edit is blocked.
+  const comfy = await startMockComfyUI();
+  t.after(() => comfy.close());
+  await withEnv({
+    PREFERRED_RENDER_ENGINE: 'comfyui',
+    COMFYUI_URL: comfy.url,
+    COMFYUI_VIDEO_WORKFLOW: writeVideoWorkflow(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-'))),
+    FAL_KEY: 'fal-test-key',
+    OPENCUT_ENDPOINT: 'fal-ai/opencut',
+  }, async () => {
+    const out = await renderVideo({ prompt: 'isang eksena', editInstructions: 'i-grade' });
+    assert.equal(out.editor, undefined, 'no paid edit without the opt-in');
+    assert.match(out.editNote || '', /ALLOW_PAID_CLOUD/);
+    assert.equal(calls.length, 0, 'OpenCut must not be called without the opt-in');
   });
 });
