@@ -1008,6 +1008,7 @@ app.get('/api/direk/movie/status', (_req: Request, res: Response) => {
     narration_order: backends.order,
     piper_voice: backends.piper_voice,
     tagalog_model: backends.tagalog_model,
+    tagalog_python: backends.tagalog_python,
     tts_model: TTS_MODEL,
     voices: TTS_VOICES,
     moods: MOODS,

@@ -178,9 +178,24 @@ test('Fish Audio is only offered when a key is present', async () => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Narration fallback chain
-// ---------------------------------------------------------------------------
+test('Fish Audio needs only the API key; the reference voice is optional', async () => {
+  const { fishConfigured } = await import('./movie.ts');
+  await withEnv({ FISH_AUDIO_API_KEY: 'test-key', FISH_AUDIO_REFERENCE_ID: undefined }, () => {
+    assert.equal(fishConfigured(), true, 'a key alone is enough; Fish falls back to its default voice');
+  });
+});
+
+test('a missing Python stack names the exact install command', async () => {
+  const { honestTtsError } = await import('./movie.ts');
+  const msg = honestTtsError('python3', 'ModuleNotFoundError: No module named \'torch\'', 'tagalog tts failed');
+  assert.match(msg, /No module named 'torch'/);
+  assert.match(msg, /pip install transformers torch soundfile/);
+  assert.match(msg, /python3/);
+  // A normal failure is passed through unchanged.
+  assert.equal(honestTtsError('python3', 'CUDA out of memory', 'x'), 'CUDA out of memory');
+});
+
+
 
 async function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void> | void) {
   const saved: Record<string, string | undefined> = {};

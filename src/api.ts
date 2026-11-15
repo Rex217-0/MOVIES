@@ -477,6 +477,7 @@ export interface MovieStatus {
   narration_offline: boolean;
   piper_voice?: string;
   tagalog_model?: string;
+  tagalog_python?: string;
   tts_model: string;
   voices: string[];
   moods: string[];

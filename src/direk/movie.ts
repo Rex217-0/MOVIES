@@ -330,6 +330,8 @@ async function geminiSpeech(text: string, voice: TtsVoice): Promise<Buffer> {
 const FISH_API = process.env.FISH_AUDIO_API_URL || 'https://api.fish.audio';
 
 export function fishConfigured(): boolean {
+  // A reference voice id is optional: Fish Audio uses a default voice when it
+  // is absent. Only the API key is required.
   return Boolean(process.env.FISH_AUDIO_API_KEY) && process.env.FISH_AUDIO_DISABLE !== '1';
 }
 
@@ -436,7 +438,7 @@ export async function tagalogSpeech(text: string): Promise<Buffer> {
         { maxBuffer: 1 << 24, timeout: 600000, env: { ...process.env, TTS_TAGALOG_MODEL: model } },
         (error, _stdout, stderr) => {
           if (error) {
-            reject(new Error(String(stderr || error.message || 'tagalog tts failed').trim().split('\n').slice(-1)[0]));
+            reject(new Error(honestTtsError(python, stderr, error.message || 'tagalog tts failed')));
             return;
           }
           resolve();
@@ -452,6 +454,20 @@ export async function tagalogSpeech(text: string): Promise<Buffer> {
       /* the temp file is disposable */
     }
   }
+}
+
+/**
+ * A voice that cannot run because its Python stack is missing must say so
+ * plainly. A bare `ModuleNotFoundError: torch` buries the real fix, which is to
+ * install the packages into the interpreter named by `TTS_PYTHON`.
+ */
+export function honestTtsError(python: string, stderr: string, fallback: string): string {
+  const detail = String(stderr || fallback).trim().split('\n').slice(-1)[0];
+  if (/ModuleNotFoundError|ImportError|No module named/i.test(detail)) {
+    return `${detail} — patakbuhin ang '${python} -m pip install transformers torch soundfile' ` +
+      `para sa offline na Tagalog na boses`;
+  }
+  return detail;
 }
 
 /** One line of narration from the offline voice. */
@@ -562,6 +578,7 @@ export function narrationBackends(): {
   offline: boolean;
   piper_voice?: string;
   tagalog_model?: string;
+  tagalog_python?: string;
   order: NarrationSource[];
 } {
   const cmd = piperCommand();
@@ -572,6 +589,7 @@ export function narrationBackends(): {
     offline: Boolean(cmd),
     piper_voice: cmd?.voice,
     tagalog_model: tagalogVoice() || undefined,
+    tagalog_python: process.env.TTS_PYTHON || defaultPython(),
     order: narrationBackendOrder(),
   };
 }

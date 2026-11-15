@@ -1,0 +1,13 @@
+# Python packages for the offline Tagalog narration voice (scripts/tagalog_tts.py).
+# Install into the interpreter named by TTS_PYTHON:
+#
+#   python3 -m pip install -r scripts/requirements-tts.txt
+#
+# The first run downloads the Meta MMS weights (~150 MB) from Hugging Face.
+# On a small host (e.g. a 512 MB free tier) loading torch + the model may not
+# fit; either give the process more memory or rely on the Fish Audio cloud voice.
+transformers>=4.40
+soundfile
+# CPU-only torch keeps the install small; swap for a CUDA build if the host has
+# a supported GPU.
+torch --index-url https://download.pytorch.org/whl/cpu
