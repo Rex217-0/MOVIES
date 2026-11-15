@@ -11,6 +11,8 @@
  * unavailable.
  *
  * Configuration (environment variables):
+ *   TRAIN_BACKEND       `local` (default) runs kohya here; `colab` hands the run
+ *                       to a Colab notebook through a Drive folder.
  *   KOHYA_DIR           Path to kohya_ss or sd-scripts (must contain
  *                       train_network.py). Enables training.
  *   KOHYA_PYTHON        Python interpreter, default `python3` (POSIX) or
@@ -19,6 +21,9 @@
  *   KOHYA_ACCELERATE    Set to `1` to launch via `accelerate launch`
  *   KOHYA_OUTPUT_DIR    Where runs are written, default `<cwd>/lora_runs`
  *   KOHYA_TIMEOUT_MS    Hard cap on a run, default 6 hours
+ *
+ * The two backends sit behind one interface (`TrainBackend`), so the routes do
+ * not care which one is live. `local` is the default and is unchanged.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -224,6 +229,64 @@ export interface StartTrainOptions {
   config: string;
   /** Called with the trained file path when a run finishes successfully. */
   onArtifact?: (filePath: string) => void;
+}
+
+/** Which trainer runs the job. `local` is the default and is unchanged. */
+export type TrainBackendName = 'local' | 'colab';
+
+/** The backend chosen by `TRAIN_BACKEND`, defaulting to `local`. */
+export function trainBackendName(): TrainBackendName {
+  return process.env.TRAIN_BACKEND === 'colab' ? 'colab' : 'local';
+}
+
+/**
+ * The one interface both trainers sit behind. The routes call this and never
+ * care whether kohya runs here or a Colab notebook runs the job through Drive.
+ */
+export interface TrainBackend {
+  readonly name: TrainBackendName;
+  /** Whether training can run at all, with the reason when it cannot. */
+  status(): TrainerStatus;
+  /** The current or last job, or null when nothing has run yet. */
+  current(): TrainJob | null;
+  /** Start a run. Rejects when one is going or the backend is unavailable. */
+  start(opts: StartTrainOptions): Promise<TrainJob>;
+  /** Ask the run to stop. Resolves true when a stop was requested. */
+  cancel(): Promise<boolean>;
+  /** Follow the run's log lines; returns an unsubscribe function. */
+  onLine(fn: (line: string) => void): () => void;
+  /** The most recent log lines, oldest first, for an SSE replay. */
+  recentLog(max?: number): string[];
+}
+
+/** The local kohya_ss / sd-scripts trainer, unchanged, behind the interface. */
+export class LocalTrainBackend implements TrainBackend {
+  readonly name = 'local' as const;
+  private readonly trainer = new LoRATrainer();
+
+  status(): TrainerStatus {
+    return trainerStatus();
+  }
+
+  current(): TrainJob | null {
+    return this.trainer.current();
+  }
+
+  async start(opts: StartTrainOptions): Promise<TrainJob> {
+    return this.trainer.start(opts);
+  }
+
+  async cancel(): Promise<boolean> {
+    return this.trainer.cancel();
+  }
+
+  onLine(fn: (line: string) => void): () => void {
+    return this.trainer.onLine(fn);
+  }
+
+  recentLog(max = 100): string[] {
+    return (this.trainer.current()?.log ?? []).slice(-max);
+  }
 }
 
 /**
