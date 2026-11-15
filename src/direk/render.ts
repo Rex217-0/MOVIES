@@ -134,6 +134,64 @@ async function readResult(file: string, kind: typeof MP4 | typeof PNG): Promise<
   return { data, ...kind };
 }
 
+/** True when the buffer already carries the PNG signature. */
+export function isPng(data: Buffer): boolean {
+  return (
+    data.length >= 8 &&
+    data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47
+  );
+}
+
+/**
+ * Re-encode any image ffmpeg can read into a real PNG.
+ *
+ * The free Pollinations backend answers with a JPEG whatever the URL asks for,
+ * and a JPEG saved under a `.png` name trains a LoRA badly (and some loaders
+ * reject it outright), so every hosted image goes through here before it is
+ * stored or zipped. A buffer that is already PNG is returned untouched.
+ */
+export async function toPng(data: Buffer): Promise<Buffer> {
+  if (isPng(data)) return data;
+  const dir = workDir();
+  try {
+    const inFile = path.join(dir, 'in.img');
+    const outFile = path.join(dir, 'out.png');
+    fs.writeFileSync(inFile, data);
+    await run(['-y', '-loglevel', 'error', '-i', inFile, outFile], 60000);
+    const png = fs.readFileSync(outFile);
+    if (!isPng(png)) throw new Error('ffmpeg did not produce a PNG');
+    return png;
+  } finally {
+    cleanup(dir);
+  }
+}
+
+/**
+ * Escape a filesystem path for use inside an ffmpeg filtergraph value.
+ *
+ * A filtergraph is not a shell string: ffmpeg splits options on `:`, treats
+ * `\` as its own escape and quotes with `'`. A Windows path such as
+ * `C:\Windows\Fonts\arial.ttf` would otherwise be cut at the drive colon and
+ * break drawtext, so escape the backslash, the colon and the single quote
+ * before wrapping the value in single quotes. Verified against a real ffmpeg:
+ * an unescaped colon yields "Both text and text file provided".
+ */
+export function filterPath(p: string): string {
+  return p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'");
+}
+
+/**
+ * A filesystem path for the ffmpeg concat demuxer's list file.
+ *
+ * Unlike a filtergraph, the demuxer treats `\` as an escape, so a Windows path
+ * like `C:\Users\...\clip.mp4` fails with "Impossible to open". ffmpeg accepts
+ * forward slashes on every platform, so swap the separators and escape the
+ * single quote. Verified against a real ffmpeg.
+ */
+export function concatListPath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/'/g, "'\\''");
+}
+
 /** Write text to a file so drawtext never has to escape it. */
 function textFile(dir: string, text: string): string {
   const file = path.join(dir, 'text.txt');
@@ -204,12 +262,36 @@ export async function concatVideos(inputs: string[], width = 1280, height = 720)
     const clips: string[] = [];
     for (let i = 0; i < inputs.length; i++) clips.push(await normalize(inputs[i], dir, i, width, height, 30));
     const list = path.join(dir, 'list.txt');
-    fs.writeFileSync(list, clips.map(c => `file '${c.replace(/'/g, "'\\''")}'`).join('\n'), 'utf8');
+    fs.writeFileSync(list, clips.map(c => `file '${concatListPath(c)}'`).join('\n'), 'utf8');
     const out = path.join(dir, 'out.mp4');
     await run(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', out]);
     return await readResult(out, MP4);
   } finally {
     cleanup(dir);
+  }
+}
+
+/**
+ * Join clips with the concat demuxer and `-c copy`, so the video and audio are
+ * copied through instead of re-encoded. This is how the factory stitches the 18
+ * approved scenes into one feature: it is fast, and it loses no quality.
+ *
+ * `-c copy` only works when the clips share codec, size, frame rate and audio
+ * layout. `renderFeatureScene` guarantees that; if a mismatch is found anyway,
+ * the caller gets the ffmpeg error rather than a silently broken film.
+ */
+export async function concatCopy(inputs: string[], dir?: string): Promise<RenderOutput> {
+  if (inputs.length < 2) throw new Error('Kailangan ng dalawa o higit pang clip para pagsamahin.');
+  const work = dir ?? workDir();
+  const ownsDir = !dir;
+  try {
+    const list = path.join(work, 'concat-list.txt');
+    fs.writeFileSync(list, inputs.map(c => `file '${concatListPath(c)}'`).join('\n'), 'utf8');
+    const out = path.join(work, 'feature.mp4');
+    await run(['-y', '-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-movflags', '+faststart', out]);
+    return await readResult(out, MP4);
+  } finally {
+    if (ownsDir) cleanup(work);
   }
 }
 
@@ -243,7 +325,7 @@ export async function imageToVideo(
     for (const image of images) clips.push(await kenBurnsClip(image, seconds, width, height));
     if (clips.length === 1) return await readResult(clips[0], MP4);
     const list = path.join(dir, 'list.txt');
-    fs.writeFileSync(list, clips.map(c => `file '${c.replace(/'/g, "'\\''")}'`).join('\n'), 'utf8');
+    fs.writeFileSync(list, clips.map(c => `file '${concatListPath(c)}'`).join('\n'), 'utf8');
     const out = path.join(dir, 'out.mp4');
     await run(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', out]);
     return await readResult(out, MP4);
@@ -298,7 +380,7 @@ export async function addText(
     const y = Y_EXPR[opts.placement ?? 'bottom'];
     const size = opts.fontSize ?? 48;
     const draw =
-      `drawtext=textfile='${file.replace(/'/g, "'\\''")}':fontfile='${fontPath().replace(/'/g, "'\\''")}':` +
+      `drawtext=textfile='${filterPath(file)}':fontfile='${filterPath(fontPath())}':` +
       `fontcolor=white:fontsize=${size}:line_spacing=10:box=1:boxcolor=black@0.45:boxborderw=18:` +
       `x=(w-text_w)/2:y=${y}`;
     await run(['-y', '-i', input, '-vf', draw, ...ENCODE, '-c:a', 'copy', out]);
@@ -334,7 +416,7 @@ export async function poster(
     const height = opts.height ?? 720;
     const titleFile = textFile(dir, title);
     const draw = (file: string, size: number, y: string, color: string) =>
-      `drawtext=textfile='${file.replace(/'/g, "'\\''")}':fontfile='${fontPath().replace(/'/g, "'\\''")}':` +
+      `drawtext=textfile='${filterPath(file)}':fontfile='${filterPath(fontPath())}':` +
       `fontcolor=${color}:fontsize=${size}:line_spacing=12:box=1:boxcolor=black@0.5:boxborderw=22:x=(w-text_w)/2:y=${y}`;
 
     const filters: string[] = [];

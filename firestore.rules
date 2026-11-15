@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Movie Maker browser history is isolated to the current Firebase user.
+    match /users/{userId}/movie_history/{movieId} {
+      allow read: if signedIn() && request.auth.uid == userId;
+      allow create, update: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['payload', 'createdAt'])
+        && request.resource.data.payload is string
+        && request.resource.data.payload.size() <= 20000
+        && request.resource.data.createdAt is timestamp;
+      allow delete: if signedIn() && request.auth.uid == userId;
+    }
+
+    // Draft aligned with src/direk/factoryDb.ts MovieDoc:
+    // id, org_id, title, genre, rating, format, status, created_at.
+    // Every document is scoped to the one private vault (org_id == 'LJRgroupORG').
+    // Admin SDK backend access bypasses Firestore rules. Client writes are
+    // restricted to a trusted Firebase Auth custom claim set by a secure admin.
+    match /MovieJobs/{movieId} {
+      allow read: if signedIn() && resource.data.org_id == 'LJRgroupORG';
+      allow create, update: if signedIn()
+        && request.auth.token.admin == true
+        && request.resource.data.keys().hasOnly([
+          'id', 'org_id', 'title', 'genre', 'rating', 'format', 'status', 'created_at'
+        ])
+        && request.resource.data.keys().hasAll([
+          'id', 'org_id', 'title', 'genre', 'rating', 'format', 'status', 'created_at'
+        ])
+        && request.resource.data.id is string
+        && request.resource.data.id == movieId
+        && request.resource.data.org_id == 'LJRgroupORG'
+        && request.resource.data.title is string
+        && request.resource.data.genre is string
+        && request.resource.data.rating is string
+        && request.resource.data.format is string
+        && request.resource.data.status in ['idle', 'running', 'paused', 'done', 'error']
+        && request.resource.data.created_at is int;
+      allow delete: if signedIn() && request.auth.token.admin == true;
+    }
+
+    // Draft aligned with src/direk/factoryDb.ts SceneDoc:
+    // id, org_id, movie_id, scene_number, status, video_path.
+    match /SceneJobs/{sceneId} {
+      allow read: if signedIn() && resource.data.org_id == 'LJRgroupORG';
+      allow create, update: if signedIn()
+        && request.auth.token.admin == true
+        && request.resource.data.keys().hasOnly([
+          'id', 'org_id', 'movie_id', 'scene_number', 'status', 'video_path'
+        ])
+        && request.resource.data.keys().hasAll([
+          'id', 'org_id', 'movie_id', 'scene_number', 'status', 'video_path'
+        ])
+        && request.resource.data.id is string
+        && request.resource.data.id == sceneId
+        && request.resource.data.org_id == 'LJRgroupORG'
+        && request.resource.data.movie_id is string
+        && request.resource.data.scene_number is int
+        && request.resource.data.scene_number >= 1
+        && request.resource.data.scene_number <= 18
+        && request.resource.data.status in ['pending', 'rendering', 'rendered', 'approved', 'rejected', 'failed']
+        && (request.resource.data.video_path == null || request.resource.data.video_path is string);
+      allow delete: if signedIn() && request.auth.token.admin == true;
+    }
+
+    // Default deny for every collection not explicitly listed above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
@@ -13,12 +16,15 @@
     "test": "node --import tsx --test"
   },
   "dependencies": {
+    "@fal-ai/client": "^1.11.0",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@google/genai": "^3.2.0",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
+    "firebase": "^12.6.0",
+    "firebase-admin": "^12.7.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",

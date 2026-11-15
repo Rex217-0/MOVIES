@@ -21,6 +21,9 @@ function startServer(env: Record<string, string>) {
       // Force the no-backend path: this test is about what happens when no text
       // model is configured, not about a developer's local Ollama.
       OLLAMA_DISABLE: '1',
+      // No fal.ai either: this test checks the no-backend 503 path.
+      FAL_KEY: '',
+      OPENCUT_ENDPOINT: '',
       ...env,
     },
     stdio: 'ignore',
@@ -105,7 +108,10 @@ test('the gallery never fabricates a url for preset items', async (t) => {
   }
 });
 
-test('LoRA endpoints work with no model and honestly skip images', async (t) => {
+test('LoRA endpoints work with no key and honestly report the free image backend', async (t) => {
+  // No Gemini key and no ComfyUI, but the free Pollinations backend still makes
+  // real images, so the plan must say images are available rather than pretend
+  // there is no image path at all.
   const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());
   await waitForServer(port);
@@ -121,13 +127,14 @@ test('LoRA endpoints work with no model and honestly skip images', async (t) => 
   const planBody: any = await plan.json();
   assert.equal(planBody.trigger, 'direk_ang_huling_tala');
   assert.equal(planBody.samples, 8);
-  assert.equal(planBody.images_available, false, 'no paid image model without a key');
+  assert.equal(planBody.images_available, true, 'the free Pollinations backend needs no key');
+  assert.equal(planBody.image_backend, 'pollinations');
   assert.ok(planBody.references.length > 0);
 
   const ds = await fetch(`http://127.0.0.1:${port}/api/direk/lora/dataset`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(brief),
+    body: JSON.stringify({ ...brief, images: false }),
   });
   assert.equal(ds.status, 200);
   assert.match(ds.headers.get('content-type') || '', /zip/);

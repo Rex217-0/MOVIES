@@ -30,8 +30,8 @@ import {
 import { ReferenceCatalog } from './src/direk/reference.ts';
 import { MarketIntel } from './src/direk/market.ts';
 import { runConnector, connectorCatalog, allAssets } from './src/direk/connectors.ts';
-import { ffmpegAvailable, ffmpegPath } from './src/direk/render.ts';
-import { assetsDir, assetPath } from './src/direk/assets.ts';
+import { ffmpegAvailable, ffmpegPath, toPng } from './src/direk/render.ts';
+import { assetsDir, assetPath, reviewAsset, type ReviewStatus } from './src/direk/assets.ts';
 import { driveStatus, authUrl, redirectUri, exchangeCode } from './src/direk/gdrive.ts';
 import { DirekService, type ChatMessage } from './src/direk/service.ts';
 import { PIPELINE, STAGE_SKILL } from './src/direk/pipeline.ts';
@@ -43,9 +43,10 @@ import {
   numberedName, MAX_LORA_IMAGES,
 } from './src/direk/lora.ts';
 import {
-  comfyAvailable, generateWithComfy, comfyUrl, generateVideoWithComfy, comfyVideoConfigured,
+  comfyAvailable, generateWithComfy, comfyUrl,
   publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
 } from './src/direk/comfyui.ts';
+import { pollinationsUrl } from './src/direk/imagine.ts';
 import {
   LoRATrainer, trainerStatus, trainingConfig, buildTrainCommand,
 } from './src/direk/trainer.ts';
@@ -56,6 +57,38 @@ import {
 import {
   ollamaStatus, ollamaChat, preferredTextBackend, ollamaUrl, ollamaModel,
 } from './src/direk/llm.ts';
+import {
+  renderMovie, renderFeatureScene, scriptPrompt, parseScript, fallbackScript, narrationBackends,
+  videoBackendReady, videoBackendDetail,
+  TTS_MODEL, TTS_VOICES, MOODS,
+  type MovieProgress, type MovieScript, type MovieOptions, type Mood, type TtsVoice,
+  type NarrationSource,
+} from './src/direk/movie.ts';
+import { renderVideo } from './src/direk/videoRenderService.ts';
+import { MIN_MINUTES, MAX_MINUTES, sceneCount } from './src/movieMeta.ts';
+import { groundMovie, groundingBlock } from './src/direk/grounding.ts';
+import { FactoryDb, factoryDbPath } from './src/direk/factoryDb.ts';
+import { rendersDir, renderPath } from './src/direk/renderStore.ts';
+import {
+  FeatureFactory, factorySummary,
+} from './src/direk/factory.ts';
+import {
+  breakdownPrompt, parseBreakdown, type ConceptOptions,
+} from './src/direk/featureFilm.ts';
+import {
+  FEATURE_SCENES, FEATURE_SCENE_SECONDS, FEATURE_TOTAL_SECONDS, filmClock,
+  RATINGS, FORMATS, RATING_LABELS,
+  type Rating, type FilmFormat,
+} from './src/featureFilm.ts';
+import {
+  classifyTask, classifyLoraTraining, planExecution, route_to_cloud,
+  routingTable, t3LocalAllowed, TIER_LABELS,
+} from './src/direk/taskRouter.ts';
+import type { AssetMeta } from './src/direk/assets.ts';
+import {
+  pilotStatus, writeScreenplay,
+  PilotUnavailable, PILOT_UNAVAILABLE, PILOT_MODEL,
+} from './src/services/pilotService.ts';
 
 dotenv.config();
 
@@ -479,138 +512,52 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   const formattedPrompt = buildTacticalVideoPrompt(prompt);
   const startTime = Date.now();
 
+  // Heavy video renders on the local ComfyUI GPU (Server-2), with Wan 2.2 on
+  // fal.ai as the fallback. The router keeps video local, so a shot is never
+  // silently handed to an unconfigured cloud tier.
+  const videoPlan = planExecution('video_render', { prompt });
+  broadcastThought(`[ROUTER] video_render → ${videoPlan.route.tier} (${videoPlan.run})`);
+
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
-  // Free path first: a local ComfyUI with an AnimateDiff/SVD workflow. This is
-  // the only free way to actually render video, so prefer it when configured.
-  if (process.env.COMFYUI_DISABLE !== '1' && comfyVideoConfigured() && (await comfyAvailable())) {
-    try {
-      const { data } = await generateVideoWithComfy(formattedPrompt, {
-        negative: buildVeoStyleNegative(),
-      });
-      const elapsedMs = Date.now() - startTime;
-      const dataUrl = `data:video/mp4;base64,${data.toString('base64')}`;
-      broadcastThought(`[VIDEO COMPLETE] ComfyUI video rendered (${elapsedMs}ms).`);
-      const mediaRecord: MediaItem = {
-        id: `VID-${Date.now()}`,
-        type: 'video',
-        url: dataUrl,
-        prompt: cleanPrompt(prompt),
-        aspect_ratio: validAspect,
-        timestamp: new Date().toLocaleTimeString(),
-        model: 'comfyui',
-        details: 'ComfyUI local render',
-      };
-      mediaGallery.unshift(mediaRecord);
-      if (mediaGallery.length > 40) mediaGallery.pop();
-      renderVaultAssets.unshift({
-        id: `ASSET-${Date.now()}`,
-        title: cleanPrompt(prompt),
-        url: dataUrl,
-        status: 'completed',
-        reviewStatus: 'pending',
-        createdAt: new Date().toISOString(),
-      });
-      res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
-      return;
-    } catch (error: any) {
-      const reason = error?.message || 'Unknown error';
-      console.error('[VIDEO ERROR] ComfyUI render failed:', reason);
-      broadcastThought(`[VIDEO ERROR] ComfyUI failed: ${reason}`);
-      res.status(503).json(
-        aiUnavailable('comfyui', 'Check that ComfyUI is running and the video workflow is valid.', reason)
-      );
-      return;
-    }
-  }
-
-  // Honest behaviour: there is no video model on the Gemini free tier, so
-  // report the feature as unavailable instead of returning a stock clip that
-  // looks like a generated result.
-  if (!process.env.GEMINI_API_KEY || !VIDEO_MODEL_FREE) {
-    broadcastThought(`[VIDEO UNAVAILABLE] ${NO_FREE_VIDEO_MODEL}`);
-    res.status(503).json(
-      aiUnavailable(
-        VIDEO_MODEL,
-        `${NO_FREE_VIDEO_MODEL} Libreng paraan: magpatakbo ng ComfyUI at itakda ang ` +
-          `COMFYUI_VIDEO_WORKFLOW sa isang AnimateDiff/SVD workflow.`,
-        'Video generation is unavailable'
-      )
-    );
-    return;
-  }
-
-  broadcastThought(`[VIDEO PIPELINE] Calling ${VIDEO_MODEL} via Interactions API...`);
-
   try {
-    const interaction = await ai.interactions.create({
-      model: VIDEO_MODEL,
-      input: formattedPrompt,
-      background: false,
-      store: false,
-      stream: false,
-      response_format: {
-        type: 'video',
-        aspect_ratio: validAspect, // Strictly '16:9' or '9:16'
-        duration: duration || '10s',
-        resolution: resolution || '720p',
-      },
-    }, { timeout: 300000 });
-
-    let videoUrl = '';
-    const videoPart = interaction.output_video;
-    if (videoPart) {
-      if (videoPart.data) {
-        const mime = videoPart.mime_type || 'video/mp4';
-        videoUrl = `data:${mime};base64,${videoPart.data}`;
-      } else if (videoPart.uri) {
-        videoUrl = videoPart.uri;
-      }
-    }
-
-    if (!videoUrl) {
-      throw new Error('The model did not return video data');
-    }
-
+    const { data, engine, editor, editNote } = await renderVideo({
+      prompt: formattedPrompt,
+      negative: buildVeoStyleNegative(),
+      aspectRatio: validAspect,
+      resolution,
+    });
+    if (editNote) broadcastThought(`[VIDEO EDIT] ${editNote}`);
     const elapsedMs = Date.now() - startTime;
-    broadcastThought(`[VIDEO SYNTHESIS COMPLETE] Visual reconnaissance ready (${validAspect}, ${elapsedMs}ms).`);
-
+    const dataUrl = `data:video/mp4;base64,${data.toString('base64')}`;
+    broadcastThought(`[VIDEO COMPLETE] ${engine} video rendered (${elapsedMs}ms).`);
     const mediaRecord: MediaItem = {
       id: `VID-${Date.now()}`,
       type: 'video',
-      url: videoUrl,
+      url: dataUrl,
       prompt: cleanPrompt(prompt),
       aspect_ratio: validAspect,
       timestamp: new Date().toLocaleTimeString(),
-      model: VIDEO_MODEL,
-      details: `Resolution: ${resolution || '720p'} · Duration: ${duration || '10s'} · Aspect: ${validAspect}`,
+      model: engine,
+      details: editor ? `${engine} render, edited with ${editor}` : `${engine} render`,
     };
-
     mediaGallery.unshift(mediaRecord);
     if (mediaGallery.length > 40) mediaGallery.pop();
-
-    // Also sync into RenderVault (Staging review)
     renderVaultAssets.unshift({
       id: `ASSET-${Date.now()}`,
       title: cleanPrompt(prompt),
-      url: videoUrl,
+      url: dataUrl,
       status: 'completed',
       reviewStatus: 'pending',
       createdAt: new Date().toISOString(),
     });
-
-    res.json({
-      status: 'success',
-      item: mediaRecord,
-      latency_ms: elapsedMs,
-    });
+    res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
   } catch (error: any) {
     const reason = error?.message || 'Unknown error';
-    console.error(`[VIDEO ERROR] ${VIDEO_MODEL} generation failed:`, reason);
-    broadcastThought(`[VIDEO ERROR] Generation failed: ${reason}`);
-    res.status(503).json(
-      aiUnavailable(VIDEO_MODEL, 'Check the server logs and the Gemini API key.', reason)
-    );
+    const detail = error?.name === 'VideoBackendUnavailable' ? 'Walang video backend.' : 'Check the server logs.';
+    console.error('[VIDEO ERROR] render failed:', reason);
+    broadcastThought(`[VIDEO ERROR] ${reason}`);
+    res.status(503).json(aiUnavailable('video', detail, reason));
   }
 });
 
@@ -631,6 +578,10 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
   // Veo-grade scaffolding: adds camera, lighting and film look when the user
   // did not specify them. Their own wording always wins.
   const enhancedPrompt = buildVeoStylePrompt(prompt);
+
+  // T2 (medium GPU): image generation runs locally on Server-2.
+  const imagePlan = planExecution('image_generation', { prompt });
+  broadcastThought(`[ROUTER] image_generation → ${imagePlan.route.tier} (${imagePlan.run})`);
 
   broadcastThought(`[IMAGE PIPELINE] Image request: "${prompt.slice(0, 45)}..."`);
 
@@ -886,7 +837,7 @@ async function refreshTextBackend(): Promise<void> {
 async function generateText(
   system: string,
   messages: ChatMessage[] | string,
-  opts: { json?: boolean; temperature?: number } = {},
+  opts: { json?: boolean; temperature?: number; maxTokens?: number } = {},
 ): Promise<string> {
   await refreshTextBackend();
   if (!textBackendAvailable) {
@@ -923,7 +874,7 @@ async function generateText(
           systemInstruction: system,
           temperature: opts.temperature ?? 0.7,
           topP: 0.9,
-          maxOutputTokens: 1024,
+          maxOutputTokens: opts.maxTokens ?? 1024,
           ...(opts.json ? { responseMimeType: 'application/json' } : {}),
         },
       });
@@ -962,6 +913,17 @@ app.get('/api/direk/status', async (_req: Request, res: Response) => {
     image_backend: backend,
     comfyui_url: comfyUrl(),
     ...direkService.health(),
+  });
+});
+
+// The T1/T2/T3 routing table: where each task type is allowed to run. The UI
+// shows this so it is always clear which jobs load the local GPU.
+app.get('/api/direk/routing', (_req: Request, res: Response) => {
+  res.json({
+    tiers: TIER_LABELS,
+    t3_allow_local: process.env.T3_ALLOW_LOCAL !== '0',
+    cloud_configured: Boolean(process.env.CLOUD_T3_URL),
+    table: routingTable(),
   });
 });
 
@@ -1005,6 +967,397 @@ app.post('/api/direk/chat', async (req: Request, res: Response) => {
       aiUnavailable(TEXT_MODEL, 'Check the server logs and the Gemini API key.', reason)
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Movie Creator: one brief in, one downloadable film out.
+// ---------------------------------------------------------------------------
+const movieJobs = new Map<string, MovieJob>();
+
+interface MovieJob {
+  id: string;
+  brief: string;
+  minutes: number;
+  stage: string;
+  percent: number;
+  detail?: string;
+  status: 'running' | 'done' | 'error';
+  title?: string;
+  scenes?: number;
+  seconds?: number;
+  narrated?: boolean;
+  voiceSource?: NarrationSource;
+  note?: string;
+  asset?: AssetMeta;
+  /** What the screenplay was grounded in, for the UI and the logs. */
+  grounding?: { genre: string | null; references: number; market: boolean; pacing: string };
+  error?: string;
+  startedAt: number;
+  endedAt?: number;
+}
+
+app.get('/api/direk/movie/status', (_req: Request, res: Response) => {
+  const backends = narrationBackends();
+  res.json({
+    available: true,
+    narration: backends.fish || backends.cloud || backends.tagalog || backends.offline,
+    narration_fish: backends.fish,
+    narration_cloud: backends.cloud,
+    narration_tagalog: backends.tagalog,
+    narration_offline: backends.offline,
+    narration_order: backends.order,
+    piper_voice: backends.piper_voice,
+    tagalog_model: backends.tagalog_model,
+    tagalog_python: backends.tagalog_python,
+    tts_model: TTS_MODEL,
+    voices: TTS_VOICES,
+    moods: MOODS,
+    min_minutes: MIN_MINUTES,
+    max_minutes: MAX_MINUTES,
+    ffmpeg: Boolean(ffmpegPath()),
+    jobs: [...movieJobs.values()].slice(-10).reverse(),
+  });
+});
+
+app.post('/api/direk/movie', async (req: Request, res: Response) => {
+  const body = req.body as { brief?: string; minutes?: number; mood?: string; voice?: string; title?: string };
+  const brief = typeof body.brief === 'string' ? body.brief.trim() : '';
+  if (!brief) {
+    res.status(400).json({ error: 'Kailangan ng brief (isang pangungusap na ideya).' });
+    return;
+  }
+  const minutes = Math.min(MAX_MINUTES, Math.max(MIN_MINUTES, Number(body.minutes) || 1));
+  const mood = (MOODS as string[]).includes(String(body.mood)) ? (body.mood as Mood) : undefined;
+  const voice = (TTS_VOICES as readonly string[]).includes(String(body.voice)) ? (body.voice as TtsVoice) : undefined;
+  const opts: MovieOptions = { minutes, mood, voice, title: body.title };
+
+  // Ground the screenplay in the real datasets before the model is asked to
+  // write: the reference catalog (real titles/genres) and the box-office stats.
+  const grounding = groundMovie(brief, { minutes, sceneCount: sceneCount(minutes) }, referenceCatalog, marketIntel);
+  const groundingText = groundingBlock(grounding);
+  broadcastThought(
+    `[MOVIE] Grounding: ${grounding.references.length} reference · ` +
+    `${grounding.genre ?? 'walang genre'} · ${grounding.market_brief ? 'may market stats' : 'walang market stats'}`,
+  );
+
+  const id = `MOV-${Date.now()}`;
+  const job: MovieJob = { id, brief, minutes, stage: 'Simula', percent: 0, status: 'running', startedAt: Date.now() };
+  movieJobs.set(id, job);
+  while (movieJobs.size > 30) movieJobs.delete(movieJobs.keys().next().value as string);
+
+  res.status(202).json({ status: 'accepted', job: id });
+
+  const tick = (p: MovieProgress) => {
+    job.stage = p.stage;
+    job.percent = p.percent;
+    job.detail = p.detail;
+    broadcastThought(`[MOVIE ${p.percent}%] ${p.stage}${p.detail ? ` · ${p.detail}` : ''}`);
+  };
+
+  try {
+    // Screenplay first: a text model when one is available, otherwise the
+    // built-in beat sheet, so a film still comes out with no model at all.
+    tick({ stage: 'Script', percent: 1 });
+    let script: MovieScript | null = null;
+    try {
+      const raw = await generateText(scriptPrompt(brief, opts, groundingText), [{ role: 'user', content: brief }], {
+        json: true,
+        temperature: 0.9,
+        maxTokens: 8192,
+      });
+      script = parseScript(raw);
+    } catch (error: any) {
+      broadcastThought(`[MOVIE] Walang text model (${error?.message || 'error'}) — gagamitin ang built-in na beats.`);
+    }
+    if (!script) script = fallbackScript(brief, opts);
+
+    const result = await renderMovie(script, opts, tick);
+    job.status = 'done';
+    job.title = script.title;
+    job.scenes = result.scenes;
+    job.seconds = result.seconds;
+    job.narrated = result.narrated;
+    job.voiceSource = result.voice_source;
+    job.note = result.note;
+    job.asset = result.asset;
+    job.grounding = {
+      genre: grounding.genre,
+      references: grounding.references.length,
+      market: Boolean(grounding.market_brief),
+      pacing: grounding.pacing,
+    };
+    job.endedAt = Date.now();
+    broadcastThought(`[MOVIE DONE] ${script.title} · ${result.seconds.toFixed(0)}s`);
+  } catch (error: any) {
+    job.status = 'error';
+    job.error = error?.message || 'Hindi nagawa ang pelikula.';
+    job.endedAt = Date.now();
+    broadcastThought(`[MOVIE ERROR] ${job.error}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Feature Film Factory: one concept -> an 18-scene, 90-minute feature.
+// Each scene is rendered alone and lands in the Staging Vault for review; the
+// approved scenes are stitched with `ffmpeg -c copy` at the end.
+// ---------------------------------------------------------------------------
+const featureDb = new FactoryDb();
+const featureFactory = new FeatureFactory({
+  // Every scene is a real ComfyUI render. When ComfyUI cannot render the shot
+  // (unreachable, no video workflow) the scene fails with AI_UNAVAILABLE; the
+  // factory never fabricates a placeholder clip.
+  renderScene: async ({ scene, index, onStage }) => {
+    const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS, onStage });
+    return { data: result.data, seconds: result.seconds, voiced: result.voiced };
+  },
+  ffmpegAvailable,
+  // Local SQLite store for MovieJobs and SceneJobs (factory.db).
+  db: featureDb,
+});
+
+function featureView(job: ReturnType<FeatureFactory['create']>) {
+  return {
+    ...job,
+    totalSeconds: FEATURE_TOTAL_SECONDS,
+    filmClock: filmClock(job.renderedSeconds),
+    totalClock: filmClock(FEATURE_TOTAL_SECONDS),
+  };
+}
+
+app.get('/api/direk/feature/status', async (req: Request, res: Response) => {
+  const id = typeof req.query.id === 'string' ? req.query.id : '';
+  const job = id ? featureFactory.refresh(id) : featureFactory.latest();
+  const backends = narrationBackends();
+  const pilot = await pilotStatus();
+  res.json({
+    available: true,
+    scenes: FEATURE_SCENES,
+    scene_seconds: FEATURE_SCENE_SECONDS,
+    total_seconds: FEATURE_TOTAL_SECONDS,
+    total_clock: filmClock(FEATURE_TOTAL_SECONDS),
+    ratings: RATINGS,
+    rating_labels: RATING_LABELS,
+    formats: FORMATS,
+    narration_order: backends.order,
+    ffmpeg: Boolean(ffmpegPath()),
+    pilot: {
+      configured: pilot.configured,
+      reachable: pilot.reachable,
+      url: pilot.url,
+      detail: pilot.detail,
+      preferred: pilot.preferred,
+      local: pilot.local,
+    },
+    job: job ? featureView(job) : null,
+  });
+});
+
+app.post('/api/direk/feature/create', async (req: Request, res: Response) => {
+  const body = req.body as {
+    brief?: string; title?: string; genre?: string; rating?: string; format?: string; mood?: string;
+  };
+  const brief = typeof body.brief === 'string' ? body.brief.trim() : '';
+  if (!brief) {
+    res.status(400).json({ error: 'Kailangan ng brief (isang pangungusap na ideya).' });
+    return;
+  }
+  const rating = (RATINGS as readonly string[]).includes(String(body.rating)) ? (body.rating as Rating) : undefined;
+  const format = (FORMATS as readonly string[]).includes(String(body.format)) ? (body.format as FilmFormat) : undefined;
+  const mood = (MOODS as string[]).includes(String(body.mood)) ? (body.mood as Mood) : undefined;
+  const opts: ConceptOptions = { brief, title: body.title, genre: body.genre, rating, format, mood };
+  const job = featureFactory.create(opts);
+
+  // A richer breakdown from a text model when one is available; the built-in
+  // 18-beat structure stands in when there is none.
+  try {
+    const raw = await generateText(breakdownPrompt(job.concept), [{ role: 'user', content: brief }], {
+      json: true, temperature: 0.9, maxTokens: 8192,
+    });
+    const parsed = parseBreakdown(raw);
+    if (parsed) featureFactory.applyBreakdown(job.id, parsed);
+  } catch (error: any) {
+    broadcastThought(`[FILM] Walang text model (${error?.message || 'error'}) — built-in 18-beat breakdown ang gagamitin.`);
+  }
+  broadcastThought(`[FILM] ${factorySummary(job)}`);
+  res.status(201).json({ job: featureView(job) });
+});
+
+// ---------------------------------------------------------------------------
+// Kaggle Pilot bridge: the external cloud worker (Qwen 2.5 3B on Kaggle) writes
+// the screenplay, the character bible and the 18-scene breakdown. It is reached
+// over a Cloudflare tunnel (KAGGLE_PILOT_URL). When the worker is down the call
+// answers an honest 503 PILOT_UNAVAILABLE — the factory never invents a script.
+// ---------------------------------------------------------------------------
+function pilotUnavailableBody(detail: string) {
+  return {
+    error: `Walang Kaggle Pilot. ${detail}`,
+    code: PILOT_UNAVAILABLE,
+    model: PILOT_MODEL,
+    detail,
+  };
+}
+
+app.get('/api/direk/feature/pilot', async (_req: Request, res: Response) => {
+  const status = await pilotStatus();
+  res.json(status);
+});
+
+app.post('/api/direk/feature/pilot', async (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : '';
+  const job = id ? featureFactory.get(id) : undefined;
+  if (!job) {
+    res.status(404).json({ error: 'Walang ganoong pelikula. Gumawa muna ng concept.' });
+    return;
+  }
+  const brief = job.concept.brief;
+  try {
+    broadcastThought(`[PILOT] Hinihingi ang script (Kaggle, o local Ollama kung wala)…`);
+    const result = await writeScreenplay(brief);
+    const updated = featureFactory.applyScript(job.id, result.script, {
+      bible: result.bible,
+      scenes: result.scenes ? { scenes: result.scenes } : undefined,
+    })!;
+    broadcastThought(`[PILOT] Script + ${result.scenes?.length ?? 0} eksena mula sa ${result.model}, nai-save sa SQLite.`);
+    res.json({
+      job: featureView(updated),
+      script_chars: result.script.length,
+      bible: Boolean(result.bible),
+      scenes: updated.scenes.length,
+      source: result.source,
+      model: result.model,
+      pilot: await pilotStatus(),
+    });
+  } catch (error: any) {
+    const detail = error instanceof PilotUnavailable ? error.detail : error?.message || 'error';
+    broadcastThought(`[PILOT] Hindi available: ${detail}`);
+    res.status(503).json(pilotUnavailableBody(detail));
+  }
+});
+
+app.post('/api/direk/feature/start', async (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : '';
+  const job = id ? featureFactory.get(id) : undefined;
+  if (!job) {
+    res.status(404).json({ error: 'Walang ganoong pelikula. Gumawa muna ng concept.' });
+    return;
+  }
+
+  // Step 1 — the screenplay. START BATCH asks the Kaggle Pilot (T3 heavy
+  // batch) for the 18-scene script and stores it in SQLite; when Kaggle is
+  // unset or down it falls back to the local Ollama (T1, real time). A Pilot
+  // that is expected (configured, or a reachable local model) but fails is a
+  // real failure, so this answers 503 PILOT_UNAVAILABLE rather than quietly
+  // switching sources. With no Pilot at all, the built-in 18-beat plan is used
+  // so the factory still runs offline.
+  try {
+    broadcastThought(`[PILOT] Hinihingi ang 18-scene script (Kaggle, o local Ollama kung wala)…`);
+    const result = await writeScreenplay(job.concept.brief);
+    featureFactory.applyScript(job.id, result.script, {
+      bible: result.bible,
+      scenes: result.scenes ? { scenes: result.scenes } : undefined,
+    });
+    broadcastThought(`[PILOT] Script + ${result.scenes?.length ?? 0} eksena mula sa ${result.model}, nai-save sa SQLite.`);
+  } catch (error: any) {
+    const detail = error instanceof PilotUnavailable ? error.detail : error?.message || 'error';
+    const status = await pilotStatus();
+    if (status.configured || status.local.reachable) {
+      broadcastThought(`[PILOT] Hindi available: ${detail}`);
+      res.status(503).json(pilotUnavailableBody(detail));
+      return;
+    }
+    broadcastThought(`[PILOT] Walang Pilot (Kaggle o local Ollama) — built-in 18-beat breakdown ang gagamitin.`);
+  }
+
+  // Step 2 — a real video backend, or every scene would fail. Answer 503 up
+  // front instead of starting 18 doomed renders.
+  if (!(await videoBackendReady())) {
+    broadcastThought(`[FILM] Batch START tinanggihan: walang video backend.`);
+    res.status(503).json({
+      ...aiUnavailable('comfyui', videoBackendDetail(), 'Walang video backend'),
+      route: classifyTask('video_render'),
+    });
+    return;
+  }
+  const started = featureFactory.start(id)!;
+  broadcastThought(`[FILM] Batch START · ${started.concept.title} · ${started.total} eksena`);
+  res.json({ job: featureView(started), pilot: await pilotStatus() });
+});
+
+app.post('/api/direk/feature/pause', (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : '';
+  const job = id ? featureFactory.pause(id) : undefined;
+  if (!job) {
+    res.status(404).json({ error: 'Walang ganoong pelikula.' });
+    return;
+  }
+  broadcastThought(`[FILM] Batch PAUSE · ${job.concept.title}`);
+  res.json({ job: featureView(job) });
+});
+
+app.post('/api/direk/feature/rerender', async (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : '';
+  const index = Number(req.body?.scene);
+  const job = id ? await featureFactory.rerender(id, index) : undefined;
+  if (!job) {
+    res.status(404).json({ error: 'Walang ganoong pelikula o eksena.' });
+    return;
+  }
+  res.json({ job: featureView(job) });
+});
+
+app.post('/api/direk/feature/assemble', async (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : '';
+  const job = id ? featureFactory.get(id) : undefined;
+  if (!job) {
+    res.status(404).json({ error: 'Walang ganoong pelikula.' });
+    return;
+  }
+  try {
+    const film = await featureFactory.assemble(job);
+    if (!film) {
+      res.status(400).json({ error: 'Kailangan ng hindi bababa sa dalawang aprubadong eksena.' });
+      return;
+    }
+    broadcastThought(`[FILM] Naidugtong: ${film.assetName} · ${filmClock(film.seconds)}`);
+    res.json({ job: featureView(job), film });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'Hindi naidugtong ang pelikula.' });
+  }
+});
+
+// Stitch one film by id: gather its 18 approved scenes and join them with
+// `ffmpeg -c copy`. Works even if the in-memory job is gone, by reading the
+// scene list back from factory.db.
+app.post('/api/direk/feature/stitch', async (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : typeof req.body?.movie_id === 'string' ? req.body.movie_id : '';
+  if (!id) {
+    res.status(400).json({ error: 'Kailangan ang movie id.' });
+    return;
+  }
+  try {
+    const film = await featureFactory.stitchMovie(id);
+    if (!film) {
+      res.status(400).json({ error: 'Kailangan ng hindi bababa sa dalawang aprubadong eksena.' });
+      return;
+    }
+    broadcastThought(`[FILM] stitchMovie(${id}) → ${film.assetName} · ${filmClock(film.seconds)}`);
+    const job = featureFactory.get(id);
+    res.json({ movie_id: id, film, job: job ? featureView(job) : null });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'Hindi naidugtong ang pelikula.' });
+  }
+});
+
+// Local factory database: which films and scenes are stored.
+app.get('/api/direk/factory/db', (_req: Request, res: Response) => {
+  const movies = featureDb.list();
+  res.json({
+    database: factoryDbPath(),
+    renders_dir: rendersDir(),
+    movies: movies.length,
+    scenes: movies.reduce((n, m) => n + featureDb.sceneCount(m.id), 0),
+    jobs: movies.map(m => ({ id: m.id, title: m.concept.title, status: m.status, scenes: m.scenes.length })),
+  });
 });
 
 // Box-office market intelligence (real stats, no model needed).
@@ -1101,7 +1454,7 @@ function parseLoraBody(body: LoraRequestBody) {
 // ComfyUI (local, free) is preferred; the paid Gemini image model is a
 // fallback. With neither, image features are honestly reported as unavailable.
 // ---------------------------------------------------------------------------
-type ImageBackend = 'comfyui' | 'gemini' | 'none';
+type ImageBackend = 'comfyui' | 'gemini' | 'pollinations' | 'none';
 
 let comfyOk: { ok: boolean; at: number } | null = null;
 
@@ -1114,7 +1467,37 @@ async function resolveImageBackend(): Promise<ImageBackend> {
     if (comfyOk.ok) return 'comfyui';
   }
   if (process.env.GEMINI_API_KEY && IMAGE_MODEL_FREE) return 'gemini';
+  // Pollinations needs no key and no GPU, so it is the free default.
+  if (process.env.POLLINATIONS_DISABLE !== '1') return 'pollinations';
   return 'none';
+}
+
+/**
+ * Generate one image with Pollinations (free, no key, no GPU needed).
+ *
+ * The free tier allows one image every 45 seconds per IP and answers 402 with
+ * the wait it wants, so honour that wait and retry instead of losing the image.
+ */
+async function generatePollinationsImage(prompt: string, seed = 0): Promise<Buffer> {
+  const url = `${pollinationsUrl()}/prompt/${encodeURIComponent(prompt)}` +
+    `?width=1024&height=1024&nologo=true&seed=${seed}`;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(180000) });
+    if (res.ok) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 1024) throw new Error('Pollinations returned an empty image');
+      return buf;
+    }
+    if (res.status === 402) {
+      const body = await res.text().catch(() => '');
+      const wait = Number(/retry after (\d+)/i.exec(body)?.[1] ?? 45) + 2;
+      broadcastThought(`[DIREK] Pollinations rate limit — hinihintay ${wait}s...`);
+      await new Promise(r => setTimeout(r, wait * 1000));
+      continue;
+    }
+    throw new Error(`Pollinations returned ${res.status}`);
+  }
+  throw new Error('Pollinations: naabot ang rate limit');
 }
 
 /** Generate one image with the paid Gemini image model. */
@@ -1135,17 +1518,20 @@ function generateLoraImage(
   prompt: string,
   backend: ImageBackend,
   lora?: LoraChoice,
+  seed = 0,
 ): Promise<Buffer | null> {
-  // The LoRA only applies to ComfyUI; the Gemini path has no LoRA concept.
-  return backend === 'comfyui'
-    ? generateWithComfy(prompt, { lora })
-    : generateGeminiImage(prompt);
+  // The LoRA only applies to ComfyUI; the hosted paths have no LoRA concept.
+  // Every path ends in toPng: the hosted backends answer with a JPEG, and a
+  // JPEG under a `.png` name is not a usable LoRA training image.
+  if (backend === 'comfyui') return generateWithComfy(prompt, { lora });
+  if (backend === 'pollinations') return generatePollinationsImage(prompt, seed).then(toPng);
+  return generateGeminiImage(prompt).then(png => (png ? toPng(png) : null));
 }
 
 function noImageNote(): string {
   return (
     `Walang larawan: walang image backend. Magpatakbo ng ComfyUI (COMFYUI_URL=${comfyUrl()}) ` +
-    `para sa libreng generation, o mag-enable ng billing para sa Gemini image model.`
+    `para sa libreng local na generation, o hayaan ang libreng Pollinations backend.`
   );
 }
 
@@ -1158,6 +1544,11 @@ app.post('/api/direk/lora/plan', async (req: Request, res: Response) => {
   }
   const { plan } = parsed;
   const backend = await resolveImageBackend();
+  // Where this set's pieces are routed: the text half is T1, the images T2, and
+  // a training run is T2 or T3 depending on its size.
+  const textRoute = classifyTask('lora_text');
+  const imageRoute = classifyTask('image_generation');
+  const trainRoute = classifyLoraTraining({ samples: plan.brief.samples.length });
   res.json({
     trigger: plan.brief.trigger,
     genre: plan.brief.genre,
@@ -1171,6 +1562,7 @@ app.post('/api/direk/lora/plan', async (req: Request, res: Response) => {
     images_available: backend !== 'none',
     image_backend: backend,
     max_images: MAX_LORA_IMAGES,
+    routing: { text: textRoute, images: imageRoute, training: trainRoute },
   });
 });
 
@@ -1223,11 +1615,13 @@ async function generateLoraImages(
     broadcastThought(`[DIREK] LoRA set: ${targets.length} images via ${backend}...`);
     const names = targets.map((_s, i) => numberedName(plan.brief.trigger, i));
     // ComfyUI serialises on one GPU, so keep it to one job at a time.
-    const limit = backend === 'comfyui' ? 1 : 3;
+    // ComfyUI serialises on one GPU and Pollinations allows one image per IP
+    // every 45s, so both run one at a time; Gemini can take a few at once.
+    const limit = backend === 'gemini' ? 3 : 1;
     await mapLimited(targets, limit, async (sample, i) => {
       const name = names[i];
       try {
-        const png = await generateLoraImage(sample.prompt, backend, lora);
+        const png = await generateLoraImage(sample.prompt, backend, lora, i + 1);
         if (png) images.set(name, png);
         else skipped.push(name);
       } catch (error: any) {
@@ -1340,6 +1734,30 @@ app.get('/api/direk/assets', (_req: Request, res: Response) => {
   res.json({ assets: allAssets() });
 });
 
+// Approve or reject a rendered asset in the Staging Vault. The decision is
+// written back to the asset's sidecar, so it survives a restart and the
+// Published view keeps only what was really approved.
+app.post('/api/direk/assets/review', (req: Request, res: Response) => {
+  const body = req.body as { id?: string; name?: string; assetId?: string; action?: string };
+  const target = body.id || body.assetId || body.name;
+  const action = body.action;
+  if (!target || !['approve', 'reject', 'pending'].includes(String(action))) {
+    res.status(400).json({
+      error: 'Kailangan ang asset id (o name) at action: "approve" | "reject" | "pending".',
+    });
+    return;
+  }
+  const status: ReviewStatus =
+    action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'pending';
+  const updated = reviewAsset(target, status);
+  if (!updated) {
+    res.status(404).json({ error: `Hindi mahanap ang asset na '${target}'.` });
+    return;
+  }
+  broadcastThought(`[RENDER VAULT] ${updated.name} → ${status}`);
+  res.json({ ok: true, asset: updated });
+});
+
 app.get('/api/direk/assets/:name/download', (req: Request, res: Response) => {
   const full = assetPath(String(req.params.name));
   if (!full) {
@@ -1347,6 +1765,18 @@ app.get('/api/direk/assets/:name/download', (req: Request, res: Response) => {
     return;
   }
   res.download(full);
+});
+
+// Local render store: finished .mp4 files (scenes and stitched features) are
+// served straight from `public/renders/` so the browser can play or download
+// them without going through the asset vault.
+app.get('/renders/:name', (req: Request, res: Response) => {
+  const full = renderPath(String(req.params.name));
+  if (!full) {
+    res.status(404).json({ error: 'Hindi mahanap ang render.' });
+    return;
+  }
+  res.sendFile(full);
 });
 
 // Google Drive API v3: status, consent, and the callback Google redirects to.
@@ -1469,6 +1899,27 @@ app.post('/api/direk/train/start', async (req: Request, res: Response) => {
   }
   const { plan } = parsed;
   const lora = parseLoraChoice(body);
+
+  // T2/T3: classify the training run from its shape. A massive run is T3 and is
+  // offloaded; a small one stays on the local GPU.
+  const trainingRoute = classifyLoraTraining({
+    samples: plan.brief.samples.length,
+    resolution: Number(body.resolution) || 1024,
+    networkDim: Number(body.networkDim) || 32,
+    epochs: Number(body.epochs) || 10,
+  });
+  broadcastThought(`[ROUTER] ${trainingRoute.task} → ${trainingRoute.tier} (${trainingRoute.placement})`);
+  if (trainingRoute.placement === 'cloud' && !t3LocalAllowed()) {
+    const offload = route_to_cloud(trainingRoute.task, { trigger: plan.brief.trigger });
+    res.status(503).json({
+      error: offload.note,
+      code: 'T3_OFFLOAD',
+      route: trainingRoute,
+      offload,
+    });
+    return;
+  }
+
   const { images } = await generateLoraImages(plan, body.images !== false, lora);
   if (images.size === 0) {
     res.status(400).json({
