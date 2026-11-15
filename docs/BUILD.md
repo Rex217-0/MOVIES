@@ -150,7 +150,8 @@ fetched from the network.
 | ComfyUI (image and video) | `http://127.0.0.1:8188` | a local GPU |
 | Pollinations (image) | free | nothing |
 | fal.ai Wan 2.2 (video) | `fal-ai/wan/v2.2-a14b/text-to-video` | `FAL_KEY` |
-| kohya_ss (LoRA) | — | `KOHYA_DIR` and `KOHYA_BASE_MODEL` |
+| kohya_ss (LoRA, local) | `TRAIN_BACKEND=local` | `KOHYA_DIR` and `KOHYA_BASE_MODEL` |
+| Colab (LoRA, remote) | `TRAIN_BACKEND=colab` | `COLAB_DRIVE_ROOT` or `COLAB_DRIVE_FOLDER_ID`, and the notebook run by hand |
 | Fish Audio (speech) | — | `FISH_AUDIO_API_KEY` (a reference id is optional) |
 | MMS VITS Tagalog (speech) | `facebook/mms-tts-tgl` | Python with transformers, torch, soundfile |
 | Piper (speech) | — | `TTS_PIPER_VOICE` (a `.onnx` file; English only) |
@@ -178,6 +179,8 @@ See `.env.example` for the annotated list. The groups are:
   `COMFYUI_VIDEO_WORKFLOW`, `COMFYUI_LORAS_DIR`, `COMFYUI_TIMEOUT_MS`.
 - **kohya** — `KOHYA_DIR`, `KOHYA_BASE_MODEL`, `KOHYA_PYTHON`, `KOHYA_ACCELERATE`,
   `KOHYA_OUTPUT_DIR`.
+- **Colab training** — `TRAIN_BACKEND` (`local` or `colab`), `COLAB_DRIVE_ROOT`,
+  `COLAB_DRIVE_FOLDER_ID`, `COLAB_POLL_MS`.
 - **Routing** — `T3_ALLOW_LOCAL`, `CLOUD_T3_URL`.
 - **fal.ai** — `FAL_KEY`, `WAN_VIDEO_ENDPOINT`, `OPENCUT_ENDPOINT`.
 - **Speech** — `FISH_AUDIO_API_KEY`, `FISH_AUDIO_REFERENCE_ID`, `TTS_ORDER`,
@@ -194,11 +197,12 @@ See `.env.example` for the annotated list. The groups are:
 
 ## 11. Tests
 
-238 tests across 23 files. The largest are `movie.test.ts` (27),
-`taskRouter.test.ts` (17), `pilotService.test.ts` (17),
-`server.deployment.test.ts` (16), `direk.test.ts` (14), `rules.test.ts` (14),
-`factory.test.ts` (13), `comfyui.test.ts` (11), `lora.test.ts` (11),
-`featureFilm.test.ts` (11) and `assets.test.ts` (10).
+256 tests across 24 files. The largest are `movie.test.ts` (27),
+`trainBackend.test.ts` (17), `taskRouter.test.ts` (17),
+`pilotService.test.ts` (17), `server.deployment.test.ts` (16),
+`direk.test.ts` (14), `rules.test.ts` (14), `factory.test.ts` (13),
+`comfyui.test.ts` (11), `lora.test.ts` (11), `featureFilm.test.ts` (11) and
+`assets.test.ts` (10).
 
 ## 12. Honesty rules
 
