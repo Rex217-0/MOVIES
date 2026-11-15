@@ -33,7 +33,7 @@ export ANDROID_HOME=/path/to/android-sdk
 sdkmanager "platforms;android-34" "build-tools;35.0.0"
 
 # 2. Build the signed APK
-bash android/build.sh
+bash android/build.sh   # (Windows: powershell -ExecutionPolicy Bypass -File android\build.ps1)
 # -> android/movie-creator.apk
 ```
 
