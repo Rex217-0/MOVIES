@@ -137,9 +137,14 @@ server refuses to start in production without it.
 | `imdb_movies.csv` | 999 |
 | `filipino_movies.csv` | 469 |
 | `boxoffice/*.csv` | 9 files |
+| `kaggle/animated-tv/tv_movie_animation.csv` | 22,370 |
+| `kaggle/the-movies-dataset/movies_metadata.csv` | 45,387 (79 split records skipped) |
 
-The catalog searches about 14,658 titles and is read at startup. Nothing is
-fetched from the network.
+The catalog searches 82,415 titles (14,658 before the two Kaggle metadata files)
+and is read at startup. Nothing is fetched from the network. Each source keeps
+its own tag, so a row's origin is visible in the output; the Kaggle rows are
+appended and never overwrite an existing title. Provenance, licenses and hashes
+are in `data/kaggle/SOURCES.md`; dataset status is in `docs/datasets.md`.
 
 ## 8. Integrations
 
@@ -194,11 +199,11 @@ See `.env.example` for the annotated list. The groups are:
 
 ## 11. Tests
 
-238 tests across 23 files. The largest are `movie.test.ts` (27),
+248 tests across 24 files. The largest are `movie.test.ts` (27),
 `taskRouter.test.ts` (17), `pilotService.test.ts` (17),
 `server.deployment.test.ts` (16), `direk.test.ts` (14), `rules.test.ts` (14),
 `factory.test.ts` (13), `comfyui.test.ts` (11), `lora.test.ts` (11),
-`featureFilm.test.ts` (11) and `assets.test.ts` (10).
+`featureFilm.test.ts` (11), `assets.test.ts` (10) and `kaggle.test.ts` (9).
 
 ## 12. Honesty rules
 
