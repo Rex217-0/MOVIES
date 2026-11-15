@@ -39,6 +39,17 @@ export interface OllamaStatus {
   error?: string;
 }
 
+/**
+ * Are these the same Ollama model? An untagged name means `:latest`, so
+ * `llama3` and `llama3:latest` match. A different tag (`qwen2.5:3b` vs
+ * `qwen2.5:7b`) is a different model and must NOT match: reporting a pulled 3B
+ * as satisfying a request for 7B makes the status lie, and the call then fails.
+ */
+function sameModel(a: string, b: string): boolean {
+  const withLatest = (s: string) => (s.includes(':') ? s : `${s}:latest`);
+  return withLatest(a) === withLatest(b);
+}
+
 /** Is Ollama up, and is the chosen model pulled? */
 export async function ollamaStatus(): Promise<OllamaStatus> {
   const url = ollamaUrl();
@@ -53,8 +64,7 @@ export async function ollamaStatus(): Promise<OllamaStatus> {
     }
     const data = (await res.json()) as { models?: { name: string }[] };
     const models = (data.models || []).map(m => m.name);
-    const base = model.split(':')[0];
-    const present = models.some(m => m === model || m.split(':')[0] === base);
+    const present = models.some(m => sameModel(m, model));
     return { reachable: true, url, model, models, model_present: present };
   } catch (error: any) {
     return { reachable: false, url, model, models: [], model_present: false, error: error?.message || 'Ollama unreachable' };

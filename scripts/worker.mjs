@@ -20,8 +20,25 @@ import http from 'node:http';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createRequire } from 'node:module';
 
 const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
+
+/**
+ * The ffmpeg binary. Prefer the one bundled with the app (the same static build
+ * the coordinator uses), then PATH. Without this a worker on a machine that has
+ * no system ffmpeg reports `seconds: 0`, and the coordinator's verification
+ * rejects a real render as if it were a stub.
+ */
+const FFMPEG_BIN = (() => {
+  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+  try {
+    return require('@ffmpeg-installer/ffmpeg').path;
+  } catch {
+    return 'ffmpeg';
+  }
+})();
 
 const COORDINATOR_URL = (process.env.COORDINATOR_URL || '').replace(/\/+$/, '');
 const WORKER_ID = process.env.WORKER_ID || `worker-${process.pid}`;
@@ -127,7 +144,7 @@ function firstOutputFile(outputs) {
 /** Probe a media file with ffmpeg and return its duration in seconds. */
 async function probeSeconds(file) {
   try {
-    const { stderr } = await execFileAsync('ffmpeg', ['-hide_banner', '-i', file], { maxBuffer: 8 * 1024 * 1024 });
+    const { stderr } = await execFileAsync(FFMPEG_BIN, ['-hide_banner', '-i', file], { maxBuffer: 8 * 1024 * 1024 });
     return parseDuration(String(stderr || ''));
   } catch (error) {
     // ffmpeg exits non-zero when there is no output file; the report is on stderr.
