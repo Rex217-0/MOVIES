@@ -857,7 +857,7 @@ export async function renderFeatureScene(
     // No backend -> no scene.
     stage('scripting');
     if (!(await videoBackendReady())) {
-      throw new VideoBackendUnavailable(videoBackendDetail());
+      throw new VideoBackendUnavailable(await videoBackendDetail());
     }
     stage('rendering');
     const prompt = buildVeoStylePrompt(`${scene.heading}. ${scene.visual}`);

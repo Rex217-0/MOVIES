@@ -615,11 +615,16 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
 
   // Video renders on the engine chosen by PREFERRED_RENDER_ENGINE: cloud-first
   // routes to Wan 2.2 on fal.ai, local-first tries the ComfyUI GPU (Server-2)
-  // then falls back to Wan 2.2.
+  // then falls back to Wan 2.2, and `motion` is the free still-plus-ffmpeg path.
   const videoPlan = planExecution('video_render', { prompt });
   broadcastThought(`[ROUTER] video_render → ${videoPlan.route.tier} (${videoPlan.run})`);
   const preferred = preferredRenderEngine();
-  broadcastThought(`[ROUTER] PREFERRED_RENDER_ENGINE=${preferred} → ${preferred === 'fal' ? 'Wan 2.2 on fal.ai (cloud-first, ComfyUI skipped)' : 'local ComfyUI first, then Wan 2.2'}`);
+  const preferredNote = preferred === 'fal'
+    ? 'Wan 2.2 on fal.ai (cloud-first, ComfyUI skipped)'
+    : preferred === 'motion'
+      ? 'libreng motion engine (free image + ffmpeg, walang gastos)'
+      : 'local ComfyUI first, then Wan 2.2';
+  broadcastThought(`[ROUTER] PREFERRED_RENDER_ENGINE=${preferred} → ${preferredNote}`);
 
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
@@ -629,6 +634,7 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
       negative: buildVeoStyleNegative(),
       aspectRatio: validAspect,
       resolution,
+      seconds: Number.isFinite(Number(duration)) && Number(duration) > 0 ? Number(duration) : undefined,
     });
     if (editNote) broadcastThought(`[VIDEO EDIT] ${editNote}`);
     const elapsedMs = Date.now() - startTime;
@@ -1510,7 +1516,7 @@ app.post('/api/direk/feature/start', async (req: Request, res: Response) => {
   if (!(await videoBackendReady())) {
     broadcastThought(`[FILM] Batch START tinanggihan: walang video backend.`);
     res.status(503).json({
-      ...aiUnavailable('comfyui', videoBackendDetail(), 'Walang video backend'),
+      ...aiUnavailable('comfyui', await videoBackendDetail(), 'Walang video backend'),
       route: classifyTask('video_render'),
     });
     return;

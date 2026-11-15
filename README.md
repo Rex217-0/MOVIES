@@ -316,6 +316,27 @@ set, `/api/pilot/video/generate` renders there and saves the result into the
 Render Vault. Without it, the endpoint honestly returns `503` and tells you to
 run ComfyUI rather than returning a stock clip.
 
+### The three render engines, and what each one costs
+
+`PREFERRED_RENDER_ENGINE` chooses the engine. The honest trade-offs:
+
+| Engine | Cost | What it needs | What it makes |
+| --- | --- | --- | --- |
+| `fal` | **Paid** per call | `FAL_KEY` (fal.ai account) | Wan 2.2 text-to-video: real motion, prompt-driven |
+| `comfyui` | **Free** | A GPU and `COMFYUI_VIDEO_WORKFLOW` (AnimateDiff/SVD) | Real motion on your own hardware |
+| `motion` | **Free, no account** | Nothing but the app — a free still (ComfyUI, else Pollinations) animated by the bundled ffmpeg | A real MP4: a slow ken-burns pan/zoom over a generated still |
+
+`motion` is the no-cost fallback when you have no `FAL_KEY` and no video
+workflow: it is **not** motion synthesis like Wan, it is one still with camera
+movement, so it is slower and less dynamic — but it is a genuine MP4, produced
+with no cloud spend and no account. Pollinations needs no key, but it is a free
+community service with no uptime guarantee, so it can rate-limit or answer
+`402` under load; the engine then reports that honestly instead of faking a clip.
+
+```
+PREFERRED_RENDER_ENGINE=motion   # no cost, no key, no GPU
+```
+
 ## Feature Film Factory (18 scenes → one 90-minute film)
 
 One brief in, an 18-scene feature out. Each scene is a full five minutes and is
@@ -335,8 +356,10 @@ GET  /api/direk/feature/pilot     the Dual-Pilot status (Kaggle + local Ollama)
 POST /api/direk/feature/pilot     fetch the script + bible + 18-scene breakdown
 ```
 
-A scene needs a real video backend: ComfyUI reachable and `COMFYUI_VIDEO_WORKFLOW`
-set. When it is not, `start` answers `503 AI_UNAVAILABLE` up front and a scene
+A scene needs a real video backend: with `PREFERRED_RENDER_ENGINE=comfyui`, that
+means ComfyUI reachable and `COMFYUI_VIDEO_WORKFLOW` set (or a `FAL_KEY` for the
+Wan fallback); with `motion`, the free still-plus-ffmpeg engine is enough. When
+no engine can render, `start` answers `503 AI_UNAVAILABLE` up front and a scene
 that fails mid-batch is marked **failed** — the factory never writes a
 placeholder clip to pretend a scene rendered.
 
