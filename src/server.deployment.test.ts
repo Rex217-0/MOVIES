@@ -61,12 +61,12 @@ function startServer(env: Record<string, string>) {
   return { child, port, assetsDir, rendersDir };
 }
 
-async function waitForServer(port: number) {
+async function waitForServer(port: number, probe = '/api/health') {
   // A cold Vite start can re-optimise dependencies and take a while, so allow
   // a generous ceiling.
   for (let i = 0; i < 300; i++) {
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/api/health`);
+      const res = await fetch(`http://127.0.0.1:${port}${probe}`);
       if (res.ok) return;
     } catch {
       /* not up yet */
@@ -720,4 +720,45 @@ test('stitchMovie joins the approved scenes and serves the file from /renders/',
   const served = await fetch(`http://127.0.0.1:${port}${body.film.renderUrl}`);
   assert.equal(served.status, 200);
   assert.ok((await served.arrayBuffer()).byteLength > 0);
+});
+
+// ---------------------------------------------------------------------------
+// The Android download. The page and the APK must be reachable without a token
+// (the phone has none yet), and the APK must be the real, signed file.
+// ---------------------------------------------------------------------------
+test('the Android download page and APK are public and real', async (t) => {
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: 'secret-token' });
+  t.after(() => child.kill());
+  // /api/health needs the bearer token, and this test deliberately has none for
+  // the download, so probe a public route instead.
+  await waitForServer(port, '/android');
+
+  // No Authorization header on purpose: this is what the phone does first.
+  const page = await fetch(`http://127.0.0.1:${port}/android`);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.match(html, /Movie Creator para sa Android/);
+
+  const apkPath = path.join(repoRoot, 'android', 'movie-creator.apk');
+  if (!fs.existsSync(apkPath)) {
+    // The APK is a build artifact (git-ignored). When it is absent the page must
+    // say so honestly instead of offering a broken download.
+    assert.match(html, /Wala pa ang APK/);
+    const missing = await fetch(`http://127.0.0.1:${port}/android/movie-creator.apk`);
+    assert.equal(missing.status, 404);
+    return;
+  }
+
+  assert.match(html, /I-download ang APK/);
+  const dl = await fetch(`http://127.0.0.1:${port}/android/movie-creator.apk`);
+  assert.equal(dl.status, 200);
+  assert.equal(dl.headers.get('content-type'), 'application/vnd.android.package-archive');
+  assert.match(dl.headers.get('content-disposition') || '', /movie-creator\.apk/);
+  // It is the real file, byte for byte.
+  const downloaded = Buffer.from(await dl.arrayBuffer());
+  const onDisk = fs.readFileSync(apkPath);
+  assert.ok(downloaded.equals(onDisk), 'served APK differs from the built file');
+  // A valid APK is a ZIP, so it starts with "PK" and carries a manifest.
+  assert.equal(downloaded.subarray(0, 2).toString('latin1'), 'PK');
+  assert.ok(downloaded.includes(Buffer.from('AndroidManifest.xml')));
 });

@@ -16,3 +16,9 @@ factory.db
 factory.db-shm
 factory.db-wal
 gdrive.token.json
+
+# Android build artifacts
+android/build/
+android/*.keystore
+android/movie-creator.apk
+android/*.idsig
