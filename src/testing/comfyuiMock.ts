@@ -52,7 +52,9 @@ export function writeVideoWorkflow(dir: string): string {
 export function startMockComfyUI(opts: { mp4?: Buffer } = {}) {
   const mp4 = opts.mp4 ?? tinyMp4();
   let counter = 0;
+  let requests = 0;
   const server = http.createServer((req, res) => {
+    requests += 1;
     const url = req.url || '';
     if (url.startsWith('/system_stats')) {
       res.setHeader('Content-Type', 'application/json');
@@ -84,12 +86,13 @@ export function startMockComfyUI(opts: { mp4?: Buffer } = {}) {
     res.statusCode = 404;
     res.end('{}');
   });
-  return new Promise<{ url: string; close: () => Promise<void> }>(resolve => {
+  return new Promise<{ url: string; close: () => Promise<void>; requests: () => number }>(resolve => {
     server.listen(0, '127.0.0.1', () => {
       const port = (server.address() as { port: number }).port;
       resolve({
         url: `http://127.0.0.1:${port}`,
         close: () => new Promise<void>(r => server.close(() => r())),
+        requests: () => requests,
       });
     });
   });

@@ -297,7 +297,9 @@ function comfyWorkflow(): string {
 /** Point a spawned server at a mock ComfyUI and keep scenes short. */
 function comfyEnv(mock: { url: string }, workflow: string): Record<string, string> {
   return {
-    // startServer disables ComfyUI by default; the mock needs it on.
+    // startServer disables ComfyUI by default; the mock needs it on, and the
+    // render router must be pinned to the local-first path for this test.
+    PREFERRED_RENDER_ENGINE: 'comfyui',
     COMFYUI_DISABLE: '',
     COMFYUI_URL: mock.url,
     COMFYUI_VIDEO_WORKFLOW: workflow,

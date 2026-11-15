@@ -13,6 +13,7 @@ import { startMockComfyUI, writeVideoWorkflow, tinyMp4 } from '../testing/comfyu
 const ENV_KEYS = [
   'FAL_KEY', 'WAN_VIDEO_ENDPOINT', 'OPENCUT_ENDPOINT',
   'COMFYUI_URL', 'COMFYUI_VIDEO_WORKFLOW', 'COMFYUI_DISABLE',
+  'PREFERRED_RENDER_ENGINE',
 ];
 
 /** Run `fn` with a clean slate for the video-related environment. */
@@ -88,6 +89,7 @@ test('the local ComfyUI is used first and Wan is never called', async (t) => {
   const workflow = writeVideoWorkflow(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-')));
 
   await withEnv({
+    PREFERRED_RENDER_ENGINE: 'comfyui',
     COMFYUI_URL: comfy.url,
     COMFYUI_VIDEO_WORKFLOW: workflow,
     FAL_KEY: 'fal-test-key',
@@ -96,6 +98,32 @@ test('the local ComfyUI is used first and Wan is never called', async (t) => {
     assert.equal(out.engine, 'comfyui');
     assert.ok(out.data.length > 1000, 'a real clip came back');
     assert.equal(calls.length, 0, 'Wan must not run when ComfyUI answers');
+  });
+});
+
+test('cloud-first (PREFERRED_RENDER_ENGINE=fal) skips ComfyUI and goes straight to Wan', async (t) => {
+  const clip = await startClipServer(tinyMp4());
+  t.after(() => clip.close());
+  const { fake, calls } = fakeFal(clip.url);
+  setFalClientForTests(fake);
+  t.after(() => setFalClientForTests(null));
+
+  // A ComfyUI that is up and configured: with fal preferred it must NOT be used.
+  const comfy = await startMockComfyUI();
+  t.after(() => comfy.close());
+  const workflow = writeVideoWorkflow(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-')));
+
+  await withEnv({
+    PREFERRED_RENDER_ENGINE: 'fal',
+    COMFYUI_URL: comfy.url,
+    COMFYUI_VIDEO_WORKFLOW: workflow,
+    FAL_KEY: 'fal-test-key',
+  }, async () => {
+    const out = await renderVideo({ prompt: 'isang bagyo', aspectRatio: '16:9', resolution: '720p' });
+    assert.equal(out.engine, 'wan', 'fal is primary, so Wan renders');
+    assert.equal(calls.length, 1, 'exactly one Wan call, no ComfyUI ping');
+    assert.equal(calls[0].endpoint, 'fal-ai/wan/v2.2-a14b/text-to-video');
+    assert.equal(comfy.requests(), 0, 'ComfyUI must not be pinged when fal is preferred');
   });
 });
 

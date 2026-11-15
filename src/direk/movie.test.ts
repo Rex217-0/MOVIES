@@ -280,14 +280,16 @@ test('renderFeatureScene makes one standalone clip at the scene length', async (
   t.after(mock.close);
   const workflowDir = fs.mkdtempSync(path.join(os.tmpdir(), 'comfy-wf-'));
   t.after(() => fs.rmSync(workflowDir, { recursive: true, force: true }));
-  const prev = { url: process.env.COMFYUI_URL, wf: process.env.COMFYUI_VIDEO_WORKFLOW, off: process.env.COMFYUI_DISABLE, tts: process.env.TTS_TAGALOG_DISABLE, ttsG: process.env.TTS_DISABLE };
+  const prev = { url: process.env.COMFYUI_URL, wf: process.env.COMFYUI_VIDEO_WORKFLOW, off: process.env.COMFYUI_DISABLE, tts: process.env.TTS_TAGALOG_DISABLE, ttsG: process.env.TTS_DISABLE, engine: process.env.PREFERRED_RENDER_ENGINE };
+  // Pin the local-first path: this test exercises the ComfyUI GPU render.
+  process.env.PREFERRED_RENDER_ENGINE = 'comfyui';
   process.env.COMFYUI_URL = mock.url;
   process.env.COMFYUI_VIDEO_WORKFLOW = writeVideoWorkflow(workflowDir);
   delete process.env.COMFYUI_DISABLE;
   process.env.TTS_TAGALOG_DISABLE = '1';
   process.env.TTS_DISABLE = '1';
   t.after(() => {
-    for (const [k, v] of Object.entries({ COMFYUI_URL: prev.url, COMFYUI_VIDEO_WORKFLOW: prev.wf, COMFYUI_DISABLE: prev.off, TTS_TAGALOG_DISABLE: prev.tts, TTS_DISABLE: prev.ttsG })) {
+    for (const [k, v] of Object.entries({ COMFYUI_URL: prev.url, COMFYUI_VIDEO_WORKFLOW: prev.wf, COMFYUI_DISABLE: prev.off, TTS_TAGALOG_DISABLE: prev.tts, TTS_DISABLE: prev.ttsG, PREFERRED_RENDER_ENGINE: prev.engine })) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
     }
   });
