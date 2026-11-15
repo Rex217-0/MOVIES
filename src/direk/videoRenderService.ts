@@ -12,8 +12,9 @@
  *                                    backend (ComfyUI, else Pollinations, which
  *                                    needs no key and no GPU) animated with
  *                                    ffmpeg. No cloud spend, no account.
- * Unset defaults to `fal`, so the factory is cloud-first until ComfyUI is live
- * on Server-2.
+ * Unset defaults to `comfyui`, the free local-first chain. The project rule is
+ * free-first: a fresh install must never reach a paid call by accident. Set
+ * `fal` explicitly to opt into cloud-first.
  *
  * ComfyUI has a master on/off switch (`comfyui_enabled` in the UI, which sets
  * `COMFYUI_DISABLE`). Turning it off never blocks a render: the free motion
@@ -48,14 +49,15 @@ export class VideoBackendUnavailable extends Error {
 export type PreferredRenderEngine = 'fal' | 'comfyui' | 'motion';
 
 /**
- * The PREFERRED_RENDER_ENGINE master switch. Cloud-first by default: an unset
- * or unrecognised value means `fal`.
+ * The PREFERRED_RENDER_ENGINE master switch. Free-first by default: an unset or
+ * unrecognised value means `comfyui`, whose chain ends in the free motion
+ * engine. Only an explicit `fal` routes to paid cloud.
  */
 export function preferredRenderEngine(): PreferredRenderEngine {
-  const raw = (process.env.PREFERRED_RENDER_ENGINE || 'fal').trim().toLowerCase();
-  if (raw === 'comfyui' || raw === 'comfy' || raw === 'local') return 'comfyui';
+  const raw = (process.env.PREFERRED_RENDER_ENGINE || 'comfyui').trim().toLowerCase();
+  if (raw === 'fal' || raw === 'cloud') return 'fal';
   if (raw === 'motion' || raw === 'free' || raw === 'nocost') return 'motion';
-  return 'fal';
+  return 'comfyui';
 }
 
 export interface VideoRenderInput {

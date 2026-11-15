@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { renderVideo, videoRenderReady, VideoBackendUnavailable } from './videoRenderService.ts';
+import { renderVideo, videoRenderReady, preferredRenderEngine, VideoBackendUnavailable } from './videoRenderService.ts';
 import {
   setFalClientForTests, normaliseAspect, normaliseResolution, type FalLike,
 } from './fal.ts';
@@ -139,6 +139,10 @@ test('Wan 2.2 on fal.ai is the fallback when ComfyUI cannot render', async (t) =
 
   await withEnv({
     COMFYUI_DISABLE: '1',
+    // The free engines come before Wan in the default chain, so switch them off
+    // to prove Wan is reached as the last-resort fallback.
+    POLLINATIONS_DISABLE: '1',
+    MOTION_DISABLE: '1',
     FAL_KEY: 'fal-test-key',
     WAN_VIDEO_ENDPOINT: 'fal-ai/wan/v2.2-a14b/text-to-video',
   }, async () => {
@@ -154,9 +158,11 @@ test('Wan 2.2 on fal.ai is the fallback when ComfyUI cannot render', async (t) =
   });
 });
 
-test('no ComfyUI and no FAL_KEY fails with AI_UNAVAILABLE, never a placeholder', async () => {
+test('no backend at all fails with AI_UNAVAILABLE, never a placeholder', async () => {
   setFalClientForTests(null);
-  await withEnv({ COMFYUI_DISABLE: '1' }, async () => {
+  // Free-first: with the default chain the free motion engine would catch the
+  // job, so disable every backend to prove the no-backend path is honest.
+  await withEnv({ COMFYUI_DISABLE: '1', POLLINATIONS_DISABLE: '1', MOTION_DISABLE: '1' }, async () => {
     assert.equal(await videoRenderReady(), false);
     await assert.rejects(
       () => renderVideo({ prompt: 'wala' }),
@@ -173,6 +179,8 @@ test('OpenCut edits the clip when configured, and the edited bytes are kept', as
   t.after(() => setFalClientForTests(null));
 
   await withEnv({
+    // These exercise the cloud path (Wan + OpenCut), so pin the engine to fal.
+    PREFERRED_RENDER_ENGINE: 'fal',
     COMFYUI_DISABLE: '1',
     FAL_KEY: 'fal-test-key',
     OPENCUT_ENDPOINT: 'fal-ai/opencut',
@@ -207,6 +215,8 @@ test('a failed OpenCut pass keeps the raw clip instead of throwing it away', asy
   t.after(() => setFalClientForTests(null));
 
   await withEnv({
+    // These exercise the cloud path (Wan + OpenCut), so pin the engine to fal.
+    PREFERRED_RENDER_ENGINE: 'fal',
     COMFYUI_DISABLE: '1',
     FAL_KEY: 'fal-test-key',
     OPENCUT_ENDPOINT: 'fal-ai/opencut',
@@ -227,7 +237,7 @@ test('without an OpenCut endpoint the editing pass is skipped, not faked', async
   setFalClientForTests(fake);
   t.after(() => setFalClientForTests(null));
 
-  await withEnv({ COMFYUI_DISABLE: '1', FAL_KEY: 'fal-test-key' }, async () => {
+  await withEnv({ PREFERRED_RENDER_ENGINE: 'fal', COMFYUI_DISABLE: '1', FAL_KEY: 'fal-test-key' }, async () => {
     const out = await renderVideo({ prompt: 'isang eksena', editInstructions: 'i-grade' });
     assert.equal(out.editor, undefined);
     assert.match(out.editNote || '', /OPENCUT_ENDPOINT is not set/);
@@ -325,5 +335,12 @@ test('ComfyUI on and answering wins over the free engine (no silent downgrade)',
   }, async () => {
     const out = await renderVideo({ prompt: 'isang eksena' });
     assert.equal(out.engine, 'comfyui', 'ComfyUI answers, so it is used');
+  });
+});
+
+test('an unset engine defaults to the free chain, never paid cloud', async () => {
+  await withEnv({ COMFYUI_DISABLE: '1', POLLINATIONS_DISABLE: '1' }, async () => {
+    assert.equal(preferredRenderEngine(), 'comfyui',
+      'with nothing set the pipeline is free-first; only an explicit fal pays');
   });
 });

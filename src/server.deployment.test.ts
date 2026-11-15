@@ -250,7 +250,10 @@ test('the routing endpoint reports the T1/T2/T3 table and the T3 policy', async 
 });
 
 test('video is never offloaded to the cloud, even when T3 is forbidden locally', async (t) => {
-  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', T3_ALLOW_LOCAL: '0', CLOUD_T3_URL: '' });
+  const { child, port } = await startServer({
+    APP_AUTH_TOKEN: '', T3_ALLOW_LOCAL: '0', CLOUD_T3_URL: '',
+    POLLINATIONS_DISABLE: '1', MOTION_DISABLE: '1',
+  });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -382,7 +385,9 @@ test('the factory builds an 18-scene concept from one brief', async (t) => {
 });
 
 test('starting a batch without a video backend answers 503 AI_UNAVAILABLE', async (t) => {
-  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '1' });
+  const { child, port } = await startServer({
+    APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '1', POLLINATIONS_DISABLE: '1', MOTION_DISABLE: '1',
+  });
   t.after(() => child.kill());
   await waitForServer(port);
 

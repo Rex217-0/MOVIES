@@ -325,7 +325,9 @@ run ComfyUI rather than returning a stock clip.
 
 ### The three render engines, and what each one costs
 
-`PREFERRED_RENDER_ENGINE` chooses the engine. The honest trade-offs:
+`PREFERRED_RENDER_ENGINE` chooses the engine. It defaults to `comfyui`, the free
+local-first chain, so a fresh install never reaches a paid call by accident.
+Only an explicit `fal` routes to paid cloud. The honest trade-offs:
 
 | Engine | Cost | What it needs | What it makes |
 | --- | --- | --- | --- |
