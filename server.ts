@@ -43,7 +43,7 @@ import {
   numberedName, MAX_LORA_IMAGES,
 } from './src/direk/lora.ts';
 import {
-  comfyAvailable, generateWithComfy, comfyUrl, diagnoseComfyVideo,
+  comfyAvailable, generateWithComfy, comfyUrl, diagnoseComfyVideo, checkComfyReachability,
   publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
 } from './src/direk/comfyui.ts';
 import { pollinationsUrl } from './src/direk/imagine.ts';
@@ -592,6 +592,14 @@ app.get('/api/direk/video/backend', async (_req: Request, res: Response) => {
       endpoint: wanEndpoint(),
     },
   });
+});
+
+// Can we reach ComfyUI right now? Probes {COMFYUI_URL}/system_stats with a
+// 5-second timeout and answers { reachable, url, error }. This is the quick,
+// single check for the UI and the operator: no render is queued, nothing is
+// faked, and the error always names the exact URL that could not be reached.
+app.get('/api/direk/comfy/check', async (_req: Request, res: Response) => {
+  res.json(await checkComfyReachability());
 });
 
 // ==========================================

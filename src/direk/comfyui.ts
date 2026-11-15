@@ -190,6 +190,50 @@ export async function comfyAvailable(): Promise<boolean> {
   }
 }
 
+/** How long `GET /system_stats` may take before the server is called unreachable. */
+const REACHABILITY_TIMEOUT_MS = 5000;
+
+/** The answer to "can we reach ComfyUI right now?", with the exact cause when not. */
+export interface ComfyReachability {
+  reachable: boolean;
+  /** The base URL that was probed (COMFYUI_URL). */
+  url: string;
+  /** Empty when reachable; `hindi maabot ang ComfyUI sa <url>` when not. */
+  error: string;
+  /** The underlying cause (timeout, HTTP status, connection error), when not reachable. */
+  detail?: string;
+}
+
+/**
+ * Probe `{COMFYUI_URL}/system_stats` with a 5-second timeout. This is the single
+ * place that decides reachability for the UI and the operator: `reachable` is
+ * true only on an HTTP 2xx, and `error` always names the URL that failed, so a
+ * server pointed at another host (a Tailscale IP, Server-2) is reported
+ * correctly instead of always claiming 127.0.0.1.
+ */
+export async function checkComfyReachability(): Promise<ComfyReachability> {
+  const url = comfyUrl();
+  const unreachable = (detail: string): ComfyReachability => ({
+    reachable: false,
+    url,
+    error: `hindi maabot ang ComfyUI sa ${url}`,
+    detail,
+  });
+  try {
+    const res = await fetch(`${url}/system_stats`, {
+      signal: AbortSignal.timeout(REACHABILITY_TIMEOUT_MS),
+    });
+    if (!res.ok) return unreachable(`HTTP ${res.status}`);
+    return { reachable: true, url, error: '' };
+  } catch (error: any) {
+    // AbortSignal.timeout aborts with a TimeoutError; name the timeout clearly.
+    const detail = error?.name === 'TimeoutError'
+      ? `timeout pagkatapos ng ${REACHABILITY_TIMEOUT_MS}ms`
+      : error?.message || String(error);
+    return unreachable(detail);
+  }
+}
+
 /**
  * Generate one image. Queues the workflow, waits for it to finish, then
  * downloads the first image it produced.

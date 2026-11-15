@@ -4,7 +4,7 @@ import {
   buildWorkflow, defaultWorkflow, comfyUrl, DEFAULT_NEGATIVE,
   clampStrength, publishLora, listLoras, lorasDir,
   buildVideoWorkflow, comfyVideoConfigured,
-  unfilledPlaceholders, VIDEO_PLACEHOLDERS, diagnoseComfyVideo,
+  unfilledPlaceholders, VIDEO_PLACEHOLDERS, diagnoseComfyVideo, checkComfyReachability,
 } from './comfyui.ts';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -294,5 +294,35 @@ test('diagnoseComfyVideo reports unreachable when nothing answers, ready when th
     });
   } finally {
     await mock.close();
+  }
+});
+
+test('checkComfyReachability reports reachable against a live server', async (t) => {
+  const mock = await startMockComfyUI();
+  t.after(() => mock.close());
+  const saved = process.env.COMFYUI_URL;
+  process.env.COMFYUI_URL = mock.url;
+  try {
+    const r = await checkComfyReachability();
+    assert.equal(r.reachable, true);
+    assert.equal(r.url, mock.url);
+    assert.equal(r.error, '');
+  } finally {
+    if (saved === undefined) delete process.env.COMFYUI_URL; else process.env.COMFYUI_URL = saved;
+  }
+});
+
+test('checkComfyReachability names the exact URL when unreachable', async () => {
+  const saved = process.env.COMFYUI_URL;
+  // Port 9 (discard) on loopback: nothing listens, so the fetch fails fast.
+  process.env.COMFYUI_URL = 'http://127.0.0.1:9';
+  try {
+    const r = await checkComfyReachability();
+    assert.equal(r.reachable, false);
+    assert.equal(r.url, 'http://127.0.0.1:9');
+    assert.equal(r.error, 'hindi maabot ang ComfyUI sa http://127.0.0.1:9');
+    assert.ok(r.detail, 'keeps the underlying cause for the logs');
+  } finally {
+    if (saved === undefined) delete process.env.COMFYUI_URL; else process.env.COMFYUI_URL = saved;
   }
 });
