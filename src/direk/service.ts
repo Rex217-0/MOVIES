@@ -43,6 +43,8 @@ export class DirekService {
   health() {
     return {
       persona: 'Movie Robo',
+      brand: 'Moviecity',
+      operator: 'LJR Group',
       reference_available: this.catalog.available,
       reference_rows: this.catalog.size,
     };

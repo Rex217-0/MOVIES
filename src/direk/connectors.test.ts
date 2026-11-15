@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CONNECTORS, connectorCatalog, runConnector } from './connectors.ts';
 import { SKILLS } from './skills.ts';
-import { ACTION_SKILLS, DIREK_SYSTEM } from './persona.ts';
+import { ACTION_SKILLS, MOVIE_ROBO_SYSTEM } from './persona.ts';
 
 test('every API skill in the registry has a free local connector', () => {
   const apiSkills = Object.entries(SKILLS)
@@ -53,6 +53,6 @@ test('the persona lists exactly the connectors that exist', () => {
 });
 
 test('the system prompt teaches the model to emit an action block', () => {
-  assert.match(DIREK_SYSTEM, /```action/);
-  assert.match(DIREK_SYSTEM, /"skill"/);
+  assert.match(MOVIE_ROBO_SYSTEM, /```action/);
+  assert.match(MOVIE_ROBO_SYSTEM, /"skill"/);
 });

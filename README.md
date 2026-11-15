@@ -1,8 +1,11 @@
 # MOVIE CREATOR
 
+**Moviecity** · proudly powered and operated by the **LJR Group**
+
 One app, two suites. A React + TypeScript front end with an Express backend:
 
-- **Director's Chair (Direk)** — a Filipino AI movie director. It grounds genre
+- **Director's Chair (Movie Robo)** — the official AI Movie Creator of Moviecity.
+  A Filipino AI movie director that grounds genre
   advice in a bundled catalog, gates on missing essentials (haba at mood), and
   walks a film from IDEYA → SCRIPT → KARAKTER → SHOT LIST → VISUAL → EDIT → PUBLISH.
 - **VIP Battle Room (Pilot)** — the tactical cockpit that streams "pilot

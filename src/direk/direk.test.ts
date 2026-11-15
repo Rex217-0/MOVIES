@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { findGenre, catalogTerms } from './genres.ts';
 import { missingFields, gateQuestion } from './gate.ts';
 import { extractAction } from './skills.ts';
-import { buildSystemPrompt, RULES, DIREK_SYSTEM } from './persona.ts';
+import { buildSystemPrompt, RULES, MOVIE_ROBO_SYSTEM } from './persona.ts';
 import { ReferenceCatalog } from './reference.ts';
 import { DirekService, type ChatMessage } from './service.ts';
 
@@ -117,7 +117,7 @@ test('DirekService gates before calling the model', async () => {
 });
 
 test('the system prompt allows realistic fictional characters', () => {
-  assert.match(DIREK_SYSTEM, /photoreal|realistic/i);
+  assert.match(MOVIE_ROBO_SYSTEM, /photoreal|realistic/i);
   assert.match(RULES, /PINAPAYAGAN|pinapayagan/i);
   // The ban is narrow: real people's quotes, deepfakes, lookalikes.
   assert.match(RULES, /BUHAY na totoong tao|deepfake|kilalang artista/i);
@@ -127,4 +127,13 @@ test('the system prompt allows realistic fictional characters', () => {
 
 test('buildSystemPrompt carries the realistic-character guidance', () => {
   assert.match(buildSystemPrompt(), /photoreal/i);
+});
+
+test('the persona carries the Moviecity / LJR Group branding', () => {
+  assert.match(MOVIE_ROBO_SYSTEM, /Movie Robo/);
+  assert.match(MOVIE_ROBO_SYSTEM, /Moviecity/);
+  assert.match(MOVIE_ROBO_SYSTEM, /LJR Group/);
+  // The core rules survive the rebrand.
+  assert.match(MOVIE_ROBO_SYSTEM, /Filipino\/Taglish/);
+  assert.match(MOVIE_ROBO_SYSTEM, /MAGTANONG LANG muna/);
 });

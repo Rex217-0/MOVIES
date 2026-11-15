@@ -91,7 +91,7 @@ export default function App() {
       <footer className="border-t border-subtle px-4 py-3 text-[11px] text-dim">
         <div className="mx-auto flex max-w-[1700px] flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-4"><span className="flex items-center gap-1.5 text-muted"><span className="h-1.5 w-1.5 rounded-full bg-growth"></span>Model: {textBackend || 'checking…'}</span><span className="hidden sm:inline">Text: {textModel || '—'}</span></div>
-          <div>Movie Creator v1.0 · Movie Robo + Pilot Suite</div>
+          <div>Moviecity · Movie Robo v1.0 (LJR Group) + Pilot Suite</div>
         </div>
       </footer>
       <SetupModal isOpen={isSetupOpen} onClose={() => setIsSetupOpen(false)} />
