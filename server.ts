@@ -47,9 +47,8 @@ import {
   publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
 } from './src/direk/comfyui.ts';
 import { pollinationsUrl } from './src/direk/imagine.ts';
-import {
-  LoRATrainer, trainerStatus, trainingConfig, buildTrainCommand,
-} from './src/direk/trainer.ts';
+import { trainingConfig } from './src/direk/trainer.ts';
+import { createTrainBackend, trainBackendName } from './src/direk/trainBackend.ts';
 import {
   readSettings, writeSettings, applySettings, effectiveSettings,
   configPath, comfyModelOptions, type DirekSettings,
@@ -1668,10 +1667,11 @@ app.post('/api/direk/lora/dataset', async (req: Request, res: Response) => {
 
 // ---------------------------------------------------------------------------
 // LoRA training
-// Runs kohya_ss / sd-scripts locally. Nothing is faked: with no trainer
-// installed the endpoints report it as unavailable.
+// One interface, two backends. `TRAIN_BACKEND=local` (the default) runs
+// kohya_ss here; `TRAIN_BACKEND=colab` hands the run to a Colab notebook through
+// a Drive folder. Nothing is faked: an unavailable backend says so.
 // ---------------------------------------------------------------------------
-const loraTrainer = new LoRATrainer();
+const loraTrainer = createTrainBackend();
 const RUNS_ROOT = process.env.KOHYA_RUNS_ROOT || path.join(process.cwd(), 'lora_runs');
 // Default the trained output next to each run's dataset, so a run is self-contained.
 if (!process.env.KOHYA_OUTPUT_DIR) process.env.KOHYA_OUTPUT_DIR = RUNS_ROOT;
@@ -1694,8 +1694,8 @@ function jobSummary() {
 }
 
 app.get('/api/direk/train/status', (_req: Request, res: Response) => {
-  const status = trainerStatus();
-  res.json({ ...status, job: jobSummary() });
+  const status = loraTrainer.status();
+  res.json({ ...status, backend: trainBackendName(), job: jobSummary() });
 });
 
 // The LoRAs available to ComfyUI: trained ones Direk published, plus any the
@@ -1843,7 +1843,7 @@ app.put('/api/direk/settings', (req: Request, res: Response) => {
 // One call the UI makes on load: is everything wired up and working?
 app.get('/api/direk/setup', async (_req: Request, res: Response) => {
   const comfy = await comfyModelOptions();
-  const trainer = trainerStatus();
+  const trainer = loraTrainer.status();
   const ollama = await ollamaStatus();
   const gemini = Boolean(process.env.GEMINI_API_KEY);
   const textReady = gemini || (ollama.reachable && ollama.model_present);
@@ -1894,7 +1894,7 @@ app.post('/api/direk/train/start', async (req: Request, res: Response) => {
     res.status(400).json({ error: parsed.error });
     return;
   }
-  const status = trainerStatus();
+  const status = loraTrainer.status();
   if (!status.available) {
     res.status(503).json({ error: status.reason, code: 'TRAINER_UNAVAILABLE' });
     return;
@@ -1954,7 +1954,7 @@ app.post('/api/direk/train/start', async (req: Request, res: Response) => {
   }));
 
   try {
-    const job = loraTrainer.start({
+    const job = await loraTrainer.start({
       id,
       title: plan.brief.title,
       trigger: plan.brief.trigger,
@@ -1968,15 +1968,15 @@ app.post('/api/direk/train/start', async (req: Request, res: Response) => {
         broadcastThought(`[DIREK] LoRA published: ${published.name}`);
       },
     });
-    broadcastThought(`[DIREK] Training started: ${job.trigger} (${images.size} images).`);
-    res.json({ status: 'started', job: jobSummary() });
+    broadcastThought(`[DIREK] Training started: ${job.trigger} (${images.size} images, ${trainBackendName()}).`);
+    res.json({ status: 'started', backend: trainBackendName(), job: jobSummary() });
   } catch (error: any) {
     res.status(409).json({ error: error?.message || 'Hindi ma-start ang training.' });
   }
 });
 
-app.post('/api/direk/train/cancel', (_req: Request, res: Response) => {
-  const cancelled = loraTrainer.cancel();
+app.post('/api/direk/train/cancel', async (_req: Request, res: Response) => {
+  const cancelled = await loraTrainer.cancel();
   broadcastThought(cancelled ? '[DIREK] Training cancelled.' : '[DIREK] Walang tumatakbong training.');
   res.json({ cancelled });
 });
@@ -1991,7 +1991,7 @@ app.get('/api/direk/train/stream', (req: Request, res: Response) => {
 
   const job = loraTrainer.current();
   if (job) {
-    for (const line of job.log.slice(-100)) res.write(`data: ${line}\n\n`);
+    for (const line of loraTrainer.recentLog(100)) res.write(`data: ${line}\n\n`);
   }
   const off = loraTrainer.onLine(line => res.write(`data: ${line}\n\n`));
   req.on('close', off);
