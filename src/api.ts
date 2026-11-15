@@ -455,6 +455,41 @@ export async function direkRouting(): Promise<RoutingReport | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Live system map (Radar tab). Each call really probes every node.
+// ---------------------------------------------------------------------------
+
+export type NodeStatus = 'active' | 'error' | 'standby' | 'dead';
+export type NodeLayer = 'center' | 'behind' | 'left' | 'right' | 'front';
+
+export interface MapNode {
+  id: string;
+  name: string;
+  kind: 'core' | 'ai' | 'local' | 'cloud' | 'storage' | 'training' | 'agent';
+  layer: NodeLayer;
+  wired: boolean;
+  wire?: string;
+  status: NodeStatus;
+  detail: string;
+  latency_ms?: number;
+  probe: string;
+  role: string;
+  meta?: Record<string, string | number | boolean | null>;
+}
+
+export interface SystemMap {
+  checked_at: string;
+  center: string;
+  counts: Record<NodeStatus, number>;
+  nodes: MapNode[];
+}
+
+export async function direkSystemMap(): Promise<SystemMap | null> {
+  const res = await apiFetch('/api/direk/system-map');
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
 // Movie Creator
 // ---------------------------------------------------------------------------
 

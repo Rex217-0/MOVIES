@@ -129,3 +129,48 @@
     backdrop-filter: blur(14px);
   }
 }
+
+/*
+ * Radar node signals. Each state has a distinct blink so the map reads at a
+ * glance: active pulses smoothly, error blinks hard, standby breathes slowly,
+ * and dead is a flat black dot with no animation at all.
+ */
+@keyframes radar-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
+}
+@keyframes radar-hard-blink {
+  0%, 44% { opacity: 1; }
+  50%, 94% { opacity: 0.05; }
+  100% { opacity: 1; }
+}
+@keyframes radar-breathe {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 0.35; }
+}
+@keyframes radar-ring {
+  0% { opacity: 0.7; transform: scale(0.6); }
+  100% { opacity: 0; transform: scale(2.1); }
+}
+@keyframes radar-sweep {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+@keyframes radar-dash {
+  to { stroke-dashoffset: -22; }
+}
+
+.radar-dot { border-radius: 9999px; }
+.radar-dot-active { animation: radar-pulse 1.6s ease-in-out infinite; }
+.radar-dot-error { animation: radar-hard-blink 0.75s steps(1, end) infinite; }
+.radar-dot-standby { animation: radar-breathe 2.6s ease-in-out infinite; }
+.radar-dot-dead { animation: none; }
+.radar-ring { animation: radar-ring 1.9s ease-out infinite; }
+.radar-ring-error { animation: radar-ring 0.9s ease-out infinite; }
+.radar-sweep { animation: radar-sweep 4s linear infinite; transform-origin: center; }
+.radar-wire-live { stroke-dasharray: 6 5; animation: radar-dash 0.9s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .radar-dot-active, .radar-dot-error, .radar-dot-standby,
+  .radar-ring, .radar-sweep, .radar-wire-live { animation: none; }
+}

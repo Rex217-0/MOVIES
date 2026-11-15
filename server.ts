@@ -88,6 +88,7 @@ import type { AssetMeta } from './src/direk/assets.ts';
 import {
   WorkerMesh, workerView, dispatchToMesh, type WorkerRegistration,
 } from './src/direk/workerMesh.ts';
+import { buildSystemMap, realProbeEnv } from './src/direk/systemMap.ts';
 import {
   securityHeaders, corsDecision, RateLimiter,
   issueTicket, verifyTicket, ticketToParam, paramToTicket,
@@ -1035,6 +1036,19 @@ app.get('/api/direk/routing', (_req: Request, res: Response) => {
     mesh: workerMesh.summary(),
     table: routingTable(),
   });
+});
+
+// ---------------------------------------------------------------------------
+// Live system map for the Radar tab. Every node is probed for real on each
+// call; nothing is fabricated. See src/direk/systemMap.ts.
+// ---------------------------------------------------------------------------
+app.get('/api/direk/system-map', async (_req: Request, res: Response) => {
+  try {
+    const map = await buildSystemMap(realProbeEnv());
+    res.json(map);
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'Hindi mabuo ang system map.' });
+  }
 });
 
 // ---------------------------------------------------------------------------

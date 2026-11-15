@@ -630,3 +630,46 @@ test('stitchMovie joins the approved scenes and serves the file from /renders/',
   assert.equal(served.status, 200);
   assert.ok((await served.arrayBuffer()).byteLength > 0);
 });
+
+// ---------------------------------------------------------------------------
+// The Radar's live system map. The endpoint must really probe and must stay
+// honest: the centre is active, and a disabled service is never reported alive.
+// ---------------------------------------------------------------------------
+test('the system map reports the live radar truthfully, with no faked node', async (t) => {
+  const { child, port } = await startServer({
+    APP_AUTH_TOKEN: '',
+    // Force every local service off so their honest state is "dead".
+    COMFYUI_DISABLE: '1', OLLAMA_DISABLE: '1',
+    GEMINI_API_KEY: '', FAL_KEY: '',
+  });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const res = await fetch(`http://127.0.0.1:${port}/api/direk/system-map`);
+  assert.equal(res.status, 200);
+  const map: any = await res.json();
+
+  assert.equal(map.center, 'movie-creator');
+  const byId = new Map(map.nodes.map((n: any) => [n.id, n]));
+
+  // The centre is the running process, so it is active.
+  assert.equal((byId.get('movie-creator') as any).status, 'active');
+  // A service we switched off must never be reported alive.
+  assert.equal((byId.get('comfyui') as any).status, 'dead');
+  assert.equal((byId.get('ollama') as any).status, 'dead');
+  assert.equal((byId.get('gemini') as any).status, 'dead');
+  assert.equal((byId.get('wan') as any).status, 'dead');
+  // ffmpeg ships with the app, so it is a real active node.
+  assert.equal((byId.get('ffmpeg') as any).status, 'active');
+
+  // The counts must describe the nodes we actually got back.
+  assert.equal(
+    map.counts.active + map.counts.error + map.counts.standby + map.counts.dead,
+    map.nodes.length,
+  );
+  // Every node carries the fields the UI draws.
+  for (const n of map.nodes) {
+    assert.ok(n.name && n.role && n.detail && n.probe, `${n.id} incomplete`);
+    assert.equal(typeof n.wired, 'boolean');
+  }
+});
