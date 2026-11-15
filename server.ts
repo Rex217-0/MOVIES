@@ -2267,6 +2267,53 @@ function cleanPrompt(p: string): string {
   return p.trim().slice(0, 300);
 }
 
+// ---------------------------------------------------------------------------
+// Android download (public, no auth)
+// The phone needs the APK before it has a token, so this page and the file it
+// serves are deliberately unauthenticated. They expose nothing but the app
+// itself. The APK is built by android/build.sh (see docs/android-app.md).
+// ---------------------------------------------------------------------------
+const APK_PATH = path.join(__dirname, 'android', 'movie-creator.apk');
+
+app.get('/android', (_req: Request, res: Response) => {
+  const exists = fs.existsSync(APK_PATH);
+  const size = exists ? fs.statSync(APK_PATH).size : 0;
+  res.type('text/html').send(`<!doctype html>
+<html lang="tl"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>I-install ang Movie Creator sa Android</title>
+<style>
+  body{margin:0;background:#0b0f1a;color:#e6edf3;font:16px/1.6 system-ui,sans-serif;padding:24px;max-width:640px;margin:0 auto}
+  h1{font-size:22px}code{background:#161c28;padding:2px 6px;border-radius:6px}
+  a.btn{display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;font-weight:700;padding:14px 22px;border-radius:12px;margin:16px 0}
+  ol{padding-left:20px}li{margin:6px 0}.dim{color:#8b98a9;font-size:14px}
+</style></head><body>
+<h1>Movie Creator para sa Android</h1>
+${exists
+  ? `<a class="btn" href="/android/movie-creator.apk" download>I-download ang APK (${Math.round(size / 1024)} KB)</a>
+     <p class="dim">Bersyon 1.0 · pirmado · minSdk 21 (Android 5+)</p>`
+  : `<p>Wala pa ang APK sa server na ito. Buuin ito sa Server-2:
+     <code>bash android/build.sh</code></p>`}
+<ol>
+  <li>Buksan ang download link sa phone (dapat parehong Wi-Fi/LAN ang phone at server).</li>
+  <li>Payagan ang "Install unknown apps" para sa browser.</li>
+  <li>I-install, buksan, at ilagay ang server address (hal. <code>http://SERVER-IP:3000</code>)
+      at ang <code>APP_AUTH_TOKEN</code> kung mayroon.</li>
+</ol>
+<p class="dim">Ang phone ay remote lang — ang mabibigat na gawain ay tumatakbo pa rin sa server.</p>
+</body></html>`);
+});
+
+app.get('/android/movie-creator.apk', (_req: Request, res: Response) => {
+  if (!fs.existsSync(APK_PATH)) {
+    res.status(404).json({ error: 'Wala pa ang APK. Buuin ito sa Server-2: bash android/build.sh' });
+    return;
+  }
+  res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+  res.setHeader('Content-Disposition', 'attachment; filename="movie-creator.apk"');
+  res.sendFile(APK_PATH);
+});
+
 // Mount Vite or serve static files
 async function startServer() {
   if (!isProd) {
