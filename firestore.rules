@@ -23,7 +23,13 @@ service cloud.firestore {
     // Admin SDK backend access bypasses Firestore rules. Client writes are
     // restricted to a trusted Firebase Auth custom claim set by a secure admin.
     match /MovieJobs/{movieId} {
-      allow read: if signedIn() && resource.data.org_id == 'LJRgroupORG';
+      // Read is admin-only: the vault is written by the admin backend and is
+      // not read by any browser client today. A bare `org_id` check would let
+      // any anonymous user read the whole private vault, so the read is gated
+      // by the same admin claim as the write.
+      allow read: if signedIn()
+        && request.auth.token.admin == true
+        && resource.data.org_id == 'LJRgroupORG';
       allow create, update: if signedIn()
         && request.auth.token.admin == true
         && request.resource.data.keys().hasOnly([
@@ -47,7 +53,10 @@ service cloud.firestore {
     // Draft aligned with src/direk/factoryDb.ts SceneDoc:
     // id, org_id, movie_id, scene_number, status, video_path.
     match /SceneJobs/{sceneId} {
-      allow read: if signedIn() && resource.data.org_id == 'LJRgroupORG';
+      // Read is admin-only, for the same reason as MovieJobs above.
+      allow read: if signedIn()
+        && request.auth.token.admin == true
+        && resource.data.org_id == 'LJRgroupORG';
       allow create, update: if signedIn()
         && request.auth.token.admin == true
         && request.resource.data.keys().hasOnly([
