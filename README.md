@@ -193,9 +193,12 @@ A film's narration comes from the first voice that answers, in this order:
 
 1. **Fish Audio** — best Tagalog, and can clone a voice. Needs `FISH_AUDIO_API_KEY`.
 2. **Offline Tagalog voice** (Meta MMS VITS) — free, CPU, real Tagalog, no quota.
-   On by default when `scripts/tagalog_tts.py` is present.
+   On by default when `scripts/tagalog_tts.py` is present **and** the interpreter in
+   `TTS_PYTHON` has `transformers`, `torch` and `soundfile` installed; without them
+   the voice is skipped and the reason is logged.
 3. **Gemini cloud voice** — good quality, but the free tier caps it per day.
-4. **Piper** — an English backup voice. Point `TTS_PIPER_VOICE` at a `.onnx` file.
+4. **Piper** — an English backup voice (there is no Tagalog Piper voice upstream).
+   Point `TTS_PIPER_VOICE` at a `.onnx` file.
 
 When none of them answers, the shot carries the line as a burned-in **caption**
 instead of failing the render. Set `TTS_ORDER=fish,piper` to force a strict
@@ -204,14 +207,14 @@ the cloud voice off. `GET /api/direk/movie/status` reports `narration_order`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `FISH_AUDIO_API_KEY` | (unset) | Enables the Fish Audio Tagalog voice |
-| `FISH_AUDIO_REFERENCE_ID` | (unset) | A cloned voice id from your Fish Audio library |
+| `FISH_AUDIO_API_KEY` | (unset) | Enables the Fish Audio Tagalog voice (only this is required) |
+| `FISH_AUDIO_REFERENCE_ID` | (unset) | Optional cloned voice id; without it Fish uses its default voice |
 | `FISH_AUDIO_MODEL` | provider default | Fish Audio model id |
 | `TTS_ORDER` | `fish,tagalog,gemini,piper` | Comma-separated voice priority |
 | `TTS_PIPER_BIN` | `piper` | Piper executable |
 | `TTS_PIPER_VOICE` | (unset) | Piper `.onnx` voice file |
 | `TTS_TAGALOG_MODEL` | `tagalog` | `tagalog` \| `filipino`, or a full model id |
-| `TTS_PYTHON` | `python3` | Interpreter with `transformers` installed |
+| `TTS_PYTHON` | `python3` (`python` on Windows) | Interpreter with `transformers`, `torch`, `soundfile` |
 
 ## Staging Vault (render review)
 
