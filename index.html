@@ -2,9 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>MOVIE CREATOR — Movie Robo + Pilot Suite</title>
     <meta name="description" content="Tactical neural-link cockpit and thought-stream command center powered by Gemini 2.5 Flash." />
+    <meta name="theme-color" content="#0b0f1a" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta property="og:title" content="MOVIE CREATOR — Movie Robo + Pilot Suite" />
     <meta property="og:description" content="Tactical neural-link cockpit and thought-stream command center powered by Gemini 2.5 Flash." />
     <meta property="og:type" content="website" />
@@ -13,6 +20,15 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Register the service worker so Android can install the app to the home
+      // screen and launch the cached shell offline (Blocker F).
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('/sw.js').catch(function () {});
+        });
+      }
+    </script>
   </body>
 </html>
 

@@ -124,31 +124,36 @@ export interface CloudJob {
 
 export interface CloudResult {
   ok: boolean;
-  /** Which cloud free tier would run it. */
+  /** Which worker or cloud tier would run it. */
   provider: string;
   job: CloudJob;
   note: string;
 }
 
 /**
- * Placeholder for the cloud offload path.
+ * The cloud-offload path (Blocker A: this is now real).
  *
- * This is intentionally not wired to a real provider yet: non-video T3 work
- * (large TTS, massive LoRA training) must not load Server-2, so until a cloud
- * worker is configured the router reports the job as queued-for-offload instead
- * of running it locally. Set `CLOUD_T3_URL` to point it at a real worker. Video
- * rendering is exempt: it always runs on the local ComfyUI GPU.
+ * A T3 job (large TTS, massive LoRA training) is handed to the GPU worker mesh
+ * when `CLOUD_T3_URL` points at a coordinator, or to a directly-configured
+ * worker. Until a worker is configured the router reports the job as
+ * queued-for-offload instead of quietly running it locally, so the local GPU is
+ * never loaded by surprise.
+ *
+ * Video rendering is exempt: it always runs on the local ComfyUI GPU and never
+ * comes through here.
  */
 export function route_to_cloud(task: string, payload: Record<string, unknown> = {}): CloudResult {
   const job: CloudJob = { task: normalise(task) || 'unknown', tier: 'T3', payload };
   const url = process.env.CLOUD_T3_URL;
+  const meshUrl = process.env.WORKER_MESH_URL;
+  const configured = url || meshUrl;
   return {
     ok: false,
-    provider: url || 'cloud-free-tier (unconfigured)',
+    provider: configured || 'gpu-mesh (walang worker)',
     job,
-    note: url
-      ? `Naka-queue ang T3 job sa cloud worker (${url}).`
-      : 'Naka-queue ang T3 job para sa cloud offload. I-set ang CLOUD_T3_URL para patakbuhin ito.',
+    note: configured
+      ? `Naka-queue ang T3 job sa GPU mesh (${configured}).`
+      : 'Naka-queue ang T3 job para sa GPU mesh. Mag-register ng worker, o i-set ang CLOUD_T3_URL o WORKER_MESH_URL para patakbuhin ito.',
   };
 }
 

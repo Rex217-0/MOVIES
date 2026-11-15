@@ -127,9 +127,9 @@ export const VipBattleRoom: React.FC<{
  let eventSource: EventSource | null = null;
  let reconnectTimeout: any = null;
 
- const connectSSE = () => {
+ const connectSSE = async () => {
  try {
- eventSource = new EventSource(thoughtStreamUrl());
+ eventSource = new EventSource(await thoughtStreamUrl());
  
  eventSource.onmessage = (event) => {
  setLogs(prev => [...prev, `PILOT: ${event.data}`]);
