@@ -23,3 +23,6 @@ android/*.keystore
 android/*.idsig
 # The APK is committed on purpose: the /android download page must work on any
 # deploy (Server-2) without an Android SDK. Rebuild with android/build.sh.
+
+# Cloudflare tunnel binary (downloaded by scripts/tunnel.ps1 / tunnel.sh)
+tools/cloudflared*
