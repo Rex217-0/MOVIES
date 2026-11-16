@@ -2,15 +2,18 @@
  * Read-only reference catalog used to ground Direk's genre advice.
  * Ported from direk/reference.py and extended to read several datasets:
  * Netflix titles, an IMDb movie dataset, a Filipino movies dataset, and a
- * movie-statistics dataset (ratings, runtime, budget, gross).
+ * movie-statistics dataset (ratings, runtime, budget, gross). Two reviewed
+ * Kaggle metadata datasets are added on top (see `kaggle.ts`).
  *
  * The catalog never throws on a missing dataset: a source that cannot be read
- * is skipped and `available` reflects whatever loaded.
+ * is skipped and `available` reflects whatever loaded. New sources are appended
+ * with their own `source` tag; no existing row is overwritten.
  */
 
 import fs from 'node:fs';
 import { catalogTerms } from './genres.ts';
 import { parseCsvFile, pick, cleanListCell } from './csv.ts';
+import { loadKaggleSources } from './kaggle.ts';
 
 export interface CatalogTitle {
   title: string;
@@ -42,9 +45,12 @@ const SOURCES: Source[] = [
 export class ReferenceCatalog {
   private rows: CatalogTitle[] = [];
   private haystacks: string[] = [];
+  private dataDir: string;
+  private kaggleLoaded = false;
   readonly maxResults: number;
 
   constructor(dataDir: string, maxResults = 5) {
+    this.dataDir = dataDir;
     this.maxResults = Math.max(1, Math.min(maxResults, 20));
     for (const source of SOURCES) {
       const file = `${dataDir}/${source.file}`;
@@ -56,6 +62,24 @@ export class ReferenceCatalog {
       }
     }
     this.haystacks = this.rows.map(r => r.listed_in.toLowerCase());
+  }
+
+  /**
+   * Read the reviewed Kaggle metadata on first use, not at construction.
+   *
+   * The two files are large (68k rows, ~2.4s), and the server builds this
+   * catalog at startup while `/api/health` must answer immediately. Loading
+   * them lazily keeps the startup cheap and pays the cost only when a search,
+   * a size or a source count actually needs them. The rows are appended, so an
+   * existing title is never replaced, and each keeps its own source tag.
+   */
+  private ensureKaggle(): void {
+    if (this.kaggleLoaded) return;
+    this.kaggleLoaded = true;
+    for (const row of loadKaggleSources(this.dataDir)) {
+      this.rows.push(row);
+      this.haystacks.push(row.listed_in.toLowerCase());
+    }
   }
 
   private loadSource(source: Source, file: string): CatalogTitle[] {
@@ -128,11 +152,13 @@ export class ReferenceCatalog {
   }
 
   get size(): number {
+    this.ensureKaggle();
     return this.rows.length;
   }
 
   /** Count of rows per source, for the status endpoint. */
   sources(): Record<string, number> {
+    this.ensureKaggle();
     const out: Record<string, number> = {};
     for (const row of this.rows) out[row.source] = (out[row.source] ?? 0) + 1;
     return out;
@@ -147,6 +173,7 @@ export class ReferenceCatalog {
    */
   search(genre: string | null, kind?: string | null, n?: number): CatalogTitle[] {
     if (!this.available || !genre) return [];
+    this.ensureKaggle();
     const limit = Math.min(n ?? this.maxResults, this.maxResults);
     const terms = (catalogTerms(genre) || []).map(t => t.toLowerCase());
     if (!terms.length) return [];
