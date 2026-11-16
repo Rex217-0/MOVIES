@@ -267,6 +267,36 @@ test('video is never offloaded to the cloud, even when T3 is forbidden locally',
   assert.equal(body.route, undefined, 'video must not be handed to a cloud tier');
 });
 
+test('an unreachable ComfyUI answers 503 with the exact URL and error, never a fake clip', async (t) => {
+  // Pick a port nothing listens on, so the ComfyUI probe really fails.
+  const dead = createServer(() => {});
+  await new Promise<void>(r => dead.listen(0, '127.0.0.1', r));
+  const deadPort = (dead.address() as any).port;
+  await new Promise<void>(r => dead.close(() => r()));
+  const deadUrl = `http://127.0.0.1:${deadPort}`;
+
+  const { child, port } = await startServer({
+    APP_AUTH_TOKEN: '',
+    PREFERRED_RENDER_ENGINE: 'comfyui',
+    COMFYUI_URL: deadUrl,
+    POLLINATIONS_DISABLE: '1', MOTION_DISABLE: '1',
+  });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const res = await fetch(`http://127.0.0.1:${port}/api/pilot/video/generate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: 'isang bagyo', aspect_ratio: '16:9' }),
+  });
+  assert.equal(res.status, 503);
+  const body: any = await res.json();
+  assert.equal(body.code, 'AI_UNAVAILABLE');
+  // The detail must name the exact configured URL and say COMFYUI_URL, so the
+  // operator knows precisely what to fix.
+  assert.match(String(body.detail), new RegExp(deadUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(String(body.detail), /COMFYUI_URL/);
+});
+
 test('the LoRA plan reports where its text, image and training work will run', async (t) => {
   const { child, port } = await startServer({ APP_AUTH_TOKEN: '' });
   t.after(() => child.kill());

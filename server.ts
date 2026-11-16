@@ -665,7 +665,17 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
     res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
   } catch (error: any) {
     const reason = error?.message || 'Unknown error';
-    const detail = error?.name === 'VideoBackendUnavailable' ? 'Walang video backend.' : 'Check the server logs.';
+    let detail = error?.name === 'VideoBackendUnavailable' ? 'Walang video backend.' : 'Check the server logs.';
+    // When ComfyUI is the chosen engine but its URL cannot be reached, name the
+    // exact URL and the underlying cause (timeout, HTTP status, connection
+    // error) so the operator can fix .env instead of guessing. No fake clip.
+    if (preferred === 'comfyui') {
+      const reach = await checkComfyReachability();
+      if (!reach.reachable) {
+        detail = `${reach.error}${reach.detail ? ` (${reach.detail})` : ''}. ` +
+          'I-set ang COMFYUI_URL sa .env sa tamang host:port at siguraduhing tumatakbo ang ComfyUI.';
+      }
+    }
     console.error('[VIDEO ERROR] render failed:', reason);
     broadcastThought(`[VIDEO ERROR] ${reason}`);
     res.status(503).json(aiUnavailable('video', detail, reason));
