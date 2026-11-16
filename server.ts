@@ -2375,7 +2375,7 @@ app.get('/android', (_req: Request, res: Response) => {
 <h1>Movie Creator para sa Android</h1>
 ${exists
   ? `<a class="btn" href="/android/movie-creator.apk" download>I-download ang APK (${Math.round(size / 1024)} KB)</a>
-     <p class="dim">Bersyon 1.0 · pirmado · minSdk 21 (Android 5+)</p>`
+     <p class="dim">Bersyon 1.0 · pirmado · minSdk 21 (Android 5+) · para sa phone at tablet</p>`
   : `<p>Wala pa ang APK sa server na ito. Buuin ito sa Server-2:
      <code>bash android/build.sh</code></p>`}
 <ol>
