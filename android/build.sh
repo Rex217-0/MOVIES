@@ -46,8 +46,8 @@ echo "[2/7] aapt2 link (manifest + resources -> base.apk + R.java)"
   --java "$BUILD/gen" \
   --min-sdk-version 21 \
   --target-sdk-version 34 \
-  --version-code 1 \
-  --version-name 1.0 \
+  --version-code 2 \
+  --version-name 1.0.1 \
   "$BUILD/compiled/res.zip"
 
 echo "[3/7] javac"

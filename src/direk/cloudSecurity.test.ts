@@ -5,6 +5,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,13 +43,14 @@ test('a catch-all deny is present, so unlisted collections are closed', () => {
 
 test('no OAuth secret or private key is committed anywhere in the repo', () => {
   const secretish = /(GOCSPX-[A-Za-z0-9_-]+|-----BEGIN [A-Z ]*PRIVATE KEY-----)/;
-  const walk = (dir: string): string[] =>
-    fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
-      if (entry.name === '.git' || entry.name === 'node_modules') return [];
-      const full = path.join(dir, entry.name);
-      return entry.isDirectory() ? walk(full) : [full];
-    });
-  const offenders = walk(repoRoot).filter(f => {
+  // Scan the files git actually tracks. Local, gitignored artifacts (a downloaded
+  // tunnel binary, a build output) are not "committed anywhere in the repo" and
+  // must not trip this guard — the committed history is what matters.
+  const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: repoRoot, encoding: 'utf8' })
+    .split('\0')
+    .filter(Boolean)
+    .map(rel => path.join(repoRoot, rel));
+  const offenders = tracked.filter(f => {
     try { return secretish.test(fs.readFileSync(f, 'utf8')); } catch { return false; }
   });
   assert.deepEqual(offenders, [], `secrets found in: ${offenders.join(', ')}`);
