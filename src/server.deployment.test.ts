@@ -408,7 +408,7 @@ test('starting a batch without a video backend answers 503 AI_UNAVAILABLE', asyn
 
 test('the video backend endpoint reports the exact reason ComfyUI video cannot run', async (t) => {
   // ComfyUI on, but no video workflow configured: the endpoint must say so.
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '', COMFYUI_VIDEO_WORKFLOW: '' });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '', COMFYUI_VIDEO_WORKFLOW: '' });
   t.after(() => child.kill());
   await waitForServer(port);
 
@@ -425,7 +425,7 @@ test('the video backend endpoint flags an unfilled placeholder in the workflow',
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-bad-'));
   const workflow = path.join(dir, 'bad.json');
   fs.writeFileSync(workflow, JSON.stringify({ p: '__PROMPT__', b: '__BATCH__' }));
-  const { child, port } = startServer({
+  const { child, port } = await startServer({
     APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '', COMFYUI_VIDEO_WORKFLOW: workflow,
   });
   t.after(() => child.kill());
@@ -459,7 +459,7 @@ test('the scene-errors endpoint lists the exact failure for each failed scene', 
   t.after(() => failing.close());
   const failingPort = (failing.address() as any).port;
 
-  const { child, port } = startServer({
+  const { child, port } = await startServer({
     APP_AUTH_TOKEN: '',
     PREFERRED_RENDER_ENGINE: 'comfyui',
     COMFYUI_DISABLE: '',
@@ -495,7 +495,7 @@ test('the scene-errors endpoint lists the exact failure for each failed scene', 
 });
 
 test('the scene-errors endpoint reports an empty list when nothing failed', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '1', PREFERRED_RENDER_ENGINE: 'comfyui' });
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '1', PREFERRED_RENDER_ENGINE: 'comfyui' });
   t.after(() => child.kill());
   await waitForServer(port);
 
