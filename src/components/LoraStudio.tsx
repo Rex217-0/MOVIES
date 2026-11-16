@@ -305,10 +305,10 @@ export const LoraStudio: React.FC = () => {
  </button>
  </div>
 
- {/* TRAIN (kohya_ss) */}
+ {/* TRAIN (kohya_ss locally, or Colab through Drive) */}
  <div className="border-t border-subtle pt-3 space-y-2">
  <div className="flex items-center gap-2 text-[10px] text-muted uppercase tracking-wider">
- <Cpu size={11} /> Train (kohya_ss)
+ <Cpu size={11} /> {trainStatus?.backend === 'colab' ? 'Train (Colab via Drive)' : 'Train (kohya_ss)'}
  </div>
 
  {trainStatus && !trainStatus.available && (
