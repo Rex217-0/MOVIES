@@ -139,8 +139,12 @@ test('the paid Wan path is blocked unless the deployment opts in', async (t) => 
   t.after(() => setFalClientForTests(null));
 
   // FAL_KEY is set, but ALLOW_PAID_CLOUD is not: the no-cost policy wins and
-  // the call fails honestly instead of spending.
-  await withEnv({ COMFYUI_DISABLE: '1', FAL_KEY: 'fal-test-key' }, async () => {
+  // the call fails honestly instead of spending. The free engines are switched
+  // off too, so the only engine left would be the paid Wan path.
+  await withEnv({
+    COMFYUI_DISABLE: '1', POLLINATIONS_DISABLE: '1', MOTION_DISABLE: '1',
+    FAL_KEY: 'fal-test-key',
+  }, async () => {
     assert.equal(await videoRenderReady(), false, 'paid cloud is not ready without the opt-in');
     await assert.rejects(
       () => renderVideo({ prompt: 'isang bagyo' }),
