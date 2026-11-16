@@ -2398,6 +2398,22 @@ app.get('/android/movie-creator.apk', (_req: Request, res: Response) => {
   res.sendFile(APK_PATH);
 });
 
+// ---------------------------------------------------------------------------
+// Landing page and dashboard (public, no auth)
+// The landing page is the front door (a Framer-ready layout: hero, features,
+// steps). The dashboard reads the app's own live APIs — /api/direk/status,
+// /api/direk/video/backend, /api/direk/system-map, /api/direk/workers,
+// /api/direk/jobs — and shows the real state, never fabricated numbers. When a
+// token is required, the page asks for it and shows a 401 instead of guessing.
+// ---------------------------------------------------------------------------
+const PUBLIC_DIR = path.join(__dirname, 'public');
+app.get('/landing', (_req: Request, res: Response) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'landing.html'));
+});
+app.get('/dashboard', (_req: Request, res: Response) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'));
+});
+
 // Mount Vite or serve static files
 async function startServer() {
   if (!isProd) {

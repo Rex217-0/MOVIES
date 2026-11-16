@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="tl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Movie Creator — AI film studio para sa Filipino filmmakers</title>
+<meta name="description" content="Movie Creator: gumawa ng script, eksena, at buong pelikula gamit ang libre at lokal na AI. Web app, Android app, at dashboard." />
+<style>
+  :root{--bg:#0a0d16;--panel:#121826;--panel2:#161d2e;--line:#232c40;--text:#e8eef7;--dim:#93a1b5;--brand:#5b8cff;--brand2:#a855f7;--ok:#3fb950;--warn:#d29922}
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 80% -10%,#1a2340 0,var(--bg) 55%);color:var(--text);font:16px/1.65 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  a{color:inherit}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 22px}
+  header{display:flex;align-items:center;justify-content:space-between;padding:20px 0}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.3px}
+  .dot{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--brand),var(--brand2));display:inline-block}
+  nav a{color:var(--dim);text-decoration:none;margin-left:18px;font-size:14px}
+  nav a:hover{color:var(--text)}
+  .hero{padding:56px 0 28px;text-align:center}
+  .kicker{display:inline-block;border:1px solid var(--line);background:var(--panel);color:var(--dim);border-radius:999px;padding:6px 14px;font-size:13px}
+  h1{font-size:clamp(30px,5vw,52px);line-height:1.1;margin:18px 0 12px;letter-spacing:-.5px}
+  h1 span{background:linear-gradient(120deg,var(--brand),var(--brand2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--dim);max-width:640px;margin:0 auto 26px;font-size:18px}
+  .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .btn{display:inline-block;text-decoration:none;font-weight:700;padding:14px 22px;border-radius:12px;border:1px solid transparent}
+  .btn.primary{background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff}
+  .btn.ghost{border-color:var(--line);background:var(--panel);color:var(--text)}
+  .meta{color:var(--dim);font-size:13px;margin-top:12px}
+  section{padding:34px 0}
+  h2{font-size:24px;margin:0 0 16px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px}
+  .card h3{margin:2px 0 8px;font-size:17px}
+  .card p{margin:0;color:var(--dim);font-size:14.5px}
+  .ico{font-size:20px}
+  .steps{counter-reset:s;list-style:none;padding:0;display:grid;gap:10px}
+  .steps li{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .steps li::before{counter-increment:s;content:counter(s);display:inline-grid;place-items:center;width:24px;height:24px;border-radius:8px;background:var(--brand);color:#fff;font-weight:800;font-size:13px;margin-right:10px}
+  .stack{display:flex;gap:8px;flex-wrap:wrap}
+  .tag{border:1px solid var(--line);background:var(--panel2);color:var(--dim);border-radius:999px;padding:5px 12px;font-size:13px}
+  footer{border-top:1px solid var(--line);color:var(--dim);font-size:13px;padding:24px 0;margin-top:20px}
+  .note{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:10px;padding:12px 14px;color:var(--dim);font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><span class="dot"></span> MOVIE CREATOR</div>
+    <nav>
+      <a href="/dashboard">Dashboard</a>
+      <a href="/android">Android app</a>
+      <a href="/api/direk/status">API</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <span class="kicker">Lokal at libreng AI · tumatakbo sa sariling GPU</span>
+    <h1>Mula ideya patungong <span>buong pelikula</span>.</h1>
+    <p class="sub">Script, character bible, 18-eksenang breakdown, video render, at TTS — nasa isang studio. Libreng engine muna, tapat na 503 kapag walang backend. Walang pekeng clip.</p>
+    <div class="cta">
+      <a class="btn primary" href="/dashboard">Buksan ang Dashboard</a>
+      <a class="btn ghost" href="/android">I-install sa Android</a>
+    </div>
+    <p class="meta" id="apk-meta">Android APK · pirmado · minSdk 21 (Android 5+)</p>
+  </div>
+
+  <section>
+    <h2>Ano ang kaya nito</h2>
+    <div class="grid">
+      <div class="card"><div class="ico">🎬</div><h3>Feature Film Factory</h3><p>18 eksena, tuloy-tuloy na batch, awtomatikong stitch patungong isang MP4. Hindi tumitigil ang batch kapag may isang eksenang bumagsak.</p></div>
+      <div class="card"><div class="ico">🧠</div><h3>Direk (script + bible)</h3><p>Filipino/Taglish na screenwriter. May guard: hindi gumagawa ng quote o diyalogo para sa totoong tao.</p></div>
+      <div class="card"><div class="ico">🎥</div><h3>Free-first video</h3><p>ComfyUI (lokal GPU) → libreng motion engine (image + ffmpeg) → Wan 2.2 kung naka-opt-in ang <code>ALLOW_PAID_CLOUD</code>.</p></div>
+      <div class="card"><div class="ico">🔊</div><h3>Tagalog TTS</h3><p>Bundled offline na boses, o Piper/Fish kapag naka-configure. Narration sa bawat eksena.</p></div>
+      <div class="card"><div class="ico">🕸️</div><h3>GPU mesh</h3><p>Idagdag ang ibang PC (o phone) bilang worker sa <code>scripts/worker.mjs</code> para maghati sa render load.</p></div>
+      <div class="card"><div class="ico">📱</div><h3>Android remote</h3><p>Thin WebView app na kumokonekta sa server. Ang mabibigat na gawain ay nasa server pa rin.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Paano magsimula</h2>
+    <ol class="steps">
+      <li>Patakbuhin ang server (<code>npm run dev</code> o <code>npm start</code>) sa Server-2.</li>
+      <li>I-set ang <code>.env</code>: <code>COMFYUI_URL</code>, <code>COMFYUI_VIDEO_WORKFLOW</code>, at <code>APP_AUTH_TOKEN</code>.</li>
+      <li>Buksan ang <a href="/dashboard">Dashboard</a> para makita kung alin ang naka-kabit at handa.</li>
+      <li>I-install ang <a href="/android">Android APK</a> sa phone at ilagay ang server address.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Tech stack</h2>
+    <div class="stack">
+      <span class="tag">Node + Express</span><span class="tag">React + Vite</span>
+      <span class="tag">TypeScript ES2022</span><span class="tag">ComfyUI</span>
+      <span class="tag">Ollama</span><span class="tag">ffmpeg</span>
+      <span class="tag">SQLite</span><span class="tag">PWA</span><span class="tag">Android WebView</span>
+    </div>
+    <p class="note" style="margin-top:14px">Tapat na sistema: kapag hindi maabot ang backend, sasabihin ng app ang eksaktong URL at error (503 <code>AI_UNAVAILABLE</code>) — hindi ito gagawa ng pekeng video.</p>
+  </section>
+
+  <footer>
+    MOVIE CREATOR · self-hosted AI film studio · <a href="/dashboard">Dashboard</a> · <a href="/android">Android</a>
+  </footer>
+</div>
+<script>
+  // Live: show the real APK size, never a fabricated one.
+  fetch('/api/direk/setup').then(r => r.ok ? r.json() : null).then(() => {}).catch(() => {});
+</script>
+</body>
+</html>

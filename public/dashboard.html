@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="tl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dashboard — Movie Creator</title>
+<style>
+  :root{--bg:#0a0d16;--panel:#121826;--panel2:#161d2e;--line:#232c40;--text:#e8eef7;--dim:#93a1b5;--brand:#5b8cff;--ok:#3fb950;--warn:#d29922;--err:#f85149;--dead:#6b7686}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  a{color:var(--brand)}
+  .wrap{max-width:1100px;margin:0 auto;padding:0 20px 40px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 0;flex-wrap:wrap}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:800}
+  .dot{width:24px;height:24px;border-radius:7px;background:linear-gradient(135deg,var(--brand),#a855f7)}
+  .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  input,button{font:inherit}
+  input{background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:9px 12px;min-width:240px}
+  button{background:var(--brand);color:#fff;border:0;border-radius:10px;padding:9px 14px;font-weight:700;cursor:pointer}
+  button.ghost{background:var(--panel);border:1px solid var(--line);color:var(--text)}
+  .banner{border:1px solid var(--line);border-left:3px solid var(--warn);background:var(--panel);border-radius:10px;padding:12px 14px;color:var(--dim);margin:6px 0 18px;display:none}
+  .banner.show{display:block}
+  h2{font-size:18px;margin:26px 0 12px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .card .lbl{color:var(--dim);font-size:12.5px;text-transform:uppercase;letter-spacing:.6px}
+  .card .val{font-size:22px;font-weight:800;margin:6px 0 2px;word-break:break-word}
+  .card .sub{color:var(--dim);font-size:13px;word-break:break-word}
+  .row{display:flex;align-items:center;gap:8px}
+  .pill{font-size:12px;font-weight:700;border-radius:999px;padding:3px 10px;border:1px solid var(--line)}
+  .s-active{color:var(--ok);border-color:var(--ok)}.s-warn{color:var(--warn);border-color:var(--warn)}
+  .s-error{color:var(--err);border-color:var(--err)}.s-dead,.s-unknown{color:var(--dead)}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600;font-size:12.5px;text-transform:uppercase;letter-spacing:.5px}
+  code{background:var(--panel2);padding:2px 6px;border-radius:6px;font-size:13px}
+  .muted{color:var(--dim);font-size:13px}
+  .err{color:var(--err);font-size:13px}
+  .empty{color:var(--dim);padding:10px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><span class="dot"></span> MOVIE CREATOR · Dashboard</div>
+    <div class="bar">
+      <input id="token" type="password" placeholder="APP_AUTH_TOKEN (kung naka-set)" autocomplete="off" />
+      <button id="save">I-save</button>
+      <button id="refresh" class="ghost">Refresh</button>
+      <a class="muted" href="/landing">← Landing</a>
+    </div>
+  </header>
+
+  <div id="banner" class="banner"></div>
+  <div class="muted" id="stamp">Hindi pa naglo-load…</div>
+
+  <h2>Kalagayan ngayon</h2>
+  <div class="grid" id="overview"></div>
+
+  <h2>Video backend (ComfyUI)</h2>
+  <div class="grid" id="video"></div>
+
+  <h2>Sistema — live probe ng bawat node</h2>
+  <div class="card" style="padding:6px 8px"><table id="nodes"><thead><tr><th>Node</th><th>Status</th><th>Detalye</th><th>Latency</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>GPU mesh workers</h2>
+  <div class="card" style="padding:6px 8px"><table id="workers"><thead><tr><th>Pangalan</th><th>Role</th><th>Status</th><th>URL</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>Mga job (huling 30)</h2>
+  <div class="card" style="padding:6px 8px"><table id="jobs"><thead><tr><th>ID</th><th>Status</th><th>%</th><th>Stage</th><th>Title</th></tr></thead><tbody></tbody></table></div>
+
+  <p class="muted" style="margin-top:24px">Lahat ng halaga dito ay galing sa live API. Walang fabricated o mock na numero — kapag hindi maabot ang isang backend, makikita ang tunay na error at URL.</p>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const banner = $('banner');
+
+function token(){ return localStorage.getItem('mc_token') || ''; }
+$('token').value = token();
+$('save').onclick = () => { localStorage.setItem('mc_token', $('token').value.trim()); load(); };
+$('refresh').onclick = load;
+
+function authHeaders(){ const t = token(); return t ? { Authorization: 'Bearer ' + t } : {}; }
+
+async function api(path){
+  const res = await fetch(path, { headers: authHeaders() });
+  if (res.status === 401) { const e = new Error('401'); e.unauthorized = true; throw e; }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+  return body;
+}
+
+function pill(s){
+  const map = {active:'s-active', ready:'s-active', ok:'s-active', error:'s-error', dead:'s-dead', unknown:'s-unknown', warn:'s-warn'};
+  return '<span class="pill ' + (map[s] || 's-unknown') + '">' + (s || 'unknown') + '</span>';
+}
+
+function card(label, val, sub){
+  return '<div class="card"><div class="lbl">' + label + '</div><div class="val">' + val + '</div><div class="sub">' + (sub || '') + '</div></div>';
+}
+
+function rows(tbody, list, cols){
+  tbody.innerHTML = '';
+  if (!list || !list.length) { tbody.innerHTML = '<tr><td colspan="' + cols + '" class="empty">Walang laman.</td></tr>'; return; }
+  for (const item of list) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = item;
+    tbody.appendChild(tr);
+  }
+}
+
+async function load(){
+  banner.classList.remove('show');
+  try {
+    const [status, video, map, workers, jobs, routing] = await Promise.all([
+      api('/api/direk/status'),
+      api('/api/direk/video/backend'),
+      api('/api/direk/system-map'),
+      api('/api/direk/workers'),
+      api('/api/direk/jobs'),
+      api('/api/direk/routing'),
+    ]);
+
+    $('stamp').textContent = 'Live noong ' + new Date().toLocaleString() + ' · system map: ' + map.checked_at;
+
+    $('overview').innerHTML =
+      card('Text backend', pill(status.ok ? 'active' : 'error') + ' ' + (status.text_backend || '—'), status.model || '') +
+      card('Image backend', '<b>' + (status.image_backend || '—') + '</b>', 'Gemini key: ' + (status.gemini_key_configured ? 'oo' : 'wala')) +
+      card('ComfyUI URL', '<span class="muted" style="font-size:14px">' + (status.comfyui_url || '—') + '</span>', 'mula sa .env COMFYUI_URL') +
+      card('Mesh workers', String((workers.summary && workers.summary.online) ?? (workers.workers ? workers.workers.length : 0)), 'rehistradong workers') +
+      card('Jobs', String(jobs.count ?? 0), 'huling 30 sa store') +
+      card('Video engine', '<b>' + (video.preferred_engine || '—') + '</b>', 'ready: ' + (video.ready ? 'oo' : 'hindi'));
+
+    const c = video.comfyui || {};
+    $('video').innerHTML =
+      card('Naka-enable', c.enabled ? 'oo' : 'hindi', 'COMFYUI_DISABLE') +
+      card('URL', '<span class="muted" style="font-size:14px">' + (c.url || '—') + '</span>', '') +
+      card('Maabot?', pill(c.reachable ? 'active' : 'error'), 'problem: ' + (c.problem || '—')) +
+      card('Workflow', c.workflow_exists ? 'meron' : 'wala', (c.workflow || '(walang COMFYUI_VIDEO_WORKFLOW)')) +
+      card('FAL key', video.fal && video.fal.key_configured ? 'naka-set' : 'wala', 'Wan 2.2 fallback') +
+      card('Detalye', '', (c.detail || ''));
+
+    rows($('nodes').querySelector('tbody'), (map.nodes || []).map(n =>
+      '<td>' + n.name + '</td><td>' + pill(n.status) + '</td><td class="muted">' + (n.detail || '') + '</td><td class="muted">' + (n.latency_ms != null ? n.latency_ms + ' ms' : '—') + '</td>'
+    ), 4);
+
+    rows($('workers').querySelector('tbody'), (workers.workers || []).map(w =>
+      '<td>' + (w.name || w.id || '—') + '</td><td>' + (w.role || '—') + '</td><td>' + pill(w.status || (w.online ? 'active' : 'dead')) + '</td><td class="muted">' + (w.public_url || w.url || '—') + '</td>'
+    ), 4);
+
+    rows($('jobs').querySelector('tbody'), (jobs.jobs || []).map(j =>
+      '<td><code>' + (j.id || '').slice(0, 12) + '</code></td><td>' + pill(j.status) + '</td><td>' + (j.percent ?? '—') + '</td><td class="muted">' + (j.stage || '—') + '</td><td>' + (j.title || '—') + '</td>'
+    ), 5);
+
+    if (routing && routing.mesh) {
+      // Mesh summary is honest about the fact that capacity only exists when
+      // people actually run workers.
+      banner.textContent = 'Mesh: ' + (routing.mesh.online || 0) + ' online / ' + (routing.mesh.total || 0) + ' rehistrado. Ang "ibang GPU" ay umiiral lamang kapag may tumatakbo sa scripts/worker.mjs.';
+      banner.classList.add('show');
+    }
+  } catch (e) {
+    if (e.unauthorized) {
+      banner.innerHTML = '401 Unauthorized. Ilagay ang tamang <code>APP_AUTH_TOKEN</code> sa itaas at i-save. Walang data na ipinapakita hangga\'t hindi makapasok.';
+      banner.classList.add('show');
+    } else {
+      banner.innerHTML = 'Hindi makuha ang data: <span class="err">' + e.message + '</span>. Siguraduhing tumatakbo ang server.';
+      banner.classList.add('show');
+    }
+    $('stamp').textContent = 'Nabigo ang pag-load.';
+  }
+}
+load();
+</script>
+</body>
+</html>

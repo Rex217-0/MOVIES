@@ -856,3 +856,29 @@ test('the Android download page and APK are public and real', async (t) => {
   assert.equal(downloaded.subarray(0, 2).toString('latin1'), 'PK');
   assert.ok(downloaded.includes(Buffer.from('AndroidManifest.xml')));
 });
+
+test('the landing page and dashboard are public and real', async (t) => {
+  const { child, port } = await startServer({ APP_AUTH_TOKEN: 'secret-token' });
+  t.after(() => child.kill());
+  await waitForServer(port, '/landing');
+
+  // Public: the front door must load without a token, like the Android page.
+  const landing = await fetch(`http://127.0.0.1:${port}/landing`);
+  assert.equal(landing.status, 200);
+  assert.match(landing.headers.get('content-type') || '', /text\/html/);
+  const lhtml = await landing.text();
+  assert.match(lhtml, /MOVIE CREATOR/);
+  assert.match(lhtml, /href="\/dashboard"/);
+  assert.match(lhtml, /href="\/android"/);
+
+  const dash = await fetch(`http://127.0.0.1:${port}/dashboard`);
+  assert.equal(dash.status, 200);
+  const dhtml = await dash.text();
+  assert.match(dhtml, /Dashboard/);
+  // The dashboard must read the app's own live APIs, not a hardcoded snapshot.
+  assert.match(dhtml, /\/api\/direk\/status/);
+  assert.match(dhtml, /\/api\/direk\/video\/backend/);
+  assert.match(dhtml, /\/api\/direk\/system-map/);
+  // It asks for the token instead of guessing when auth is on.
+  assert.match(dhtml, /APP_AUTH_TOKEN/);
+});
