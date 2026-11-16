@@ -144,3 +144,33 @@ test('preferredTextBackend prefers Gemini, then Ollama, and respects the disable
     assert.equal(preferredTextBackend(), 'none');
   });
 });
+
+test('ollamaStatus does not confuse a different tag of the same family (qwen2.5:3b vs 7b)', async () => {
+  // Boss Rex has only qwen2.5:3b pulled. The app default asks for qwen2.5:7b.
+  // Reporting "present" here would make the status lie; the call then fails.
+  const mock = await startOllama({ models: ['qwen2.5:3b'] });
+  try {
+    await withOllama({ OLLAMA_URL: mock.url, OLLAMA_MODEL: 'qwen2.5:7b' }, async () => {
+      const status = await ollamaStatus();
+      assert.equal(status.reachable, true);
+      assert.equal(status.model_present, false);
+    });
+    await withOllama({ OLLAMA_URL: mock.url, OLLAMA_MODEL: 'qwen2.5:3b' }, async () => {
+      const status = await ollamaStatus();
+      assert.equal(status.model_present, true);
+    });
+  } finally {
+    await mock.close();
+  }
+});
+
+test('an untagged model name matches its :latest tag', async () => {
+  const mock = await startOllama({ models: ['llama3:latest'] });
+  try {
+    await withOllama({ OLLAMA_URL: mock.url, OLLAMA_MODEL: 'llama3' }, async () => {
+      assert.equal((await ollamaStatus()).model_present, true);
+    });
+  } finally {
+    await mock.close();
+  }
+});

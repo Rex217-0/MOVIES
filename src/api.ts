@@ -3,8 +3,8 @@
  *
  * The token is read from a `?token=` query parameter on first load and kept in
  * sessionStorage, so the app works behind the bearer-token middleware without a
- * login screen. EventSource cannot set headers, so the same token is appended
- * to the thought-stream URL.
+ * login screen. The SSE thought stream cannot set headers, so instead of putting
+ * that long-lived token in the URL we mint a short-lived ticket and use that.
  */
 
 const TOKEN_STORAGE_KEY = 'direk_auth_token';
@@ -41,12 +41,23 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
   return fetch(input, { ...init, headers });
 }
 
-/** URL for the SSE thought stream, with the token as a query parameter. */
-export function thoughtStreamUrl(): string {
+/**
+ * URL for the SSE thought stream. When a token is configured, ask the server for
+ * a short-lived ticket first and put only that in the URL (Blocker E). Falls
+ * back to the plain URL when no auth is configured.
+ */
+export async function thoughtStreamUrl(): Promise<string> {
   const token = getAuthToken();
-  return token
-    ? `/api/pilot/thought-stream?token=${encodeURIComponent(token)}`
-    : '/api/pilot/thought-stream';
+  if (!token) return '/api/pilot/thought-stream';
+  try {
+    const res = await apiFetch('/api/pilot/stream-ticket', { method: 'POST' });
+    if (!res.ok) return '/api/pilot/thought-stream';
+    const data = (await res.json()) as { ticket?: string };
+    if (!data.ticket) return '/api/pilot/thought-stream';
+    return `/api/pilot/thought-stream?ticket=${encodeURIComponent(data.ticket)}`;
+  } catch {
+    return '/api/pilot/thought-stream';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +299,7 @@ export interface LoraFile {
 
 export interface DirekSettings {
   comfyui_url?: string;
+  comfyui_enabled?: boolean;
   comfyui_checkpoint?: string;
   comfyui_workflow?: string;
   comfyui_video_workflow?: string;
@@ -443,6 +455,41 @@ export interface RoutingReport {
 
 export async function direkRouting(): Promise<RoutingReport | null> {
   const res = await apiFetch('/api/direk/routing');
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Live system map (Radar tab). Each call really probes every node.
+// ---------------------------------------------------------------------------
+
+export type NodeStatus = 'active' | 'error' | 'standby' | 'dead';
+export type NodeLayer = 'center' | 'behind' | 'left' | 'right' | 'front';
+
+export interface MapNode {
+  id: string;
+  name: string;
+  kind: 'core' | 'ai' | 'local' | 'cloud' | 'storage' | 'training' | 'agent';
+  layer: NodeLayer;
+  wired: boolean;
+  wire?: string;
+  status: NodeStatus;
+  detail: string;
+  latency_ms?: number;
+  probe: string;
+  role: string;
+  meta?: Record<string, string | number | boolean | null>;
+}
+
+export interface SystemMap {
+  checked_at: string;
+  center: string;
+  counts: Record<NodeStatus, number>;
+  nodes: MapNode[];
+}
+
+export async function direkSystemMap(): Promise<SystemMap | null> {
+  const res = await apiFetch('/api/direk/system-map');
   if (!res.ok) return null;
   return res.json();
 }

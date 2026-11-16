@@ -46,7 +46,7 @@ import {
   comfyAvailable, generateWithComfy, comfyUrl, diagnoseComfyVideo, checkComfyReachability,
   publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
 } from './src/direk/comfyui.ts';
-import { pollinationsUrl } from './src/direk/imagine.ts';
+import { pollinationsUrl, resetComfyCache } from './src/direk/imagine.ts';
 import { trainingConfig } from './src/direk/trainer.ts';
 import { createTrainBackend, trainBackendName } from './src/direk/trainBackend.ts';
 import {
@@ -86,6 +86,17 @@ import {
 } from './src/direk/taskRouter.ts';
 import type { AssetMeta } from './src/direk/assets.ts';
 import {
+  WorkerMesh, workerView, dispatchToMesh, type WorkerRegistration,
+} from './src/direk/workerMesh.ts';
+import { buildSystemMap, realProbeEnv } from './src/direk/systemMap.ts';
+import {
+  securityHeaders, corsDecision, RateLimiter,
+  issueTicket, verifyTicket, ticketToParam, paramToTicket,
+} from './src/direk/security.ts';
+import { JobStore } from './src/direk/jobStore.ts';
+import { Quota, quotaExceededMessage } from './src/direk/quota.ts';
+import { verifyVideo, verifyImage } from './src/direk/verify.ts';
+import {
   pilotStatus, writeScreenplay,
   PilotUnavailable, PILOT_UNAVAILABLE, PILOT_MODEL,
 } from './src/services/pilotService.ts';
@@ -107,12 +118,80 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // ---------------------------------------------------------------------------
+// Edge hardening (Blocker E). Safe headers on every response, a CORS
+// allow-list so a random site cannot call the billable API, and a per-client
+// rate limit so one client cannot exhaust the shared free tier.
+// ---------------------------------------------------------------------------
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+const RATE_LIMIT = Math.max(1, parseInt(process.env.RATE_LIMIT_PER_MIN || '120', 10));
+const rateLimiter = new RateLimiter(RATE_LIMIT, 60_000);
+
+// Daily quota for AI work (Blocker B): a shared free-tier key is not unlimited.
+// 0 disables the cap. This is the honest floor, not full accounts.
+const AI_DAILY_QUOTA = Math.max(0, parseInt(process.env.AI_DAILY_QUOTA || '500', 10));
+const aiQuota = new Quota({ limit: AI_DAILY_QUOTA });
+
+/** Charge one unit of AI work, or answer 429 with an honest message. */
+function chargeQuota(req: Request, res: Response): boolean {
+  if (AI_DAILY_QUOTA <= 0) return true;
+  aiQuota.prune();
+  const key = req.get('x-forwarded-for')?.split(',')[0]?.trim() || req.ip || 'unknown';
+  const state = aiQuota.consume(key);
+  res.setHeader('X-AI-Quota-Limit', String(state.limit));
+  res.setHeader('X-AI-Quota-Remaining', String(state.remaining));
+  if (!state.allowed) {
+    res.status(429).json({ error: quotaExceededMessage(state), quota: state });
+    return false;
+  }
+  return true;
+}
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+  for (const [k, v] of Object.entries(securityHeaders())) res.setHeader(k, v);
+  const decision = corsDecision(req.get('origin'), ALLOWED_ORIGINS);
+  if (!decision.allowed) {
+    res.status(403).json({ error: 'Hindi pinapayagan ang origin na ito (CORS).' });
+    return;
+  }
+  for (const [k, v] of Object.entries(decision.headers)) res.setHeader(k, v);
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+  next();
+});
+
+// Rate limit only the /api surface, and skip the SSE stream (it is one long
+// request, not a flood) and the health probe.
+app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+  if (req.path === '/pilot/thought-stream' || req.path === '/health') {
+    next();
+    return;
+  }
+  rateLimiter.prune();
+  const key = req.get('x-forwarded-for')?.split(',')[0]?.trim() || req.ip || 'unknown';
+  const result = rateLimiter.check(key);
+  res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT));
+  res.setHeader('X-RateLimit-Remaining', String(result.remaining));
+  if (!result.allowed) {
+    res.setHeader('Retry-After', String(result.retryAfter));
+    res.status(429).json({ error: `Sobrang bilis ng request. Subukan muli pagkalipas ng ${result.retryAfter}s.` });
+    return;
+  }
+  next();
+});
+
+// ---------------------------------------------------------------------------
 // Authentication
 // Every /api route is protected by a bearer token. Auth is fail-closed in
 // production: if APP_AUTH_TOKEN is not set there, the server refuses to start
 // rather than exposing unauthenticated (and billable) AI endpoints.
-// EventSource cannot set headers, so the SSE route additionally accepts the
-// token via a `?token=` query parameter.
+// The SSE stream cannot set headers, so it accepts a short-lived ticket
+// (`?ticket=`) minted by POST /api/pilot/stream-ticket — never the long-lived
+// token in the URL.
 // ---------------------------------------------------------------------------
 const AUTH_TOKEN = process.env.APP_AUTH_TOKEN;
 const authRequired = isProd || Boolean(AUTH_TOKEN);
@@ -129,19 +208,41 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
   }
   const header = req.get('authorization') || '';
   const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-  const queryToken = typeof req.query.token === 'string' ? req.query.token : '';
-  if (AUTH_TOKEN && (bearer === AUTH_TOKEN || queryToken === AUTH_TOKEN)) {
+  if (AUTH_TOKEN && bearer === AUTH_TOKEN) {
     next();
     return;
+  }
+  // The SSE stream cannot set headers. Accept a short-lived, single-purpose
+  // ticket instead of the long-lived token, so nothing durable lands in a URL,
+  // a log, or the browser history (Blocker E).
+  const ticketParam = typeof req.query.ticket === 'string' ? req.query.ticket : '';
+  if (req.path === '/pilot/thought-stream' && AUTH_TOKEN && ticketParam) {
+    const parsed = paramToTicket(ticketParam);
+    if (parsed && verifyTicket(AUTH_TOKEN, 'stream', parsed.value, parsed.expiresAt)) {
+      next();
+      return;
+    }
   }
   res.status(401).json({
     error:
       'Unauthorized. Send a valid bearer token in the Authorization header ' +
-      '(or ?token= for the thought stream).',
+      '(or ?ticket= for the thought stream).',
   });
 }
 
 app.use('/api', requireAuth);
+
+// Mint a short-lived ticket for the thought stream, so the browser never puts
+// the long-lived token in a URL.
+app.post('/api/pilot/stream-ticket', (_req: Request, res: Response) => {
+  if (!AUTH_TOKEN) {
+    // No auth in this deployment; the stream needs no ticket.
+    res.json({ ticket: '', expires_at: 0 });
+    return;
+  }
+  const ticket = issueTicket(AUTH_TOKEN, 'stream', 60_000);
+  res.json({ ticket: ticketToParam(ticket), expires_at: ticket.expiresAt });
+});
 
 // Initialize GoogleGenAI server-side with telemetry header
 // The SDK defaults to the stable v1 endpoint, but the current flash models are
@@ -392,6 +493,7 @@ app.get('/api/pilot/thought-stream', (req: Request, res: Response) => {
 
 // 3. Command Execution
 app.post('/api/pilot/command', async (req: Request, res: Response) => {
+  if (!chargeQuota(req, res)) return;
   const { directive, confirmed } = req.body;
 
   if (!directive || typeof directive !== 'string' || !directive.trim()) {
@@ -512,13 +614,19 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   const formattedPrompt = buildTacticalVideoPrompt(prompt);
   const startTime = Date.now();
 
-  // Video renders on the engine chosen by PREFERRED_RENDER_ENGINE: local-first
-  // (the default) tries the ComfyUI GPU (Server-2), then falls back to Wan 2.2
-  // when ALLOW_PAID_CLOUD=1; cloud-first routes straight to Wan 2.2.
+  // Video renders on the engine chosen by PREFERRED_RENDER_ENGINE: cloud-first
+  // routes to Wan 2.2 on fal.ai, local-first tries the ComfyUI GPU (Server-2),
+  // then the free motion engine, then Wan 2.2 when ALLOW_PAID_CLOUD=1, and
+  // `motion` is the free still-plus-ffmpeg path.
   const videoPlan = planExecution('video_render', { prompt });
   broadcastThought(`[ROUTER] video_render → ${videoPlan.route.tier} (${videoPlan.run})`);
   const preferred = preferredRenderEngine();
-  broadcastThought(`[ROUTER] PREFERRED_RENDER_ENGINE=${preferred} → ${preferred === 'fal' ? 'Wan 2.2 on fal.ai (paid cloud-first, ComfyUI skipped)' : 'local ComfyUI first, then Wan 2.2'}`);
+  const preferredNote = preferred === 'fal'
+    ? 'Wan 2.2 on fal.ai (paid cloud-first, ComfyUI skipped)'
+    : preferred === 'motion'
+      ? 'libreng motion engine (free image + ffmpeg, walang gastos)'
+      : 'local ComfyUI first, then libreng motion engine, then Wan 2.2';
+  broadcastThought(`[ROUTER] PREFERRED_RENDER_ENGINE=${preferred} → ${preferredNote}`);
 
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
@@ -528,6 +636,7 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
       negative: buildVeoStyleNegative(),
       aspectRatio: validAspect,
       resolution,
+      seconds: Number.isFinite(Number(duration)) && Number(duration) > 0 ? Number(duration) : undefined,
     });
     if (editNote) broadcastThought(`[VIDEO EDIT] ${editNote}`);
     const elapsedMs = Date.now() - startTime;
@@ -963,11 +1072,110 @@ app.get('/api/direk/routing', (_req: Request, res: Response) => {
     tiers: TIER_LABELS,
     t3_allow_local: process.env.T3_ALLOW_LOCAL !== '0',
     cloud_configured: Boolean(process.env.CLOUD_T3_URL),
+    mesh: workerMesh.summary(),
     table: routingTable(),
   });
 });
 
+// ---------------------------------------------------------------------------
+// Live system map for the Radar tab. Every node is probed for real on each
+// call; nothing is fabricated. See src/direk/systemMap.ts.
+// ---------------------------------------------------------------------------
+app.get('/api/direk/system-map', async (_req: Request, res: Response) => {
+  try {
+    const map = await buildSystemMap(realProbeEnv());
+    res.json(map);
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'Hindi mabuo ang system map.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GPU worker mesh: the registry and scheduler behind "heavy work runs on the
+// GPUs of other connected machines". A contributing machine runs a worker and
+// registers here; the coordinator places jobs on workers that advertise the
+// engine the job needs. See docs/android-remote-v2-plan.md (Blocker A).
+// ---------------------------------------------------------------------------
+const workerMesh = new WorkerMesh();
+
+app.get('/api/direk/workers', (_req: Request, res: Response) => {
+  res.json({
+    summary: workerMesh.summary(),
+    workers: workerMesh.list().map(workerView),
+  });
+});
+
+app.post('/api/direk/workers/register', (req: Request, res: Response) => {
+  const body = req.body as WorkerRegistration;
+  try {
+    const record = workerMesh.register({
+      id: String(body?.id ?? ''),
+      label: body?.label,
+      url: String(body?.url ?? ''),
+      token: body?.token,
+      capabilities: body?.capabilities,
+      role: body?.role,
+      maxConcurrent: body?.maxConcurrent,
+    });
+    broadcastThought(`[MESH] Worker ${record.id} nag-register (${record.url}) · ${record.role}${record.capabilities.engines?.length ? ` · ${record.capabilities.engines.join(', ')}` : ''}`);
+    res.status(201).json({ worker: workerView(record) });
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Hindi ma-register ang worker.' });
+  }
+});
+
+app.post('/api/direk/workers/heartbeat', (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : '';
+  const record = id ? workerMesh.heartbeat(id) : undefined;
+  if (!record) {
+    res.status(404).json({ error: 'Walang ganoong worker. Mag-register muna.' });
+    return;
+  }
+  res.json({ worker: workerView(record) });
+});
+
+app.post('/api/direk/workers/deregister', (req: Request, res: Response) => {
+  const id = typeof req.body?.id === 'string' ? req.body.id : '';
+  const removed = id ? workerMesh.deregister(id) : false;
+  if (removed) broadcastThought(`[MESH] Worker ${id} nag-deregister.`);
+  res.json({ removed });
+});
+
+app.post('/api/direk/workers/dispatch', async (req: Request, res: Response) => {
+  const engine = typeof req.body?.engine === 'string' ? req.body.engine : '';
+  const task = typeof req.body?.task === 'string' ? req.body.task : '';
+  const payload = (req.body?.payload && typeof req.body.payload === 'object') ? req.body.payload : {};
+  if (!engine) {
+    res.status(400).json({ error: 'Kailangan ng engine (hal. comfyui).' });
+    return;
+  }
+  const result = await dispatchToMesh(workerMesh, { engine, task: task || engine, payload });
+  // A worker is untrusted: check the bytes before calling a job done
+  // (Blocker H). An unknown shape is reported, never assumed good.
+  const out = result.output as any;
+  let verification: ReturnType<typeof verifyVideo> | ReturnType<typeof verifyImage> | null = null;
+  if (result.ok && out) {
+    const bytes: Buffer | null = typeof out.video_base64 === 'string'
+      ? Buffer.from(out.video_base64, 'base64')
+      : typeof out.image_base64 === 'string'
+        ? Buffer.from(out.image_base64, 'base64')
+        : null;
+    if (bytes) {
+      const requested = typeof payload.seconds === 'number' ? payload.seconds : undefined;
+      verification = out.video_base64
+        ? verifyVideo(bytes, { expectedSeconds: requested }, out.seconds)
+        : verifyImage(bytes);
+      if (!verification.ok) {
+        res.status(502).json({ ...result, ok: false, error: `Nabigo ang verification: ${verification.detail}`, verification });
+        return;
+      }
+    }
+  }
+  res.status(result.ok ? 200 : 503).json({ ...result, verification });
+});
+
 app.post('/api/direk/chat', async (req: Request, res: Response) => {
+  if (!chargeQuota(req, res)) return;
   const { messages } = req.body as { messages?: ChatMessage[] };
   if (!Array.isArray(messages) || messages.length === 0) {
     res.status(400).json({ error: 'messages array is required.' });
@@ -1013,6 +1221,21 @@ app.post('/api/direk/chat', async (req: Request, res: Response) => {
 // Movie Creator: one brief in, one downloadable film out.
 // ---------------------------------------------------------------------------
 const movieJobs = new Map<string, MovieJob>();
+// Durable mirror of the in-memory jobs, so state survives a restart and a phone
+// that slept can re-attach (Blockers D and I).
+const jobStore = new JobStore();
+// A job cannot have survived the process that was running it; say so honestly.
+const interruptedOnBoot = jobStore.markInterrupted();
+if (interruptedOnBoot > 0) {
+  console.log(`[JOBS] ${interruptedOnBoot} job(s) na-interrupt ng restart; minarkahan na error.`);
+}
+const persistJob = (job: MovieJob) => {
+  try {
+    jobStore.save(job as any);
+  } catch (error: any) {
+    console.error(`[JOBS] Hindi na-save ang ${job.id}: ${error?.message || error}`);
+  }
+};
 
 interface MovieJob {
   id: string;
@@ -1059,7 +1282,35 @@ app.get('/api/direk/movie/status', (_req: Request, res: Response) => {
   });
 });
 
+// Durable job state (Blockers D and I): the phone can re-attach after sleeping,
+// and a restart does not lose the record of what ran. These read the SQLite
+// store, not the in-memory map, so they answer even for a job this process
+// never saw.
+app.get('/api/direk/jobs', (_req: Request, res: Response) => {
+  const jobs = jobStore.list(30).map(j => ({
+    id: j.id,
+    status: j.status,
+    percent: j.percent,
+    stage: j.stage,
+    updated_at: j.updated_at,
+    title: (j.data.title as string) ?? undefined,
+    asset: j.data.asset ?? undefined,
+    error: (j.data.error as string) ?? undefined,
+  }));
+  res.json({ count: jobs.length, jobs });
+});
+
+app.get('/api/direk/jobs/:id', (req: Request, res: Response) => {
+  const rec = jobStore.get(String(req.params.id));
+  if (!rec) {
+    res.status(404).json({ error: 'Walang ganoong job.' });
+    return;
+  }
+  res.json({ job: rec.data, durable: { status: rec.status, percent: rec.percent, updated_at: rec.updated_at } });
+});
+
 app.post('/api/direk/movie', async (req: Request, res: Response) => {
+  if (!chargeQuota(req, res)) return;
   const body = req.body as { brief?: string; minutes?: number; mood?: string; voice?: string; title?: string };
   const brief = typeof body.brief === 'string' ? body.brief.trim() : '';
   if (!brief) {
@@ -1083,6 +1334,7 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
   const id = `MOV-${Date.now()}`;
   const job: MovieJob = { id, brief, minutes, stage: 'Simula', percent: 0, status: 'running', startedAt: Date.now() };
   movieJobs.set(id, job);
+  persistJob(job);
   while (movieJobs.size > 30) movieJobs.delete(movieJobs.keys().next().value as string);
 
   res.status(202).json({ status: 'accepted', job: id });
@@ -1091,6 +1343,7 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
     job.stage = p.stage;
     job.percent = p.percent;
     job.detail = p.detail;
+    persistJob(job);
     broadcastThought(`[MOVIE ${p.percent}%] ${p.stage}${p.detail ? ` · ${p.detail}` : ''}`);
   };
 
@@ -1127,11 +1380,13 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
       pacing: grounding.pacing,
     };
     job.endedAt = Date.now();
+    persistJob(job);
     broadcastThought(`[MOVIE DONE] ${script.title} · ${result.seconds.toFixed(0)}s`);
   } catch (error: any) {
     job.status = 'error';
     job.error = error?.message || 'Hindi nagawa ang pelikula.';
     job.endedAt = Date.now();
+    persistJob(job);
     broadcastThought(`[MOVIE ERROR] ${job.error}`);
   }
 });
@@ -1305,6 +1560,7 @@ app.post('/api/direk/feature/pilot', async (req: Request, res: Response) => {
 });
 
 app.post('/api/direk/feature/start', async (req: Request, res: Response) => {
+  if (!chargeQuota(req, res)) return;
   const id = typeof req.body?.id === 'string' ? req.body.id : '';
   const job = id ? featureFactory.get(id) : undefined;
   if (!job) {
@@ -1849,6 +2105,16 @@ app.get('/renders/:name', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Hindi mahanap ang render.' });
     return;
   }
+  // Blocker C: a phone must be able to SAVE the film, not just open a tab.
+  // `?download=1` (or /download) sends a filename so Android shows a save/share
+  // sheet. The inline view is kept for in-app playback.
+  const name = path.basename(full);
+  const wantsDownload = req.query.download === '1' || req.query.download === 'true';
+  if (wantsDownload) {
+    const safe = name.replace(/[^\w.\-]+/g, '_');
+    res.setHeader('Content-Disposition', `attachment; filename="${safe}"`);
+  }
+  res.type('video/mp4');
   res.sendFile(full);
 });
 
@@ -1895,7 +2161,7 @@ app.get('/api/direk/settings', (_req: Request, res: Response) => {
 app.put('/api/direk/settings', (req: Request, res: Response) => {
   const body = (req.body || {}) as DirekSettings;
   const allowed: (keyof DirekSettings)[] = [
-    'comfyui_url', 'comfyui_checkpoint', 'comfyui_workflow', 'comfyui_video_workflow', 'comfyui_loras_dir',
+    'comfyui_url', 'comfyui_enabled', 'comfyui_checkpoint', 'comfyui_workflow', 'comfyui_video_workflow', 'comfyui_loras_dir',
     'kohya_dir', 'kohya_base_model', 'kohya_python', 'kohya_accelerate', 'kohya_output_dir',
     'ollama_url', 'ollama_model',
   ];
@@ -1907,6 +2173,7 @@ app.put('/api/direk/settings', (req: Request, res: Response) => {
   // Apply live so the next request already uses the new paths.
   applySettings(clean, true);
   comfyOk = null;
+  resetComfyCache();
   textBackendCache = null;
   res.json({ saved: true, config_path: configPath(), settings: clean });
 });
@@ -2131,6 +2398,14 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
+    // The service worker must be served from the root scope and never cached by
+    // the browser, or a stale worker keeps serving an old shell (Blocker F).
+    app.get('/sw.js', (_req: Request, res: Response) => {
+      res.setHeader('Service-Worker-Allowed', '/');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.type('application/javascript');
+      res.sendFile(path.join(__dirname, 'dist', 'sw.js'));
+    });
     app.use(express.static(path.join(__dirname, 'dist')));
     app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.join(__dirname, 'dist', 'index.html'));

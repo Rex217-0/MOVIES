@@ -58,14 +58,22 @@ generation and LoRA sample images cost nothing. Point the app at it:
 | `COMFYUI_VIDEO_WORKFLOW` | (unset) | AnimateDiff/SVD workflow (API format) for local video; placeholders `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`, `__HEIGHT__`, `__FRAMES__`, `__CHECKPOINT__` are filled before `/prompt`, and any other `__TOKEN__` is refused |
 | `COMFYUI_LORAS_DIR` | `<ComfyUI>/models/loras` | Where trained LoRAs are published |
 | `COMFYUI_TIMEOUT_MS` | `180000` | Per-image timeout |
-| `COMFYUI_DISABLE` | (unset) | Set to `1` to ignore ComfyUI and use Gemini |
+| `COMFYUI_DISABLE` | (unset) | Master on/off. Set to `1` to switch ComfyUI off |
+
+The same switch is in the app: **SETUP → ComfyUI** writes `comfyui_enabled` to
+`direk.config.json`, which is the inverse of `COMFYUI_DISABLE`. Turning it off
+does **not** stop the factory — the free engines below catch the job.
 
 The image backend order is ComfyUI → Gemini (if billed) → Pollinations (free,
 no key) → unavailable. So when ComfyUI is not reachable, **images still work**
-through the free Pollinations backend. Video renders free on the local ComfyUI
-first; the paid Wan 2.2 fallback runs only with `ALLOW_PAID_CLOUD=1`, and with
-neither the API returns an honest `503` rather than a fake clip.
-`GET /api/direk/status` reports the active `image_backend`.
+through the free Pollinations backend.
+
+Video follows the same free-first idea. With `PREFERRED_RENDER_ENGINE=comfyui`
+the chain is **ComfyUI → free motion engine → Wan 2.2**, so switching ComfyUI
+off hands the job to the free engine instead of failing; the render still ends
+in a real MP4. The paid Wan 2.2 fallback runs only with `ALLOW_PAID_CLOUD=1`,
+and when no engine can render the API returns an honest `503` rather than a fake
+clip. `GET /api/direk/status` reports the active `image_backend`.
 
 Every hosted image (Pollinations, Gemini) is re-encoded to a real PNG before it
 is stored or zipped: Pollinations answers with a JPEG whatever the URL asks for,
@@ -331,6 +339,29 @@ whether the file exists, the exact problem (`disabled`, `no-workflow`,
 `workflow-missing`, `placeholder`, `unreachable`, or `ready`), the unfilled
 placeholders when there are any, and whether a `FAL_KEY` fallback is present.
 
+### The three render engines, and what each one costs
+
+`PREFERRED_RENDER_ENGINE` chooses the engine. It defaults to `comfyui`, the free
+local-first chain, so a fresh install never reaches a paid call by accident.
+Only an explicit `fal` routes to paid cloud. The honest trade-offs:
+
+| Engine | Cost | What it needs | What it makes |
+| --- | --- | --- | --- |
+| `fal` | **Paid** per call | `FAL_KEY` (fal.ai account) | Wan 2.2 text-to-video: real motion, prompt-driven |
+| `comfyui` | **Free** | A GPU and `COMFYUI_VIDEO_WORKFLOW` (AnimateDiff/SVD) | Real motion on your own hardware |
+| `motion` | **Free, no account** | Nothing but the app — a free still (ComfyUI, else Pollinations) animated by the bundled ffmpeg | A real MP4: a slow ken-burns pan/zoom over a generated still |
+
+`motion` is the no-cost fallback when you have no `FAL_KEY` and no video
+workflow: it is **not** motion synthesis like Wan, it is one still with camera
+movement, so it is slower and less dynamic — but it is a genuine MP4, produced
+with no cloud spend and no account. Pollinations needs no key, but it is a free
+community service with no uptime guarantee, so it can rate-limit or answer
+`402` under load; the engine then reports that honestly instead of faking a clip.
+
+```
+PREFERRED_RENDER_ENGINE=motion   # no cost, no key, no GPU
+```
+
 ## Feature Film Factory (18 scenes → one 90-minute film)
 
 One brief in, an 18-scene feature out. Each scene is a full five minutes and is
@@ -351,11 +382,14 @@ GET  /api/direk/feature/pilot     the Dual-Pilot status (Kaggle + local Ollama)
 POST /api/direk/feature/pilot     fetch the script + bible + 18-scene breakdown
 ```
 
-A scene needs a real video backend: ComfyUI reachable and `COMFYUI_VIDEO_WORKFLOW`
-set (with the required placeholders filled — see the video section above). When
-it is not, `start` answers `503 AI_UNAVAILABLE` up front and a scene that fails
-mid-batch is marked **failed** — the factory never writes a placeholder clip to
-pretend a scene rendered. Each failed scene is also logged as
+A scene needs a real video backend: with `PREFERRED_RENDER_ENGINE=comfyui`, that
+means ComfyUI reachable and `COMFYUI_VIDEO_WORKFLOW` set (with the required
+placeholders filled — see the video section above), the free motion engine, or a
+`FAL_KEY` for the Wan fallback (with `ALLOW_PAID_CLOUD=1`); with `motion`, the
+free still-plus-ffmpeg engine is enough. When no engine can render, `start`
+answers `503 AI_UNAVAILABLE` up front and a scene that fails mid-batch is marked
+**failed** — the factory never writes a placeholder clip to pretend a scene
+rendered. Each failed scene is also logged as
 `[FILM ERROR] Eksena <n> ("<heading>") nabigo: <reason>`, and the reason is
 readable from `GET /api/direk/feature/scene-errors?id=<movie id>`, which lists
 every failed scene with its index, heading and exact error.

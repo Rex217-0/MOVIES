@@ -32,6 +32,14 @@ function gemini(): GoogleGenAI | null {
 
 let comfyCache: { ok: boolean; at: number } | null = null;
 
+/**
+ * Drop the cached ComfyUI reachability. The settings UI calls this after a
+ * toggle so the very next request sees the new switch, not a stale probe.
+ */
+export function resetComfyCache(): void {
+  comfyCache = null;
+}
+
 /** Which backend would generate an image right now. */
 export async function imageBackend(): Promise<ImageBackend> {
   if (process.env.COMFYUI_DISABLE !== '1') {

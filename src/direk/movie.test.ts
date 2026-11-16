@@ -315,15 +315,27 @@ test('renderFeatureScene makes one standalone clip at the scene length', async (
   fs.rmSync(file, { force: true });
 });
 
-test('renderFeatureScene fails with AI_UNAVAILABLE when ComfyUI is not there', async () => {
+test('renderFeatureScene fails with AI_UNAVAILABLE when every engine is off', async () => {
   // No backend, no fabrication: the scene must fail instead of writing a
-  // placeholder clip that only looks like a result.
-  const prevOff = process.env.COMFYUI_DISABLE;
+  // placeholder clip that only looks like a result. Every engine is disabled so
+  // the failure is the real no-backend path, not the free motion engine.
+  const prev = {
+    comfy: process.env.COMFYUI_DISABLE,
+    poll: process.env.POLLINATIONS_DISABLE,
+    motion: process.env.MOTION_DISABLE,
+  };
   process.env.COMFYUI_DISABLE = '1';
+  process.env.POLLINATIONS_DISABLE = '1';
+  process.env.MOTION_DISABLE = '1';
   const scene = { heading: 'SCENE 1', narration: 'Wala.', visual: 'wide', mood: 'grim' as const };
-  await assert.rejects(
-    () => renderFeatureScene(scene, { index: 1, seconds: 2 }),
-    (err: any) => err?.code === 'AI_UNAVAILABLE' && err?.name === 'VideoBackendUnavailable',
-  );
-  if (prevOff === undefined) delete process.env.COMFYUI_DISABLE; else process.env.COMFYUI_DISABLE = prevOff;
+  try {
+    await assert.rejects(
+      () => renderFeatureScene(scene, { index: 1, seconds: 2 }),
+      (err: any) => err?.code === 'AI_UNAVAILABLE' && err?.name === 'VideoBackendUnavailable',
+    );
+  } finally {
+    if (prev.comfy === undefined) delete process.env.COMFYUI_DISABLE; else process.env.COMFYUI_DISABLE = prev.comfy;
+    if (prev.poll === undefined) delete process.env.POLLINATIONS_DISABLE; else process.env.POLLINATIONS_DISABLE = prev.poll;
+    if (prev.motion === undefined) delete process.env.MOTION_DISABLE; else process.env.MOTION_DISABLE = prev.motion;
+  }
 });

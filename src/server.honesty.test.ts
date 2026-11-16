@@ -45,7 +45,12 @@ async function waitForServer(port: number, headers: Record<string, string> = {})
 }
 
 test('without a Gemini key, AI endpoints return 503 AI_UNAVAILABLE instead of fake success', async (t) => {
-  const { child, port } = startServer({ APP_AUTH_TOKEN: '' });
+  // Switch the free engines off too: otherwise the no-cost motion engine makes
+  // the video endpoint succeed for real, and this test is about the honest
+  // 503 when no backend at all can answer.
+  const { child, port } = startServer({
+    APP_AUTH_TOKEN: '', POLLINATIONS_DISABLE: '1', MOTION_DISABLE: '1',
+  });
   t.after(() => child.kill());
   await waitForServer(port);
 
