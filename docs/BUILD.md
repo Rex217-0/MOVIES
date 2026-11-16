@@ -154,7 +154,7 @@ are in `data/kaggle/SOURCES.md`; dataset status is in `docs/datasets.md`.
 | Ollama (text) | `http://127.0.0.1:11434`, `qwen2.5:7b` | a local install, no key |
 | ComfyUI (image and video) | `http://127.0.0.1:8188` | a local GPU |
 | Pollinations (image) | free | nothing |
-| fal.ai Wan 2.2 (video) | `fal-ai/wan/v2.2-a14b/text-to-video` | `FAL_KEY` |
+| fal.ai Wan 2.2 (video) | `fal-ai/wan/v2.2-a14b/text-to-video` | `FAL_KEY` and `ALLOW_PAID_CLOUD=1` (paid) |
 | kohya_ss (LoRA, local) | `TRAIN_BACKEND=local` | `KOHYA_DIR` and `KOHYA_BASE_MODEL` |
 | Colab (LoRA, remote) | `TRAIN_BACKEND=colab` | `COLAB_DRIVE_ROOT` or `COLAB_DRIVE_FOLDER_ID`, and the notebook run by hand |
 | Fish Audio (speech) | — | `FISH_AUDIO_API_KEY` (a reference id is optional) |
@@ -187,7 +187,10 @@ See `.env.example` for the annotated list. The groups are:
 - **Colab training** — `TRAIN_BACKEND` (`local` or `colab`), `COLAB_DRIVE_ROOT`,
   `COLAB_DRIVE_FOLDER_ID`, `COLAB_POLL_MS`.
 - **Routing** — `T3_ALLOW_LOCAL`, `CLOUD_T3_URL`.
-- **fal.ai** — `FAL_KEY`, `WAN_VIDEO_ENDPOINT`, `OPENCUT_ENDPOINT`.
+- **No-cost policy** — `ALLOW_PAID_CLOUD`, and `PREFERRED_RENDER_ENGINE` (defaults
+  to `comfyui`, the free local GPU). See `docs/no-cost-audit.md`.
+- **fal.ai** — `FAL_KEY`, `WAN_VIDEO_ENDPOINT`, `OPENCUT_ENDPOINT` (paid; also
+  need `ALLOW_PAID_CLOUD=1`).
 - **Speech** — `FISH_AUDIO_API_KEY`, `FISH_AUDIO_REFERENCE_ID`, `TTS_ORDER`,
   `TTS_TAGALOG_MODEL`, `TTS_PYTHON`, `TTS_PIPER_BIN`, `TTS_PIPER_VOICE`,
   `TTS_DISABLE`.

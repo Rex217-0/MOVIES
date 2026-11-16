@@ -42,7 +42,8 @@ no hardcoded fallbacks that pretend to be AI results.
 | Text directives (`/api/pilot/command`) | `gemini-2.5-flash` | Yes | Real Gemini output |
 | Image generation | **ComfyUI (local)** | **Yes** | Free on your own GPU — the preferred backend |
 | Image generation / editing | `gemini-2.5-flash-image` | No | Paid fallback; `503 AI_UNAVAILABLE` without billing |
-| Video generation | `gemini-omni-1.2-flash` | No | Returns `503 AI_UNAVAILABLE` unless billing is enabled |
+| Video generation | local ComfyUI | **Yes** | Free on your own GPU — the preferred, free-first engine |
+| Video generation (fallback) | Wan 2.2 on fal.ai | No | Paid; runs only with `ALLOW_PAID_CLOUD=1` |
 
 ### ComfyUI (free local image generation)
 
@@ -61,9 +62,10 @@ generation and LoRA sample images cost nothing. Point the app at it:
 
 The image backend order is ComfyUI → Gemini (if billed) → Pollinations (free,
 no key) → unavailable. So when ComfyUI is not reachable, **images still work**
-through the free Pollinations backend. Video has no free fallback: it returns an
-honest `503` rather than a fake clip. `GET /api/direk/status` reports the active
-`image_backend`.
+through the free Pollinations backend. Video renders free on the local ComfyUI
+first; the paid Wan 2.2 fallback runs only with `ALLOW_PAID_CLOUD=1`, and with
+neither the API returns an honest `503` rather than a fake clip.
+`GET /api/direk/status` reports the active `image_backend`.
 
 Every hosted image (Pollinations, Gemini) is re-encoded to a real PNG before it
 is stored or zipped: Pollinations answers with a JPEG whatever the URL asks for,
@@ -192,21 +194,25 @@ mood) still gets a real question back, and a complete request returns
 
 ## Narration (the film's voice)
 
-A film's narration comes from the first voice that answers, in this order:
+A film's narration comes from the first voice that answers, in this order. The
+free voices come first; Fish Audio is paid and is skipped unless
+`ALLOW_PAID_CLOUD=1`:
 
-1. **Fish Audio** — best Tagalog, and can clone a voice. Needs `FISH_AUDIO_API_KEY`.
-2. **Offline Tagalog voice** (Meta MMS VITS) — free, CPU, real Tagalog, no quota.
+1. **Offline Tagalog voice** (Meta MMS VITS) — free, CPU, real Tagalog, no quota.
    On by default when `scripts/tagalog_tts.py` is present **and** the interpreter in
    `TTS_PYTHON` has `transformers`, `torch` and `soundfile` installed; without them
    the voice is skipped and the reason is logged.
-3. **Gemini cloud voice** — good quality, but the free tier caps it per day.
-4. **Piper** — an English backup voice (there is no Tagalog Piper voice upstream).
+2. **Gemini cloud voice** (`gemini-2.5-flash-preview-tts`) — on the **free tier**;
+   needs `GEMINI_API_KEY`. It is capped per day, not billed.
+3. **Piper** — an English backup voice (there is no Tagalog Piper voice upstream).
    Point `TTS_PIPER_VOICE` at a `.onnx` file.
+4. **Fish Audio** — best Tagalog, and can clone a voice. Needs `FISH_AUDIO_API_KEY`
+   and `ALLOW_PAID_CLOUD=1`, because it is a paid cloud service.
 
 When none of them answers, the shot carries the line as a burned-in **caption**
-instead of failing the render. Set `TTS_ORDER=fish,piper` to force a strict
-Fish → Piper chain (anything not listed is skipped), or `TTS_DISABLE=1` to turn
-the cloud voice off. `GET /api/direk/movie/status` reports `narration_order`.
+instead of failing the render. Set `TTS_ORDER=tagalog,gemini` to force a strict
+free-only chain (anything not listed is skipped), or `TTS_DISABLE=1` to turn the
+cloud voice off. `GET /api/direk/movie/status` reports `narration_order`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

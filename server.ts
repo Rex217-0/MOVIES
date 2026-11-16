@@ -512,13 +512,13 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   const formattedPrompt = buildTacticalVideoPrompt(prompt);
   const startTime = Date.now();
 
-  // Video renders on the engine chosen by PREFERRED_RENDER_ENGINE: cloud-first
-  // routes to Wan 2.2 on fal.ai, local-first tries the ComfyUI GPU (Server-2)
-  // then falls back to Wan 2.2.
+  // Video renders on the engine chosen by PREFERRED_RENDER_ENGINE: local-first
+  // (the default) tries the ComfyUI GPU (Server-2), then falls back to Wan 2.2
+  // when ALLOW_PAID_CLOUD=1; cloud-first routes straight to Wan 2.2.
   const videoPlan = planExecution('video_render', { prompt });
   broadcastThought(`[ROUTER] video_render → ${videoPlan.route.tier} (${videoPlan.run})`);
   const preferred = preferredRenderEngine();
-  broadcastThought(`[ROUTER] PREFERRED_RENDER_ENGINE=${preferred} → ${preferred === 'fal' ? 'Wan 2.2 on fal.ai (cloud-first, ComfyUI skipped)' : 'local ComfyUI first, then Wan 2.2'}`);
+  broadcastThought(`[ROUTER] PREFERRED_RENDER_ENGINE=${preferred} → ${preferred === 'fal' ? 'Wan 2.2 on fal.ai (paid cloud-first, ComfyUI skipped)' : 'local ComfyUI first, then Wan 2.2'}`);
 
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
