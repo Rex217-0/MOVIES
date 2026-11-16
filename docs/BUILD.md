@@ -245,6 +245,37 @@ Platform differences the app already handles on Windows: `TTS_PYTHON` and
 paths escape `:` and `\`; the concat demuxer gets forward-slash paths; and the
 trainer stops child processes with `SIGTERM` instead of `SIGKILL`.
 
+### Android APK
+
+`android/build.sh` builds a signed APK without Gradle (javac → d8 → aapt2 →
+zipalign → apksigner). It needs a JDK 17+ and the Android SDK. Neither ships in
+the repo, so on a fresh machine — or in a container where `/opt` is not
+persistent — install them first with one command:
+
+```bash
+bash scripts/setup-android-sdk.sh        # JDK + cmdline-tools + android-34 + build-tools 35.0.0
+```
+
+Then build:
+
+```bash
+ANDROID_HOME=/opt/android-sdk \
+JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")" \
+bash android/build.sh
+```
+
+The output is `android/movie-creator.apk` (about 21 KB), signed with
+`android/moviecreator.keystore` (gitignored; generated on first run). The APK is
+committed on purpose so `/android` serves a download on any deploy. `sdkmanager`
+also accepts `openjdk-21` on Debian trixie, where `openjdk-17` is absent.
+
+Verify the result:
+
+```bash
+$ANDROID_HOME/build-tools/35.0.0/aapt2 dump badging android/movie-creator.apk | grep version
+$ANDROID_HOME/build-tools/35.0.0/aapt2 dump xmltree --file AndroidManifest.xml android/movie-creator.apk | grep -i supports-screens
+```
+
 ## 14. What is verified and what is not
 
 Measured directly: line counts, test results, bundle size, route list, dataset
