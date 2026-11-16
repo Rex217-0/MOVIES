@@ -80,6 +80,24 @@ LORA_TRAINING/jobs/<job_id>/
 | `COLAB_POLL_MS` | `12000` | how often the app reads `status.json` |
 | `KOHYA_BASE_MODEL` | — | the base model recorded in `job.json` |
 
+## Secrets (Colab)
+
+The notebook fetches its tools from the internet: `sd-scripts` from GitHub and
+the base model from HuggingFace. Tokens are read from **Colab Secrets** (left
+sidebar -> key icon, then enable "Notebook access"), never written in the
+notebook:
+
+| Secret | Used for |
+| --- | --- |
+| `HF_TOKEN` | a gated / private HuggingFace base model |
+| `GITHUB_TOKEN` | a private sd-scripts fork, or higher clone rate limits |
+| `SD_SCRIPTS_REPO` | optional: override the sd-scripts repo URL |
+
+A missing secret is not fatal. With no `HF_TOKEN` the notebook downloads a
+public base model; with no `GITHUB_TOKEN` it clones the public repo anonymously.
+The cell prints which token it found and which it did not, so a failure to fetch
+is never mistaken for a training failure.
+
 ## Resuming after a disconnect
 
 Re-run the notebook with the same `JOB_ID`. If `output/` already holds a
