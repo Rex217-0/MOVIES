@@ -252,6 +252,8 @@ export interface TrainStatus {
   python: string;
   base_model: string | null;
   output_dir: string;
+  /** Which trainer is live: `local` kohya_ss, or `colab` through Drive. */
+  backend?: 'local' | 'colab';
   reason?: string;
   job: TrainJob | null;
 }
@@ -300,6 +302,7 @@ export interface DirekSettings {
   comfyui_enabled?: boolean;
   comfyui_checkpoint?: string;
   comfyui_workflow?: string;
+  comfyui_video_workflow?: string;
   comfyui_loras_dir?: string;
   kohya_dir?: string;
   kohya_base_model?: string;
@@ -332,6 +335,8 @@ export interface SetupReport {
     checkpoints: string[];
     loras: string[];
     error?: string;
+    video_workflow: string;
+    video_workflow_exists: boolean;
   };
   trainer: { available: boolean; reason?: string; base_model: string | null };
   loras_dir: string;

@@ -42,7 +42,8 @@ no hardcoded fallbacks that pretend to be AI results.
 | Text directives (`/api/pilot/command`) | `gemini-2.5-flash` | Yes | Real Gemini output |
 | Image generation | **ComfyUI (local)** | **Yes** | Free on your own GPU — the preferred backend |
 | Image generation / editing | `gemini-2.5-flash-image` | No | Paid fallback; `503 AI_UNAVAILABLE` without billing |
-| Video generation | `gemini-omni-1.2-flash` | No | Returns `503 AI_UNAVAILABLE` unless billing is enabled |
+| Video generation | local ComfyUI | **Yes** | Free on your own GPU — the preferred, free-first engine |
+| Video generation (fallback) | Wan 2.2 on fal.ai | No | Paid; runs only with `ALLOW_PAID_CLOUD=1` |
 
 ### ComfyUI (free local image generation)
 
@@ -54,7 +55,7 @@ generation and LoRA sample images cost nothing. Point the app at it:
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | Where ComfyUI listens (a Tailscale IP works too) |
 | `COMFYUI_CHECKPOINT` | `sd_xl_base_1.0.safetensors` | Checkpoint for the built-in workflow |
 | `COMFYUI_WORKFLOW` | (built-in SDXL graph) | Path to your own workflow JSON (API format) with `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`, `__HEIGHT__`, `__CHECKPOINT__` placeholders |
-| `COMFYUI_VIDEO_WORKFLOW` | (unset) | AnimateDiff/SVD workflow (API format) for local video |
+| `COMFYUI_VIDEO_WORKFLOW` | (unset) | AnimateDiff/SVD workflow (API format) for local video; placeholders `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`, `__HEIGHT__`, `__FRAMES__`, `__CHECKPOINT__` are filled before `/prompt`, and any other `__TOKEN__` is refused |
 | `COMFYUI_LORAS_DIR` | `<ComfyUI>/models/loras` | Where trained LoRAs are published |
 | `COMFYUI_TIMEOUT_MS` | `180000` | Per-image timeout |
 | `COMFYUI_DISABLE` | (unset) | Master on/off. Set to `1` to switch ComfyUI off |
@@ -70,7 +71,9 @@ through the free Pollinations backend.
 Video follows the same free-first idea. With `PREFERRED_RENDER_ENGINE=comfyui`
 the chain is **ComfyUI → free motion engine → Wan 2.2**, so switching ComfyUI
 off hands the job to the free engine instead of failing; the render still ends
-in a real MP4. `GET /api/direk/status` reports the active `image_backend`.
+in a real MP4. The paid Wan 2.2 fallback runs only with `ALLOW_PAID_CLOUD=1`,
+and when no engine can render the API returns an honest `503` rather than a fake
+clip. `GET /api/direk/status` reports the active `image_backend`.
 
 Every hosted image (Pollinations, Gemini) is re-encoded to a real PNG before it
 is stored or zipped: Pollinations answers with a JPEG whatever the URL asks for,
@@ -199,21 +202,25 @@ mood) still gets a real question back, and a complete request returns
 
 ## Narration (the film's voice)
 
-A film's narration comes from the first voice that answers, in this order:
+A film's narration comes from the first voice that answers, in this order. The
+free voices come first; Fish Audio is paid and is skipped unless
+`ALLOW_PAID_CLOUD=1`:
 
-1. **Fish Audio** — best Tagalog, and can clone a voice. Needs `FISH_AUDIO_API_KEY`.
-2. **Offline Tagalog voice** (Meta MMS VITS) — free, CPU, real Tagalog, no quota.
+1. **Offline Tagalog voice** (Meta MMS VITS) — free, CPU, real Tagalog, no quota.
    On by default when `scripts/tagalog_tts.py` is present **and** the interpreter in
    `TTS_PYTHON` has `transformers`, `torch` and `soundfile` installed; without them
    the voice is skipped and the reason is logged.
-3. **Gemini cloud voice** — good quality, but the free tier caps it per day.
-4. **Piper** — an English backup voice (there is no Tagalog Piper voice upstream).
+2. **Gemini cloud voice** (`gemini-2.5-flash-preview-tts`) — on the **free tier**;
+   needs `GEMINI_API_KEY`. It is capped per day, not billed.
+3. **Piper** — an English backup voice (there is no Tagalog Piper voice upstream).
    Point `TTS_PIPER_VOICE` at a `.onnx` file.
+4. **Fish Audio** — best Tagalog, and can clone a voice. Needs `FISH_AUDIO_API_KEY`
+   and `ALLOW_PAID_CLOUD=1`, because it is a paid cloud service.
 
 When none of them answers, the shot carries the line as a burned-in **caption**
-instead of failing the render. Set `TTS_ORDER=fish,piper` to force a strict
-Fish → Piper chain (anything not listed is skipped), or `TTS_DISABLE=1` to turn
-the cloud voice off. `GET /api/direk/movie/status` reports `narration_order`.
+instead of failing the render. Set `TTS_ORDER=tagalog,gemini` to force a strict
+free-only chain (anything not listed is skipped), or `TTS_DISABLE=1` to turn the
+cloud voice off. `GET /api/direk/movie/status` reports `narration_order`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -318,10 +325,19 @@ so the app leaves them unavailable and points image work at ComfyUI instead.
 Video is not on the Gemini free tier, so the app renders video locally instead.
 Point `COMFYUI_VIDEO_WORKFLOW` at an AnimateDiff or SVD workflow exported in
 API format; the app fills `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`,
-`__HEIGHT__` and `__FRAMES__`. When ComfyUI is reachable and a video workflow is
-set, `/api/pilot/video/generate` renders there and saves the result into the
-Render Vault. Without it, the endpoint honestly returns `503` and tells you to
-run ComfyUI rather than returning a stock clip.
+`__HEIGHT__`, `__FRAMES__` and `__CHECKPOINT__` **before** it posts the graph to
+ComfyUI `/prompt`. Any other `__LIKE_THIS__` token in the template is refused
+with a clear error, so a half-edited workflow is never sent to ComfyUI. When
+ComfyUI is reachable and a video workflow is set, `/api/pilot/video/generate`
+renders there and saves the result into the Render Vault. Without it, the
+endpoint honestly returns `503 AI_UNAVAILABLE` and tells you to run ComfyUI
+rather than returning a stock clip.
+
+`GET /api/direk/video/backend` explains the whole chain in one place: the
+preferred engine, whether ComfyUI is enabled, its URL, the workflow path and
+whether the file exists, the exact problem (`disabled`, `no-workflow`,
+`workflow-missing`, `placeholder`, `unreachable`, or `ready`), the unfilled
+placeholders when there are any, and whether a `FAL_KEY` fallback is present.
 
 ### The three render engines, and what each one costs
 
@@ -361,22 +377,29 @@ POST /api/direk/feature/pause     stop the batch; finished scenes are kept
 POST /api/direk/feature/rerender  re-render one scene by index
 POST /api/direk/feature/assemble  stitch the approved scenes into one film
 GET  /api/direk/feature/status    job, scene list, tiers, progress, Dual-Pilot status
+GET  /api/direk/feature/scene-errors  per-scene failures with the exact reason
 GET  /api/direk/feature/pilot     the Dual-Pilot status (Kaggle + local Ollama)
 POST /api/direk/feature/pilot     fetch the script + bible + 18-scene breakdown
 ```
 
 A scene needs a real video backend: with `PREFERRED_RENDER_ENGINE=comfyui`, that
-means ComfyUI reachable and `COMFYUI_VIDEO_WORKFLOW` set (or a `FAL_KEY` for the
-Wan fallback); with `motion`, the free still-plus-ffmpeg engine is enough. When
-no engine can render, `start` answers `503 AI_UNAVAILABLE` up front and a scene
-that fails mid-batch is marked **failed** — the factory never writes a
-placeholder clip to pretend a scene rendered.
+means ComfyUI reachable and `COMFYUI_VIDEO_WORKFLOW` set (with the required
+placeholders filled — see the video section above), the free motion engine, or a
+`FAL_KEY` for the Wan fallback (with `ALLOW_PAID_CLOUD=1`); with `motion`, the
+free still-plus-ffmpeg engine is enough. When no engine can render, `start`
+answers `503 AI_UNAVAILABLE` up front and a scene that fails mid-batch is marked
+**failed** — the factory never writes a placeholder clip to pretend a scene
+rendered. Each failed scene is also logged as
+`[FILM ERROR] Eksena <n> ("<heading>") nabigo: <reason>`, and the reason is
+readable from `GET /api/direk/feature/scene-errors?id=<movie id>`, which lists
+every failed scene with its index, heading and exact error.
 
 ### The Dual-Pilot: Kaggle (T3) and the local Ollama (T1)
 
 The screenplay is written by a **Dual-Pilot**. The heavy batch worker is the
-**Kaggle Pilot**: a Qwen 2.5 3B notebook that runs on Kaggle's GPU. It is an
-**external cloud worker** — it is not part of this repository and not on this
+**Kaggle Pilot**: a Qwen 2.5 3B notebook that runs on Kaggle's GPU. The notebook
+**source** lives in this repository at `scripts/direk_kaggle_pilot.ipynb` (see
+`docs/kaggle-pilot.md`); the notebook itself **runs on Kaggle**, not on this
 machine. The app reaches it over the internet through a Cloudflare tunnel whose
 public URL is set in `KAGGLE_PILOT_URL` (`src/services/pilotService.ts` is the
 only bridge).
@@ -528,4 +551,6 @@ side), `kohya_config.toml` with absolute paths, the live log, and the trained
 Direk started as a Python/Kaggle prototype (`notebooks/direk_kaggle_prototype.ipynb`,
 built into a service at commit `e4acafb`). It has since been ported to TypeScript
 under `src/direk/` and merged into this app, so the director and the cockpit ship
-together.
+together. The Kaggle worker itself is kept as `scripts/direk_kaggle_pilot.ipynb`,
+rebuilt to serve the `pilotService.ts` contract rather than the old
+`/v1/chat/completions`-only prototype (see `docs/kaggle-pilot.md`).

@@ -137,9 +137,14 @@ server refuses to start in production without it.
 | `imdb_movies.csv` | 999 |
 | `filipino_movies.csv` | 469 |
 | `boxoffice/*.csv` | 9 files |
+| `kaggle/animated-tv/tv_movie_animation.csv` | 22,370 |
+| `kaggle/the-movies-dataset/movies_metadata.csv` | 45,387 (79 split records skipped) |
 
-The catalog searches about 14,658 titles and is read at startup. Nothing is
-fetched from the network.
+The catalog searches 82,415 titles (14,658 before the two Kaggle metadata files)
+and is read at startup. Nothing is fetched from the network. Each source keeps
+its own tag, so a row's origin is visible in the output; the Kaggle rows are
+appended and never overwrite an existing title. Provenance, licenses and hashes
+are in `data/kaggle/SOURCES.md`; dataset status is in `docs/datasets.md`.
 
 ## 8. Integrations
 
@@ -149,13 +154,14 @@ fetched from the network.
 | Ollama (text) | `http://127.0.0.1:11434`, `qwen2.5:7b` | a local install, no key |
 | ComfyUI (image and video) | `http://127.0.0.1:8188` | a local GPU |
 | Pollinations (image) | free | nothing |
-| fal.ai Wan 2.2 (video) | `fal-ai/wan/v2.2-a14b/text-to-video` | `FAL_KEY` |
-| kohya_ss (LoRA) | — | `KOHYA_DIR` and `KOHYA_BASE_MODEL` |
+| fal.ai Wan 2.2 (video) | `fal-ai/wan/v2.2-a14b/text-to-video` | `FAL_KEY` and `ALLOW_PAID_CLOUD=1` (paid) |
+| kohya_ss (LoRA, local) | `TRAIN_BACKEND=local` | `KOHYA_DIR` and `KOHYA_BASE_MODEL` |
+| Colab (LoRA, remote) | `TRAIN_BACKEND=colab` | `COLAB_DRIVE_ROOT` or `COLAB_DRIVE_FOLDER_ID`, and the notebook run by hand |
 | Fish Audio (speech) | — | `FISH_AUDIO_API_KEY` (a reference id is optional) |
 | MMS VITS Tagalog (speech) | `facebook/mms-tts-tgl` | Python with transformers, torch, soundfile |
 | Piper (speech) | — | `TTS_PIPER_VOICE` (a `.onnx` file; English only) |
 | Google Drive | — | an OAuth client id and secret |
-| Kaggle Pilot (T3 script) | empty | `KAGGLE_PILOT_URL` (a Cloudflare tunnel) |
+| Kaggle Pilot (T3 script) | empty | `KAGGLE_PILOT_URL` (a Cloudflare tunnel to `scripts/direk_kaggle_pilot.ipynb`; see `docs/kaggle-pilot.md`) |
 
 ## 9. Task routing (T1 / T2 / T3)
 
@@ -178,8 +184,13 @@ See `.env.example` for the annotated list. The groups are:
   `COMFYUI_VIDEO_WORKFLOW`, `COMFYUI_LORAS_DIR`, `COMFYUI_TIMEOUT_MS`.
 - **kohya** — `KOHYA_DIR`, `KOHYA_BASE_MODEL`, `KOHYA_PYTHON`, `KOHYA_ACCELERATE`,
   `KOHYA_OUTPUT_DIR`.
+- **Colab training** — `TRAIN_BACKEND` (`local` or `colab`), `COLAB_DRIVE_ROOT`,
+  `COLAB_DRIVE_FOLDER_ID`, `COLAB_POLL_MS`.
 - **Routing** — `T3_ALLOW_LOCAL`, `CLOUD_T3_URL`.
-- **fal.ai** — `FAL_KEY`, `WAN_VIDEO_ENDPOINT`, `OPENCUT_ENDPOINT`.
+- **No-cost policy** — `ALLOW_PAID_CLOUD`, and `PREFERRED_RENDER_ENGINE` (defaults
+  to `comfyui`, the free local GPU). See `docs/no-cost-audit.md`.
+- **fal.ai** — `FAL_KEY`, `WAN_VIDEO_ENDPOINT`, `OPENCUT_ENDPOINT` (paid; also
+  need `ALLOW_PAID_CLOUD=1`).
 - **Speech** — `FISH_AUDIO_API_KEY`, `FISH_AUDIO_REFERENCE_ID`, `TTS_ORDER`,
   `TTS_TAGALOG_MODEL`, `TTS_PYTHON`, `TTS_PIPER_BIN`, `TTS_PIPER_VOICE`,
   `TTS_DISABLE`.
@@ -194,11 +205,13 @@ See `.env.example` for the annotated list. The groups are:
 
 ## 11. Tests
 
-238 tests across 23 files. The largest are `movie.test.ts` (27),
-`taskRouter.test.ts` (17), `pilotService.test.ts` (17),
-`server.deployment.test.ts` (16), `direk.test.ts` (14), `rules.test.ts` (14),
-`factory.test.ts` (13), `comfyui.test.ts` (11), `lora.test.ts` (11),
-`featureFilm.test.ts` (11) and `assets.test.ts` (10).
+284 tests across 26 files. The largest are `movie.test.ts` (27),
+`trainBackend.test.ts` (17), `taskRouter.test.ts` (17),
+`pilotService.test.ts` (17), `server.deployment.test.ts` (16),
+`direk.test.ts` (14), `rules.test.ts` (14), `factory.test.ts` (13),
+`comfyui.test.ts` (11), `lora.test.ts` (11), `featureFilm.test.ts` (11),
+`assets.test.ts` (10), `kaggle.test.ts` (9) and
+`kagglePilotNotebook.test.ts` (5).
 
 ## 12. Honesty rules
 

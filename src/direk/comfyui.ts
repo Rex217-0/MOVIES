@@ -190,6 +190,50 @@ export async function comfyAvailable(): Promise<boolean> {
   }
 }
 
+/** How long `GET /system_stats` may take before the server is called unreachable. */
+const REACHABILITY_TIMEOUT_MS = 5000;
+
+/** The answer to "can we reach ComfyUI right now?", with the exact cause when not. */
+export interface ComfyReachability {
+  reachable: boolean;
+  /** The base URL that was probed (COMFYUI_URL). */
+  url: string;
+  /** Empty when reachable; `hindi maabot ang ComfyUI sa <url>` when not. */
+  error: string;
+  /** The underlying cause (timeout, HTTP status, connection error), when not reachable. */
+  detail?: string;
+}
+
+/**
+ * Probe `{COMFYUI_URL}/system_stats` with a 5-second timeout. This is the single
+ * place that decides reachability for the UI and the operator: `reachable` is
+ * true only on an HTTP 2xx, and `error` always names the URL that failed, so a
+ * server pointed at another host (a Tailscale IP, Server-2) is reported
+ * correctly instead of always claiming 127.0.0.1.
+ */
+export async function checkComfyReachability(): Promise<ComfyReachability> {
+  const url = comfyUrl();
+  const unreachable = (detail: string): ComfyReachability => ({
+    reachable: false,
+    url,
+    error: `hindi maabot ang ComfyUI sa ${url}`,
+    detail,
+  });
+  try {
+    const res = await fetch(`${url}/system_stats`, {
+      signal: AbortSignal.timeout(REACHABILITY_TIMEOUT_MS),
+    });
+    if (!res.ok) return unreachable(`HTTP ${res.status}`);
+    return { reachable: true, url, error: '' };
+  } catch (error: any) {
+    // AbortSignal.timeout aborts with a TimeoutError; name the timeout clearly.
+    const detail = error?.name === 'TimeoutError'
+      ? `timeout pagkatapos ng ${REACHABILITY_TIMEOUT_MS}ms`
+      : error?.message || String(error);
+    return unreachable(detail);
+  }
+}
+
 /**
  * Generate one image. Queues the workflow, waits for it to finish, then
  * downloads the first image it produced.
@@ -224,28 +268,63 @@ export async function generateWithComfy(
 }
 
 /**
+ * The placeholders a video workflow template may use. Every one of these is
+ * replaced before the graph is sent to ComfyUI `/prompt`.
+ */
+export const VIDEO_PLACEHOLDERS = [
+  '__PROMPT__', '__NEGATIVE__', '__SEED__', '__WIDTH__', '__HEIGHT__', '__FRAMES__', '__CHECKPOINT__',
+] as const;
+
+/**
+ * Tokens that look like a placeholder (`__NAME__`) but are not one the builder
+ * fills. They would survive into the graph and make ComfyUI reject the prompt,
+ * so the builder refuses them with a clear message instead of sending a broken
+ * workflow. The scan runs on the raw template, so a prompt that itself contains
+ * `__SEED__` is never mistaken for an unfilled placeholder.
+ */
+export function unfilledPlaceholders(template: string): string[] {
+  const known = new Set<string>(VIDEO_PLACEHOLDERS);
+  const found = template.match(/__[A-Z0-9_]+__/g) ?? [];
+  return [...new Set(found.filter(token => !known.has(token)))];
+}
+
+/**
  * Build the video workflow. Unlike images there is no built-in default: video
  * needs an AnimateDiff/SVD graph that only the user's ComfyUI has, so we require
- * COMFYUI_VIDEO_WORKFLOW and fail with a clear message when it is missing.
+ * COMFYUI_VIDEO_WORKFLOW and fail with a clear message when it is missing, when
+ * the file is not there, or when the template carries a placeholder we cannot
+ * fill. Every known placeholder is substituted before the graph is returned.
  */
 export function buildVideoWorkflow(
   prompt: string,
   opts: { negative?: string; seed?: number; width?: number; height?: number; frames?: number } = {},
 ): Record<string, unknown> {
   const templatePath = process.env.COMFYUI_VIDEO_WORKFLOW;
-  if (!templatePath || !fs.existsSync(templatePath)) {
+  if (!templatePath) {
     throw new Error(
-      'No video workflow configured. Point COMFYUI_VIDEO_WORKFLOW at an AnimateDiff/SVD ' +
-      'workflow exported in API format (placeholders __PROMPT__, __NEGATIVE__, __SEED__, ' +
-      '__WIDTH__, __HEIGHT__, __FRAMES__).',
+      'Walang video workflow. I-set ang COMFYUI_VIDEO_WORKFLOW sa isang AnimateDiff/SVD ' +
+      `workflow na na-export sa API format (placeholders ${VIDEO_PLACEHOLDERS.join(', ')}).`,
     );
+  }
+  if (!fs.existsSync(templatePath)) {
+    throw new Error(`Walang workflow file sa COMFYUI_VIDEO_WORKFLOW='${templatePath}'.`);
   }
   const negative = opts.negative ?? DEFAULT_NEGATIVE;
   const seed = opts.seed ?? Math.floor(Math.random() * 1_000_000_000);
   const width = opts.width ?? 832;
   const height = opts.height ?? 480;
   const frames = opts.frames ?? 49;
-  const raw = fs.readFileSync(templatePath, 'utf8')
+
+  const template = fs.readFileSync(templatePath, 'utf8');
+  const unfilled = unfilledPlaceholders(template);
+  if (unfilled.length) {
+    throw new Error(
+      `Hindi napapalitan ang placeholder(s) ${unfilled.join(', ')} sa ${templatePath}. ` +
+      `Ang sinusuportahan ay ${VIDEO_PLACEHOLDERS.join(', ')}.`,
+    );
+  }
+
+  const raw = template
     .replaceAll('__PROMPT__', escapeJson(prompt))
     .replaceAll('__NEGATIVE__', escapeJson(negative))
     .replaceAll('__SEED__', String(seed))
@@ -253,13 +332,95 @@ export function buildVideoWorkflow(
     .replaceAll('__HEIGHT__', String(height))
     .replaceAll('__FRAMES__', String(frames))
     .replaceAll('__CHECKPOINT__', escapeJson(process.env.COMFYUI_CHECKPOINT || 'sd_xl_base_1.0.safetensors'));
-  return JSON.parse(raw);
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch (error: any) {
+    throw new Error(`Hindi wastong JSON ang workflow ${templatePath}: ${error?.message || error}`);
+  }
 }
 
 /** True when a ComfyUI video workflow has been configured. */
 export function comfyVideoConfigured(): boolean {
   const p = process.env.COMFYUI_VIDEO_WORKFLOW;
   return Boolean(p && fs.existsSync(p));
+}
+
+export type ComfyVideoProblem =
+  | 'disabled'
+  | 'no-workflow'
+  | 'workflow-missing'
+  | 'placeholder'
+  | 'unreachable'
+  | 'ready';
+
+export interface ComfyVideoDiagnosis {
+  ready: boolean;
+  problem: ComfyVideoProblem;
+  /** The ComfyUI base URL that was probed. */
+  url: string;
+  /** The configured COMFYUI_VIDEO_WORKFLOW path (or '' when unset). */
+  workflow: string;
+  workflow_exists: boolean;
+  reachable: boolean;
+  /** Placeholders the builder cannot fill, when the problem is `placeholder`. */
+  unfilled: string[];
+  /** A plain-language reason, for the logs and the API response. */
+  detail: string;
+}
+
+/**
+ * Explain in one place exactly why the ComfyUI video backend is or is not
+ * usable: the server disabled it, no workflow is configured, the workflow file
+ * is missing, the URL is unreachable, or the template has placeholders the
+ * builder cannot fill. `ready` is true only when a real render can start.
+ */
+export async function diagnoseComfyVideo(): Promise<ComfyVideoDiagnosis> {
+  const url = comfyUrl();
+  const workflow = process.env.COMFYUI_VIDEO_WORKFLOW || '';
+  const workflowExists = Boolean(workflow && fs.existsSync(workflow));
+  const base = { url, workflow, workflow_exists: workflowExists, reachable: false, unfilled: [] as string[] };
+
+  if (process.env.COMFYUI_DISABLE === '1') {
+    return {
+      ...base, ready: false, problem: 'disabled',
+      detail: 'COMFYUI_DISABLE=1: hindi pinapayagan ang ComfyUI.',
+    };
+  }
+  if (!workflow) {
+    return {
+      ...base, ready: false, problem: 'no-workflow',
+      detail: 'Walang COMFYUI_VIDEO_WORKFLOW. I-set ito sa isang AnimateDiff/SVD workflow (API format).',
+    };
+  }
+  if (!workflowExists) {
+    return {
+      ...base, ready: false, problem: 'workflow-missing',
+      detail: `Walang workflow file sa COMFYUI_VIDEO_WORKFLOW='${workflow}'.`,
+    };
+  }
+  let unfilled: string[] = [];
+  try {
+    unfilled = unfilledPlaceholders(fs.readFileSync(workflow, 'utf8'));
+  } catch {
+    /* an unreadable file surfaces as `unreachable` on the next step */
+  }
+  if (unfilled.length) {
+    return {
+      ...base, ready: false, problem: 'placeholder', unfilled,
+      detail: `Hindi napapalitan ang placeholder(s) ${unfilled.join(', ')} sa workflow. ` +
+        `Gamitin lamang ang ${VIDEO_PLACEHOLDERS.join(', ')}.`,
+    };
+  }
+  if (!(await comfyAvailable())) {
+    return {
+      ...base, ready: false, problem: 'unreachable',
+      detail: `Hindi maabot ang ComfyUI sa ${url}/system_stats.`,
+    };
+  }
+  return {
+    ...base, ready: true, reachable: true, problem: 'ready',
+    detail: `Handa ang ComfyUI sa ${url} gamit ang workflow ${workflow}.`,
+  };
 }
 
 /**
@@ -271,6 +432,8 @@ export async function generateVideoWithComfy(
   opts: { negative?: string; width?: number; height?: number; frames?: number } = {},
 ): Promise<{ data: Buffer; filename: string }> {
   const base = comfyUrl();
+  // buildVideoWorkflow throws with a precise reason when the template is
+  // missing, unreadable, or has an unfilled placeholder.
   const workflow = buildVideoWorkflow(prompt, opts);
 
   const queued = await fetch(`${base}/prompt`, {
@@ -278,7 +441,12 @@ export async function generateVideoWithComfy(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt: workflow, client_id: `direk-vid-${Date.now()}` }),
   });
-  if (!queued.ok) throw new Error(`ComfyUI /prompt returned ${queued.status}`);
+  if (!queued.ok) {
+    // ComfyUI puts the node-level reason (a bad checkpoint name, a missing
+    // node) in the body; keep it so the failure is actionable.
+    const detail = (await queued.text().catch(() => '')).slice(0, 300);
+    throw new Error(`ComfyUI /prompt returned ${queued.status}${detail ? `: ${detail}` : ''}`);
+  }
   const { prompt_id: promptId } = (await queued.json()) as { prompt_id?: string };
   if (!promptId) throw new Error('ComfyUI did not return a prompt_id');
 
@@ -318,10 +486,27 @@ async function waitForImage(base: string, promptId: string, limitMs: number): Pr
         }
       }
       if (entry?.status?.status_str === 'error') {
-        throw new Error('ComfyUI reported an execution error');
+        throw new Error(`ComfyUI reported an execution error: ${describeHistoryError(entry)}`);
       }
     }
     await new Promise(r => setTimeout(r, 1000));
   }
   throw new Error('ComfyUI timed out waiting for the image');
+}
+
+/**
+ * Pull the human-readable reason out of a ComfyUI `/history` entry. ComfyUI
+ * reports the failing node and message under `status.messages`; the exception
+ * message is the useful part, with the node id as a fallback.
+ */
+function describeHistoryError(entry: any): string {
+  const messages: any[] = Array.isArray(entry?.status?.messages) ? entry.status.messages : [];
+  for (const message of messages) {
+    if (message?.[0] === 'execution_error' && message[1]) {
+      const { node_id: nodeId, node_type: nodeType, exception_message: text } = message[1];
+      const where = nodeType ? `${nodeType}${nodeId ? ` #${nodeId}` : ''}` : nodeId;
+      if (text) return where ? `${text} (${where})` : String(text);
+    }
+  }
+  return 'walang detalye mula sa ComfyUI';
 }

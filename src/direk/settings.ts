@@ -23,6 +23,8 @@ export interface DirekSettings {
   comfyui_checkpoint?: string;
   /** Optional path to a custom ComfyUI workflow JSON template. */
   comfyui_workflow?: string;
+  /** Optional path to a ComfyUI VIDEO workflow JSON template (AnimateDiff/SVD). */
+  comfyui_video_workflow?: string;
   /** ComfyUI's models/loras folder, where trained LoRAs are published. */
   comfyui_loras_dir?: string;
   /** kohya_ss / sd-scripts checkout (must contain train_network.py). */
@@ -60,6 +62,7 @@ const ENV_MAP: Record<keyof DirekSettings, string> = {
   comfyui_enabled: 'COMFYUI_DISABLE',
   comfyui_checkpoint: 'COMFYUI_CHECKPOINT',
   comfyui_workflow: 'COMFYUI_WORKFLOW',
+  comfyui_video_workflow: 'COMFYUI_VIDEO_WORKFLOW',
   comfyui_loras_dir: 'COMFYUI_LORAS_DIR',
   kohya_dir: 'KOHYA_DIR',
   kohya_base_model: 'KOHYA_BASE_MODEL',

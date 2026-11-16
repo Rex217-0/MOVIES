@@ -402,6 +402,118 @@ test('starting a batch without a video backend answers 503 AI_UNAVAILABLE', asyn
   assert.equal(res.status, 503);
   const body = await res.json() as any;
   assert.equal(body.code, 'AI_UNAVAILABLE');
+  // The detail names the real cause so the operator knows what to fix.
+  assert.match(String(body.detail), /FAL_KEY|COMFYUI|PREFERRED_RENDER_ENGINE/i);
+});
+
+test('the video backend endpoint reports the exact reason ComfyUI video cannot run', async (t) => {
+  // ComfyUI on, but no video workflow configured: the endpoint must say so.
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '', COMFYUI_VIDEO_WORKFLOW: '' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const res = await fetch(`http://127.0.0.1:${port}/api/direk/video/backend`);
+  assert.equal(res.status, 200);
+  const body = await res.json() as any;
+  assert.equal(body.comfyui.enabled, true);
+  assert.equal(body.comfyui.problem, 'no-workflow');
+  assert.equal(body.comfyui.ready, false);
+  assert.match(String(body.comfyui.detail), /COMFYUI_VIDEO_WORKFLOW/);
+});
+
+test('the video backend endpoint flags an unfilled placeholder in the workflow', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-bad-'));
+  const workflow = path.join(dir, 'bad.json');
+  fs.writeFileSync(workflow, JSON.stringify({ p: '__PROMPT__', b: '__BATCH__' }));
+  const { child, port } = startServer({
+    APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '', COMFYUI_VIDEO_WORKFLOW: workflow,
+  });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const body = await (await fetch(`http://127.0.0.1:${port}/api/direk/video/backend`)).json() as any;
+  assert.equal(body.comfyui.problem, 'placeholder');
+  assert.deepEqual(body.comfyui.unfilled_placeholders, ['__BATCH__']);
+});
+
+test('the scene-errors endpoint lists the exact failure for each failed scene', async (t) => {
+  // A ComfyUI that is reachable (so START BATCH is allowed) but whose /prompt
+  // fails: every scene then fails with the real reason, which the report shows.
+  const failing = createServer((req, res) => {
+    const url = req.url || '';
+    if (url.startsWith('/system_stats')) {
+      res.setHeader('Content-Type', 'application/json');
+      res.end('{}');
+      return;
+    }
+    if (url.startsWith('/prompt')) {
+      req.resume();
+      res.statusCode = 500;
+      res.end('node 4: checkpoint not found');
+      return;
+    }
+    res.statusCode = 404;
+    res.end('{}');
+  });
+  await new Promise<void>(r => failing.listen(0, '127.0.0.1', r));
+  t.after(() => failing.close());
+  const failingPort = (failing.address() as any).port;
+
+  const { child, port } = startServer({
+    APP_AUTH_TOKEN: '',
+    PREFERRED_RENDER_ENGINE: 'comfyui',
+    COMFYUI_DISABLE: '',
+    COMFYUI_URL: `http://127.0.0.1:${failingPort}`,
+    COMFYUI_VIDEO_WORKFLOW: comfyWorkflow(),
+    DIREK_SCENE_SECONDS: '2',
+    TTS_DISABLE: '1',
+    TTS_TAGALOG_DISABLE: '1',
+  });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang horror sa gubat, SPG.' }),
+  })).json() as any;
+
+  const started = await fetch(`http://127.0.0.1:${port}/api/direk/feature/start`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: created.job.id }),
+  });
+  assert.equal(started.status, 200, 'a reachable ComfyUI lets the batch start');
+  const done = await waitFeature(port, created.job.id);
+  assert.equal(done.failed, 18, 'every scene failed for real');
+
+  const report = await (await fetch(
+    `http://127.0.0.1:${port}/api/direk/feature/scene-errors?id=${encodeURIComponent(created.job.id)}`,
+  )).json() as any;
+  assert.equal(report.failed, 18);
+  assert.equal(report.scenes.length, 18);
+  assert.match(report.scenes[0].error, /ComfyUI \/prompt returned 500/);
+  assert.match(report.scenes[0].error, /checkpoint not found/);
+  assert.equal(typeof report.scenes[0].index, 'number');
+});
+
+test('the scene-errors endpoint reports an empty list when nothing failed', async (t) => {
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', COMFYUI_DISABLE: '1', PREFERRED_RENDER_ENGINE: 'comfyui' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const created = await (await fetch(`http://127.0.0.1:${port}/api/direk/feature/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brief: 'Isang horror sa gubat, SPG.' }),
+  })).json() as any;
+
+  const res = await fetch(`http://127.0.0.1:${port}/api/direk/feature/scene-errors?id=${encodeURIComponent(created.job.id)}`);
+  assert.equal(res.status, 200);
+  const body = await res.json() as any;
+  assert.equal(body.movie_id, created.job.id);
+  assert.equal(body.failed, 0);
+  assert.deepEqual(body.scenes, []);
+  assert.match(String(body.video_backend), /COMFYUI_DISABLE/);
+
+  const missing = await fetch(`http://127.0.0.1:${port}/api/direk/feature/scene-errors?id=FILM-wala`);
+  assert.equal(missing.status, 404);
 });
 
 test('the pilot status reports not-configured and the bridge answers 503 without a URL', async (t) => {

@@ -1,52 +1,38 @@
-# Cloud progress log
+# Firebase and Google Cloud progress (shared agent context)
 
-What is **verified in this repo**, and what still needs a check in the live
-Firebase / Google Cloud Console. No secrets, tokens or private keys here.
+This note gives OpenHands and other contributors the current repository context so work is collaborative rather than duplicated. It records **what the code/configuration shows**, not proof that the corresponding services are currently enabled or deployed in the cloud. Check Firebase Console / Google Cloud Console or run a safe, authorized status check before making claims about live cloud state.
 
-## Verified in the repository (static, from code)
+## Firebase / Firestore — implemented in the repository
 
-| Item | Where | Verified |
-| --- | --- | --- |
-| Firebase project id | `.firebaserc`, `src/firebaseConfig.ts` | `movies-app-d646b` |
-| Anonymous auth + history sync code | `src/firebaseClient.ts` | Present; uses the public Web API key and REST endpoints |
-| History rules | `firestore.rules` `users/{uid}/movie_history` | Read/write gated to `request.auth.uid == userId` |
-| Factory rules (draft) | `firestore.rules` `MovieJobs` / `SceneJobs` | Read/write gated to the `admin` custom claim |
-| Factory local store | `src/direk/factoryDb.ts` (SQLite) | Local only; no browser client writes to Firestore today |
-| Drive OAuth (authorization-code, `drive.file` scope) | `src/direk/gdrive.ts` | Present; client id/secret from env only |
-| Drive routes | `server.ts` `/api/direk/drive/status|auth|callback` | Present |
-| Drive token file | `gdrive.token.json` | Gitignored |
-| Secret scan | whole git history | No `GOCSPX`, no private key, no committed secret |
+- The configured Firebase project is `movies-app-d646b` (`.firebaserc`, `src/firebaseConfig.ts`). The frontend config is public Firebase Web App configuration, not an Admin credential. Never add Admin private keys to browser code.
+- Movie Maker includes anonymous Firebase Authentication and Firestore history sync. It stores records under `users/{uid}/movie_history/{movieId}` and refreshes/syncs history in the UI (`src/firebaseClient.ts`, `src/components/MovieMakerWithFirebase.tsx`).
+- `firestore.rules` scopes Movie Maker history reads/writes to the authenticated user's own UID and validates the stored fields.
+- The repo includes Firebase CLI configuration (`firebase.json`) and a setup guide (`docs/firebase-setup.md`) with the steps to enable Anonymous sign-in, create Firestore, and deploy rules.
+- The Feature Film Factory has a local SQLite database whose MovieJobs and SceneJobs document shapes are designed to align with Firestore (`README.md`, `src/direk/factoryDb.ts`). The rules include corresponding collections: reads are organization-scoped and client writes require an `admin` custom claim. Admin SDK server access is not governed by Firestore rules.
 
-## Not yet verified (needs the live console)
+## Google Cloud — implemented/integrated in the repository
 
-- [ ] Anonymous sign-in enabled in Firebase Authentication.
-- [ ] Firestore database created for `movies-app-d646b`.
-- [ ] Current `firestore.rules` deployed.
-- [ ] Movie Maker history sync works against the live project.
-- [ ] `admin` custom claim set; Factory collections usable in live Firestore.
-- [ ] Google Drive API enabled on the Cloud project.
-- [ ] Authorized redirect URI matches `/api/direk/drive/status` exactly.
-- [ ] Consent screen completed for the actual users.
-- [ ] One small approved Drive upload succeeds.
+- Google Drive API v3 integration is implemented for asset uploads/listing. It uses OAuth consent and the narrow `drive.file` scope, with setup and status/auth/callback routes (`src/direk/gdrive.ts`, `README.md`).
+- Google Drive is optional: with valid OAuth setup, the app can upload files; without it, the `cloud_storage` connector produces a local ZIP instead.
+- The documented setup is to enable Google Drive API, create a Web application OAuth client with the app callback URI, configure `GDRIVE_CLIENT_ID` / `GDRIVE_CLIENT_SECRET`, then authorize via `/api/direk/drive/auth`. Credentials and tokens must remain out of Git; token storage is intended to be local and access-restricted.
+- The Feature Film Factory also documents a Kaggle-hosted Pilot reached via a Cloudflare tunnel (`KAGGLE_PILOT_URL`). This is an external worker, not a Google Cloud deployment and not part of this repository.
 
-## Open items found in this pass
+## Important verification boundary
 
-1. **OAuth client secret was exposed in a screenshot.** Treat it as
-   compromised: reset/rotate it in Google Cloud Credentials, revoke the old
-   client's access, delete any local `gdrive.token.json`, and re-authorize.
-   It was never committed to this repo (confirmed across all history).
-2. **`firestore.rules` read scope.** `MovieJobs` / `SceneJobs` reads were gated
-   only by `signedIn() && org_id == 'LJRgroupORG'`, which any anonymous user
-   could satisfy. Reads are now admin-only, matching the write gate.
-3. **`server.ts` does not set `trust proxy`.** Behind a TLS proxy `req.protocol`
-   can be `http`, so the `redirect_uri` shown by `/api/direk/drive/status` may
-   not match the URI registered in Google Cloud. Compare them before deploying;
-   set `GDRIVE_REDIRECT_URI` explicitly if they differ.
-4. **Missing doc.** `docs/google-drive-oauth-setup.md` is referenced but does
-   not exist in the repo or its history.
+The checked-in code, config, rules, and setup docs establish that these integrations have been built into the project. They do **not** by themselves establish that Firestore rules have been deployed, Anonymous Auth/Firestore are enabled, Google Drive API is enabled, OAuth consent has completed, or any cloud operation was tested successfully. Verify live status before marking those tasks complete. Do not invent achievements or report unverified cloud-console changes as fact.
 
-## How to record a live check
+## Video render backend (local, not cloud)
 
-Append a dated line with what was tested, the result, and non-secret evidence
-(the status code, the project id, the redirect URI shape). Never paste a secret,
-token, or private key.
+The Feature Film Factory needs a **real** video backend; it never writes a placeholder clip. Video is rendered locally by ComfyUI (`COMFYUI_URL` + `COMFYUI_VIDEO_WORKFLOW`), with Wan 2.2 on fal.ai as an opt-in fallback only when `FAL_KEY` is set. This is a local/self-hosted path, not a Google Cloud service.
+
+- `GET /api/direk/video/backend` reports the whole chain: preferred engine, whether ComfyUI is enabled, its URL, the workflow path and whether the file exists, the exact problem (`disabled`, `no-workflow`, `workflow-missing`, `placeholder`, `unreachable`, `ready`), the unfilled placeholders, and whether a `FAL_KEY` fallback is present.
+- The video workflow template must contain the placeholders `__PROMPT__`, `__NEGATIVE__`, `__SEED__`, `__WIDTH__`, `__HEIGHT__`, `__FRAMES__`, `__CHECKPOINT__`. All of them are substituted before the graph is posted to ComfyUI `/prompt`; any other `__TOKEN__` is refused with a clear error rather than sent.
+- When nothing can render, the API returns `503 AI_UNAVAILABLE` with the real reason. Failed scenes are logged as `[FILM ERROR] …` and listed by `GET /api/direk/feature/scene-errors?id=<movie id>`.
+- `COMFYUI_VIDEO_WORKFLOW` is also a runtime setting (`comfyui_video_workflow`), editable in the SETUP panel alongside the other ComfyUI fields.
+
+## Collaboration checklist
+
+1. Read the relevant existing implementation and tests before coding; avoid rebuilding completed features.
+2. Report prior project work accurately and credit the project/team as shared work, not as the current agent's solo work.
+3. For each new cloud task, state whether it is code/config work or a live-console/deployment task, and document evidence for any live verification.
+4. Keep this note and the specific setup docs updated when implementation or verified service status changes.

@@ -4,10 +4,12 @@ import {
   buildWorkflow, defaultWorkflow, comfyUrl, DEFAULT_NEGATIVE,
   clampStrength, publishLora, listLoras, lorasDir,
   buildVideoWorkflow, comfyVideoConfigured,
+  unfilledPlaceholders, VIDEO_PLACEHOLDERS, diagnoseComfyVideo, checkComfyReachability,
 } from './comfyui.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { startMockComfyUI } from '../testing/comfyuiMock.ts';
 
 test('comfyUrl defaults to localhost and strips trailing slashes', () => {
   const saved = process.env.COMFYUI_URL;
@@ -147,5 +149,180 @@ test('buildVideoWorkflow explains itself when no workflow is configured', () => 
   } finally {
     if (saved === undefined) delete process.env.COMFYUI_VIDEO_WORKFLOW;
     else process.env.COMFYUI_VIDEO_WORKFLOW = saved;
+  }
+});
+
+test('unfilledPlaceholders flags unknown tokens and ignores the known ones', () => {
+  // A template that uses only supported placeholders is clean.
+  assert.deepEqual(unfilledPlaceholders(JSON.stringify({ p: '__PROMPT__', f: '__FRAMES__' })), []);
+  // A token the builder cannot fill is reported once, deduped.
+  assert.deepEqual(
+    unfilledPlaceholders('__BATCH__ and __BATCH__ and __STEPS__'),
+    ['__BATCH__', '__STEPS__'],
+  );
+});
+
+test('buildVideoWorkflow refuses a template with an unfilled placeholder', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vid-'));
+  const tpl = path.join(dir, 'vid.json');
+  fs.writeFileSync(tpl, JSON.stringify({ n: { p: '__PROMPT__', b: '__BATCH__' } }));
+  const saved = process.env.COMFYUI_VIDEO_WORKFLOW;
+  process.env.COMFYUI_VIDEO_WORKFLOW = tpl;
+  try {
+    assert.throws(() => buildVideoWorkflow('x'), /__BATCH__/);
+  } finally {
+    if (saved === undefined) delete process.env.COMFYUI_VIDEO_WORKFLOW;
+    else process.env.COMFYUI_VIDEO_WORKFLOW = saved;
+  }
+});
+
+test('buildVideoWorkflow reports a missing workflow file', () => {
+  const saved = process.env.COMFYUI_VIDEO_WORKFLOW;
+  process.env.COMFYUI_VIDEO_WORKFLOW = path.join(os.tmpdir(), 'no-such-video-workflow.json');
+  try {
+    assert.throws(() => buildVideoWorkflow('x'), /Walang workflow file/);
+  } finally {
+    if (saved === undefined) delete process.env.COMFYUI_VIDEO_WORKFLOW;
+    else process.env.COMFYUI_VIDEO_WORKFLOW = saved;
+  }
+});
+
+test('every known video placeholder is substituted before the graph is built', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vid-'));
+  const tpl = path.join(dir, 'vid.json');
+  fs.writeFileSync(tpl, JSON.stringify({
+    p: '__PROMPT__', n: '__NEGATIVE__', s: '__SEED__', w: '__WIDTH__', h: '__HEIGHT__',
+    f: '__FRAMES__', c: '__CHECKPOINT__',
+  }));
+  const saved = process.env.COMFYUI_VIDEO_WORKFLOW;
+  const savedCkpt = process.env.COMFYUI_CHECKPOINT;
+  process.env.COMFYUI_VIDEO_WORKFLOW = tpl;
+  process.env.COMFYUI_CHECKPOINT = 'sdxl.safetensors';
+  try {
+    const wf: any = buildVideoWorkflow('a sunset', { seed: 7, width: 640, height: 360, frames: 25 });
+    assert.equal(wf.p, 'a sunset');
+    assert.equal(wf.s, '7');
+    assert.equal(wf.w, '640');
+    assert.equal(wf.h, '360');
+    assert.equal(wf.f, '25');
+    assert.equal(wf.c, 'sdxl.safetensors');
+    // No placeholder token survives into the graph sent to ComfyUI.
+    for (const value of Object.values(wf)) {
+      assert.doesNotMatch(String(value), /__[A-Z0-9_]+__/);
+    }
+    assert.equal(VIDEO_PLACEHOLDERS.length, 7);
+  } finally {
+    if (saved === undefined) delete process.env.COMFYUI_VIDEO_WORKFLOW;
+    else process.env.COMFYUI_VIDEO_WORKFLOW = saved;
+    if (savedCkpt === undefined) delete process.env.COMFYUI_CHECKPOINT;
+    else process.env.COMFYUI_CHECKPOINT = savedCkpt;
+  }
+});
+
+/** Run `fn` with the video environment replaced, then restore it. */
+async function withVideoEnv<T>(env: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
+  const keys = ['COMFYUI_URL', 'COMFYUI_VIDEO_WORKFLOW', 'COMFYUI_DISABLE'];
+  const saved: Record<string, string | undefined> = {};
+  for (const k of keys) {
+    saved[k] = process.env[k];
+    delete process.env[k];
+  }
+  for (const [k, v] of Object.entries(env)) if (v !== undefined) process.env[k] = v;
+  try {
+    return await fn();
+  } finally {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+
+test('diagnoseComfyVideo names each reason the backend is not usable', async () => {
+  // Disabled.
+  await withVideoEnv({ COMFYUI_DISABLE: '1' }, async () => {
+    const d = await diagnoseComfyVideo();
+    assert.equal(d.problem, 'disabled');
+    assert.equal(d.ready, false);
+  });
+
+  // No workflow configured.
+  await withVideoEnv({}, async () => {
+    const d = await diagnoseComfyVideo();
+    assert.equal(d.problem, 'no-workflow');
+    assert.equal(d.ready, false);
+  });
+
+  // Workflow path set but the file is missing.
+  await withVideoEnv({ COMFYUI_VIDEO_WORKFLOW: '/no/such/workflow.json' }, async () => {
+    const d = await diagnoseComfyVideo();
+    assert.equal(d.problem, 'workflow-missing');
+    assert.equal(d.workflow_exists, false);
+  });
+
+  // A workflow with a placeholder the builder cannot fill.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vid-'));
+  const tpl = path.join(dir, 'vid.json');
+  fs.writeFileSync(tpl, JSON.stringify({ p: '__PROMPT__', b: '__BATCH__' }));
+  await withVideoEnv({ COMFYUI_VIDEO_WORKFLOW: tpl }, async () => {
+    const d = await diagnoseComfyVideo();
+    assert.equal(d.problem, 'placeholder');
+    assert.deepEqual(d.unfilled, ['__BATCH__']);
+  });
+});
+
+test('diagnoseComfyVideo reports unreachable when nothing answers, ready when the mock does', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vid-'));
+  const tpl = path.join(dir, 'vid.json');
+  fs.writeFileSync(tpl, JSON.stringify({ p: '__PROMPT__', f: '__FRAMES__' }));
+
+  // A port nothing listens on -> unreachable.
+  await withVideoEnv({ COMFYUI_URL: 'http://127.0.0.1:1', COMFYUI_VIDEO_WORKFLOW: tpl }, async () => {
+    const d = await diagnoseComfyVideo();
+    assert.equal(d.problem, 'unreachable');
+    assert.equal(d.ready, false);
+  });
+
+  // A real mock server -> ready.
+  const mock = await startMockComfyUI();
+  try {
+    await withVideoEnv({ COMFYUI_URL: mock.url, COMFYUI_VIDEO_WORKFLOW: tpl }, async () => {
+      const d = await diagnoseComfyVideo();
+      assert.equal(d.problem, 'ready');
+      assert.equal(d.ready, true);
+      assert.equal(d.reachable, true);
+    });
+  } finally {
+    await mock.close();
+  }
+});
+
+test('checkComfyReachability reports reachable against a live server', async (t) => {
+  const mock = await startMockComfyUI();
+  t.after(() => mock.close());
+  const saved = process.env.COMFYUI_URL;
+  process.env.COMFYUI_URL = mock.url;
+  try {
+    const r = await checkComfyReachability();
+    assert.equal(r.reachable, true);
+    assert.equal(r.url, mock.url);
+    assert.equal(r.error, '');
+  } finally {
+    if (saved === undefined) delete process.env.COMFYUI_URL; else process.env.COMFYUI_URL = saved;
+  }
+});
+
+test('checkComfyReachability names the exact URL when unreachable', async () => {
+  const saved = process.env.COMFYUI_URL;
+  // Port 9 (discard) on loopback: nothing listens, so the fetch fails fast.
+  process.env.COMFYUI_URL = 'http://127.0.0.1:9';
+  try {
+    const r = await checkComfyReachability();
+    assert.equal(r.reachable, false);
+    assert.equal(r.url, 'http://127.0.0.1:9');
+    assert.equal(r.error, 'hindi maabot ang ComfyUI sa http://127.0.0.1:9');
+    assert.ok(r.detail, 'keeps the underlying cause for the logs');
+  } finally {
+    if (saved === undefined) delete process.env.COMFYUI_URL; else process.env.COMFYUI_URL = saved;
   }
 });

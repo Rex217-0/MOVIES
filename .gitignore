@@ -20,5 +20,6 @@ gdrive.token.json
 # Android build artifacts
 android/build/
 android/*.keystore
-android/movie-creator.apk
 android/*.idsig
+# The APK is committed on purpose: the /android download page must work on any
+# deploy (Server-2) without an Android SDK. Rebuild with android/build.sh.

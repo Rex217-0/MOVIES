@@ -214,10 +214,10 @@ async function withEnv(vars: Record<string, string | undefined>, fn: () => Promi
   }
 }
 
-test('narrationOrder defaults to Fish, Tagalog, Gemini, then Piper', async () => {
+test('narrationOrder defaults to the free voices first, then the paid one', async () => {
   const { narrationOrder } = await import('./movie.ts');
   await withEnv({ TTS_ORDER: undefined }, () => {
-    assert.deepEqual(narrationOrder(), ['fish', 'tagalog', 'gemini', 'piper']);
+    assert.deepEqual(narrationOrder(), ['tagalog', 'gemini', 'piper', 'fish']);
   });
 });
 
@@ -228,7 +228,7 @@ test('TTS_ORDER overrides the chain and drops unknown voices', async () => {
   });
   // A TTS_ORDER that names nothing usable falls back to the default chain.
   await withEnv({ TTS_ORDER: 'nonsense' }, () => {
-    assert.deepEqual(narrationOrder(), ['fish', 'tagalog', 'gemini', 'piper']);
+    assert.deepEqual(narrationOrder(), ['tagalog', 'gemini', 'piper', 'fish']);
   });
 });
 
@@ -239,7 +239,11 @@ test('voiceReady reports a voice as usable only when it is configured', async ()
     assert.equal(voiceReady('tagalog'), false);
     assert.equal(voiceReady('piper'), false);
   });
-  await withEnv({ FISH_AUDIO_API_KEY: 'test-key' }, () => {
+  // Fish is paid, so a key alone is not enough: the deployment must opt in.
+  await withEnv({ FISH_AUDIO_API_KEY: 'test-key', ALLOW_PAID_CLOUD: undefined }, () => {
+    assert.equal(voiceReady('fish'), false, 'a paid voice stays off without the opt-in');
+  });
+  await withEnv({ FISH_AUDIO_API_KEY: 'test-key', ALLOW_PAID_CLOUD: '1' }, () => {
     assert.equal(voiceReady('fish'), true);
   });
   await withEnv({ FISH_AUDIO_API_KEY: undefined, TTS_TAGALOG_DISABLE: undefined }, () => {
@@ -256,10 +260,10 @@ test('narrationBackendOrder lists only the ready voices, in order', async () => 
       assert.deepEqual(narrationBackendOrder(), [], 'nothing ready means captions');
     },
   );
-  await withEnv({ FISH_AUDIO_API_KEY: 'k', TTS_TAGALOG_DISABLE: undefined }, () => {
+  await withEnv({ FISH_AUDIO_API_KEY: 'k', ALLOW_PAID_CLOUD: '1', TTS_TAGALOG_DISABLE: undefined }, () => {
     const order = narrationBackendOrder();
-    assert.equal(order[0], 'fish', 'Fish is first when a key is present');
-    assert.ok(order.includes('tagalog'));
+    assert.equal(order[0], 'tagalog', 'the free Tagalog voice comes first');
+    assert.ok(order.includes('fish'), 'the paid Fish voice is available once opted in');
   });
 });
 
