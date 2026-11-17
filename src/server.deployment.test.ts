@@ -833,7 +833,7 @@ test('the Android download page and APK are public and real', async (t) => {
   const html = await page.text();
   assert.match(html, /Movie Creator para sa Android/);
 
-  const apkPath = path.join(repoRoot, 'android', 'movie-creator.apk');
+  const apkPath = path.join(repoRoot, 'android-legacy', 'movie-creator.apk');
   if (!fs.existsSync(apkPath)) {
     // The APK is a build artifact (git-ignored). When it is absent the page must
     // say so honestly instead of offering a broken download.

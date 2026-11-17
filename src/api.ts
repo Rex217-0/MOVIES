@@ -9,6 +9,37 @@
 
 const TOKEN_STORAGE_KEY = 'direk_auth_token';
 
+/**
+ * Base URL of the API server, baked in at build time from `VITE_API_BASE_URL`.
+ *
+ * Empty means "same origin": the browser build served by the app itself keeps
+ * using relative `/api/...` URLs. The Capacitor Android build loads the web app
+ * from `https://localhost`, where a relative URL would hit the WebView, not
+ * Server-2 — so that build must set `VITE_API_BASE_URL` (see
+ * docs/capacitor-android.md). No server address is hardcoded here.
+ */
+export function normalizeApiBaseUrl(raw: string | undefined | null): string {
+  return (raw ?? '').trim().replace(/\/+$/, '');
+}
+
+export function apiBaseUrl(): string {
+  try {
+    return normalizeApiBaseUrl((import.meta as { env?: Record<string, string> }).env?.VITE_API_BASE_URL);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Resolve an API path against the configured base. Absolute URLs (another host)
+ * and already-qualified paths pass through untouched. `base` is injectable so
+ * the join logic is testable without touching `import.meta.env`.
+ */
+export function apiUrl(path: string, base: string = apiBaseUrl()): string {
+  if (!path.startsWith('/')) return path;
+  return base ? `${base}${path}` : path;
+}
+
 function readTokenFromUrl(): string | null {
   try {
     const url = new URL(window.location.href);
@@ -38,7 +69,7 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
   const token = getAuthToken();
   const headers = new Headers(init.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  return fetch(input, { ...init, headers });
+  return fetch(apiUrl(input), { ...init, headers });
 }
 
 /**
@@ -48,15 +79,15 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
  */
 export async function thoughtStreamUrl(): Promise<string> {
   const token = getAuthToken();
-  if (!token) return '/api/pilot/thought-stream';
+  if (!token) return apiUrl('/api/pilot/thought-stream');
   try {
     const res = await apiFetch('/api/pilot/stream-ticket', { method: 'POST' });
-    if (!res.ok) return '/api/pilot/thought-stream';
+    if (!res.ok) return apiUrl('/api/pilot/thought-stream');
     const data = (await res.json()) as { ticket?: string };
-    if (!data.ticket) return '/api/pilot/thought-stream';
-    return `/api/pilot/thought-stream?ticket=${encodeURIComponent(data.ticket)}`;
+    if (!data.ticket) return apiUrl('/api/pilot/thought-stream');
+    return apiUrl(`/api/pilot/thought-stream?ticket=${encodeURIComponent(data.ticket)}`);
   } catch {
-    return '/api/pilot/thought-stream';
+    return apiUrl('/api/pilot/thought-stream');
   }
 }
 
@@ -287,8 +318,8 @@ export async function direkTrainCancel(): Promise<boolean> {
 export function trainStreamUrl(): string {
   const token = getAuthToken();
   return token
-    ? `/api/direk/train/stream?token=${encodeURIComponent(token)}`
-    : '/api/direk/train/stream';
+    ? apiUrl(`/api/direk/train/stream?token=${encodeURIComponent(token)}`)
+    : apiUrl('/api/direk/train/stream');
 }
 
 export interface LoraFile {
@@ -391,7 +422,7 @@ export async function direkLoraDataset(input: LoraBriefInput): Promise<Blob> {
 export function assetDownloadUrl(name: string): string {
   const token = getAuthToken();
   const query = token ? `?token=${encodeURIComponent(token)}` : '';
-  return `/api/direk/assets/${encodeURIComponent(name)}/download${query}`;
+  return apiUrl(`/api/direk/assets/${encodeURIComponent(name)}/download${query}`);
 }
 
 // ---------------------------------------------------------------------------

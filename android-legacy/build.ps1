@@ -1,9 +1,9 @@
 # Build the signed Movie Creator APK on Windows (Server-2).
 #
-# Same pipeline as android/build.sh (javac -> d8 -> aapt2 -> zipalign ->
+# Same pipeline as android-legacy/build.sh (javac -> d8 -> aapt2 -> zipalign ->
 # apksigner), no Gradle. Run from the repo root:
 #
-#   powershell -ExecutionPolicy Bypass -File android\build.ps1
+#   powershell -ExecutionPolicy Bypass -File android-legacy\build.ps1
 #
 # Requirements: a JDK 17+ and the Android SDK command-line tools. If JAVA_HOME
 # and ANDROID_HOME are already set in your environment, nothing else is needed.

@@ -247,7 +247,30 @@ trainer stops child processes with `SIGTERM` instead of `SIGKILL`.
 
 ### Android APK
 
-`android/build.sh` builds a signed APK without Gradle (javac → d8 → aapt2 →
+There are two Android builds. The **Capacitor** app in `android/` is primary; the
+legacy no-Gradle shell in `android-legacy/` is what `/android` still serves.
+
+#### Capacitor app (`android/`)
+
+The React app packaged as a native app. It needs the server address baked in at
+build time, because the WebView loads the app from `https://localhost`:
+
+```bash
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+export ANDROID_HOME=/opt/android-sdk
+echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+
+VITE_API_BASE_URL="http://192.168.1.10:3000" npm run build   # bake the server address
+npx cap sync android                                         # copy dist/ into the project
+cd android && ./gradlew assembleDebug                        # -> app/build/outputs/apk/debug/app-debug.apk
+```
+
+Set `ALLOWED_ORIGINS="https://localhost"` on the server, or its CORS check returns
+`403` for the app. Full guide: [docs/capacitor-android.md](capacitor-android.md).
+
+#### Legacy shell (`android-legacy/`)
+
+`android-legacy/build.sh` builds a signed APK without Gradle (javac → d8 → aapt2 →
 zipalign → apksigner). It needs a JDK 17+ and the Android SDK. Neither ships in
 the repo, so on a fresh machine — or in a container where `/opt` is not
 persistent — install them first with one command:
@@ -261,19 +284,19 @@ Then build:
 ```bash
 ANDROID_HOME=/opt/android-sdk \
 JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")" \
-bash android/build.sh
+bash android-legacy/build.sh
 ```
 
-The output is `android/movie-creator.apk` (about 21 KB), signed with
-`android/moviecreator.keystore` (gitignored; generated on first run). The APK is
+The output is `android-legacy/movie-creator.apk` (about 21 KB), signed with
+`android-legacy/moviecreator.keystore` (gitignored; generated on first run). The APK is
 committed on purpose so `/android` serves a download on any deploy. `sdkmanager`
 also accepts `openjdk-21` on Debian trixie, where `openjdk-17` is absent.
 
 Verify the result:
 
 ```bash
-$ANDROID_HOME/build-tools/35.0.0/aapt2 dump badging android/movie-creator.apk | grep version
-$ANDROID_HOME/build-tools/35.0.0/aapt2 dump xmltree --file AndroidManifest.xml android/movie-creator.apk | grep -i supports-screens
+$ANDROID_HOME/build-tools/35.0.0/aapt2 dump badging android-legacy/movie-creator.apk | grep version
+$ANDROID_HOME/build-tools/35.0.0/aapt2 dump xmltree --file AndroidManifest.xml android-legacy/movie-creator.apk | grep -i supports-screens
 ```
 
 ## 14. What is verified and what is not
