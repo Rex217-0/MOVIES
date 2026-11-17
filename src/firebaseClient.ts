@@ -46,8 +46,11 @@ async function authRequest(path: string, body: Record<string, unknown>): Promise
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     const code = String(result?.error?.message ?? 'AUTH_ERROR');
-    if (code.includes('OPERATION_NOT_ALLOWED')) {
-      throw new Error('I-enable ang Anonymous sign-in sa Firebase Console → Authentication → Sign-in method.');
+    // Both codes mean the Anonymous provider is switched off in the console.
+    // ADMIN_ONLY_OPERATION is what identitytoolkit returns when Anonymous
+    // sign-up is disabled; OPERATION_NOT_ALLOWED is the older wording.
+    if (code.includes('ADMIN_ONLY_OPERATION') || code.includes('OPERATION_NOT_ALLOWED')) {
+      throw new Error('I-enable ang Anonymous sign-in sa Firebase Console → Authentication → Sign-in method, tapos i-Save.');
     }
     throw new Error(`Firebase Authentication error: ${code}`);
   }
@@ -110,7 +113,11 @@ export async function saveMovieHistory(movie: SavedMovie): Promise<void> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(`Hindi na-save sa Firestore (${body?.error?.status || response.status}). I-deploy ang firestore.rules at tiyaking enabled ang Firestore.`);
+    const status = body?.error?.status || String(response.status);
+    const hint = status === '404'
+      ? 'Wala pa ang Firestore database. Gumawa nito sa Firebase Console → Firestore Database → Create database.'
+      : 'I-deploy ang firestore.rules at tiyaking enabled ang Firestore.';
+    throw new Error(`Hindi na-save sa Firestore (${status}). ${hint}`);
   }
 }
 
@@ -120,7 +127,11 @@ export async function listMovieHistory(): Promise<SavedMovie[]> {
   const response = await fetch(url, { headers: { Authorization: `Bearer ${session.idToken}` } });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(`Hindi mabasa ang Firestore history (${body?.error?.status || response.status}). I-deploy ang firestore.rules.`);
+    const status = body?.error?.status || String(response.status);
+    const hint = status === '404'
+      ? 'Wala pa ang Firestore database. Gumawa nito sa Firebase Console → Firestore Database → Create database.'
+      : 'I-deploy ang firestore.rules.';
+    throw new Error(`Hindi mabasa ang Firestore history (${status}). ${hint}`);
   }
   const result = await response.json().catch(() => ({}));
   return (result.documents ?? []).flatMap((doc: any) => {
