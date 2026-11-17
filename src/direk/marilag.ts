@@ -12,12 +12,23 @@
 
 import type { Mood } from '../movieMeta.ts';
 import type { ConceptOptions } from './featureFilm.ts';
+import { FEATURE_SCENES, FEATURE_TOTAL_SECONDS } from '../featureFilm.ts';
 
-/** Scenes in one Marilag feature. Twelve scenes of five minutes is 60 minutes. */
-export const MARILAG_SCENES = 12;
+/**
+ * Scenes the engine actually renders per film, and the real length that follows.
+ * These are the engine's numbers, not a hardcoded target, so the batch never
+ * advertises a length it will not produce.
+ */
+export const MARILAG_SCENES = FEATURE_SCENES;
+export const MARILAG_SECONDS = FEATURE_TOTAL_SECONDS;
 
-/** Seconds in one Marilag feature: exactly 60 minutes. */
-export const MARILAG_SECONDS = 60 * 60;
+/**
+ * The requested target: twelve scenes of five minutes, exactly 60 minutes.
+ * Reaching it means changing the engine's scene count (`FEATURE_SCENES`); until
+ * then the batch renders `MARILAG_SCENES` scenes and reports the real length.
+ */
+export const MARILAG_TARGET_SCENES = 12;
+export const MARILAG_TARGET_SECONDS = 60 * 60;
 
 /** How many films one Marilag batch queues. */
 export const MARILAG_MOVIES = 10;

@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   marilagMovies, marilagConceptOptions, MARILAG_MOVIES, MARILAG_SCENES, MARILAG_SECONDS,
+  MARILAG_TARGET_SCENES, MARILAG_TARGET_SECONDS,
 } from './marilag.ts';
+import { FEATURE_SCENES, FEATURE_SCENE_SECONDS, FEATURE_TOTAL_SECONDS } from '../featureFilm.ts';
 import { MOODS } from '../movieMeta.ts';
 
 test('the batch is exactly ten movies', () => {
@@ -31,10 +33,17 @@ test('the genres are mixed, not one repeated genre', () => {
   assert.ok(genres.size >= 6, `expected a mix of genres, got ${genres.size}`);
 });
 
-test('a Marilag movie is 12 scenes of five minutes: exactly 60 minutes', () => {
-  assert.equal(MARILAG_SCENES, 12);
-  assert.equal(MARILAG_SCENES * 300, MARILAG_SECONDS);
-  assert.equal(MARILAG_SECONDS, 3600);
+test('the batch reports the engine\'s real scene count and length, not a hardcoded 12', () => {
+  // The batch must advertise what the engine will actually produce.
+  assert.equal(MARILAG_SCENES, FEATURE_SCENES);
+  assert.equal(MARILAG_SECONDS, FEATURE_TOTAL_SECONDS);
+  assert.equal(MARILAG_SCENES * FEATURE_SCENE_SECONDS, MARILAG_SECONDS);
+});
+
+test('the 60-minute target is stated and equals 12 scenes of five minutes', () => {
+  assert.equal(MARILAG_TARGET_SCENES, 12);
+  assert.equal(MARILAG_TARGET_SCENES * 300, MARILAG_TARGET_SECONDS);
+  assert.equal(MARILAG_TARGET_SECONDS, 3600);
 });
 
 test('marilagConceptOptions carries the title, genre, brief and mood into the factory', () => {

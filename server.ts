@@ -73,6 +73,7 @@ import {
 } from './src/direk/factory.ts';
 import {
   runMarilagBatch, newMarilagBatch, MARILAG_MOVIES, MARILAG_SCENES, MARILAG_SECONDS,
+  MARILAG_TARGET_SCENES, MARILAG_TARGET_SECONDS,
   type MarilagBatchView,
 } from './src/direk/marilagBatch.ts';
 import {
@@ -1703,6 +1704,13 @@ function marilagView() {
     scenes_per_movie: MARILAG_SCENES,
     seconds_per_movie: MARILAG_SECONDS,
     minutes_per_movie: MARILAG_SECONDS / 60,
+    target_scenes_per_movie: MARILAG_TARGET_SCENES,
+    target_minutes_per_movie: MARILAG_TARGET_SECONDS / 60,
+    length_note:
+      `Ang engine ay gumagawa ng ${MARILAG_SCENES} eksena x ` +
+      `${FEATURE_SCENE_SECONDS / 60} minuto = ${MARILAG_SECONDS / 60} minuto bawat pelikula. ` +
+      `Ang hinihinging ${MARILAG_TARGET_SCENES} eksena / ${MARILAG_TARGET_SECONDS / 60} minuto ay ` +
+      'kailangan ng pagbabago sa bilang ng eksena ng engine, hindi lang sa batch.',
     publishing: false,
     publish_note:
       'Walang CineStream o MyStream API sa repo na ito. Hindi nagpapadala ang batch ng ' +

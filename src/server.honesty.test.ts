@@ -243,8 +243,10 @@ test('the Marilag batch queues ten movies and refuses to start without a video b
   const view = await (await fetch(`http://127.0.0.1:${port}/api/direk/marilag`)).json();
   assert.equal(view.available, true);
   assert.equal(view.movies, 10);
-  assert.equal(view.scenes_per_movie, 12);
-  assert.equal(view.minutes_per_movie, 60);
+  assert.equal(view.scenes_per_movie, 18, 'the engine renders 18 scenes');
+  assert.equal(view.minutes_per_movie, 90);
+  assert.equal(view.target_scenes_per_movie, 12, 'the 60-minute target is stated');
+  assert.equal(view.target_minutes_per_movie, 60);
   assert.equal(view.publishing, false, 'it does not claim to publish anywhere');
 
   const created = await fetch(`http://127.0.0.1:${port}/api/direk/marilag/create`, { method: 'POST' });

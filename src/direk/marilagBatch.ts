@@ -14,6 +14,7 @@
 import {
   marilagMovies, marilagConceptOptions,
   MARILAG_MOVIES, MARILAG_SCENES, MARILAG_SECONDS,
+  MARILAG_TARGET_SCENES, MARILAG_TARGET_SECONDS,
 } from './marilag.ts';
 import type { ConceptOptions } from './featureFilm.ts';
 
@@ -68,11 +69,13 @@ export interface MarilagBatchView {
 }
 
 export const MARILAG_BATCH_NOTE =
-  'Bawat pelikula: 10 konsepto, isang sunod-sunod na render sa ComfyUI. Ang bilang ng ' +
-  'eksena ay sumusunod sa engine (kasalukuyang ' + MARILAG_SCENES + ' eksena x 5 minuto = ' +
-  MARILAG_SECONDS / 60 + ' minuto). Hindi ito nag-publish sa CineStream o MyStream: ' +
-  'walang ganoong API sa repo na ito, kaya walang ipinadalang video sa labas. Ang isang ' +
-  'pelikulang hindi makapag-render ay nabibigo nang may totoong dahilan.';
+  'Bawat pelikula ay sunod-sunod na render sa ComfyUI. Ang bilang ng eksena ay ' +
+  'sumusunod sa engine: ' + MARILAG_SCENES + ' eksena x 5 minuto = ' +
+  MARILAG_SECONDS / 60 + ' minuto bawat pelikula (target: ' + MARILAG_TARGET_SCENES +
+  ' eksena / ' + MARILAG_TARGET_SECONDS / 60 + ' minuto). Hindi ito nag-publish sa ' +
+  'CineStream o MyStream: walang ganoong API sa repo na ito, kaya walang ipinadalang ' +
+  'video sa labas. Ang isang pelikulang hindi makapag-render ay nabibigo nang may ' +
+  'totoong dahilan.';
 
 /**
  * Run the batch: one movie at a time, in order. `batch` is mutated in place so a
@@ -182,4 +185,4 @@ export function newMarilagBatch(now: () => number = () => Date.now()): MarilagBa
   };
 }
 
-export { MARILAG_MOVIES, MARILAG_SCENES, MARILAG_SECONDS };
+export { MARILAG_MOVIES, MARILAG_SCENES, MARILAG_SECONDS, MARILAG_TARGET_SCENES, MARILAG_TARGET_SECONDS };
