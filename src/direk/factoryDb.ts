@@ -88,6 +88,7 @@ interface SceneRow {
   asset_id: string | null;
   asset_name: string | null;
   error: string | null;
+  backend: string | null;
   route: string;
   started_at: number | null;
   ended_at: number | null;
@@ -117,6 +118,8 @@ export interface SceneDoc {
   scene_number: number;
   status: string;
   video_path: string | null;
+  /** Which engine made the scene video: 'comfyui' on success, null on failure. */
+  backend: string | null;
 }
 
 /** A scene row's stable id, e.g. `FILM-123-S07`. */
@@ -171,6 +174,7 @@ CREATE TABLE IF NOT EXISTS scene_jobs (
   asset_id TEXT,
   asset_name TEXT,
   error TEXT,
+  backend TEXT,
   route TEXT NOT NULL,
   started_at INTEGER,
   ended_at INTEGER,
@@ -221,6 +225,7 @@ function migrate(db: DatabaseSync): void {
     ['scene_number', 'INTEGER NOT NULL DEFAULT 0'],
     ['video_path', 'TEXT'],
     ['stage', "TEXT NOT NULL DEFAULT 'scripting'"],
+    ['backend', 'TEXT'],
   ];
   for (const [name, type] of addScene) {
     if (!sceneCols.has(name)) db.exec(`ALTER TABLE scene_jobs ADD COLUMN ${name} ${type}`);
@@ -301,8 +306,8 @@ export class FactoryDb {
     const scene = this.db.prepare(
       `INSERT INTO scene_jobs
          (id, org_id, movie_id, scene_number, video_path, idx, act, heading, beat, narration, visual,
-          mood, status, stage, percent, seconds, asset_id, asset_name, error, route, started_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          mood, status, stage, percent, seconds, asset_id, asset_name, error, backend, route, started_at, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(movie_id, idx) DO UPDATE SET
          org_id=excluded.org_id,
          id=excluded.id, scene_number=excluded.scene_number, video_path=excluded.video_path,
@@ -310,13 +315,14 @@ export class FactoryDb {
          narration=excluded.narration, visual=excluded.visual, mood=excluded.mood,
          status=excluded.status, stage=excluded.stage, percent=excluded.percent, seconds=excluded.seconds,
          asset_id=excluded.asset_id, asset_name=excluded.asset_name, error=excluded.error,
+         backend=excluded.backend,
          route=excluded.route, started_at=excluded.started_at, ended_at=excluded.ended_at`,
     );
     for (const s of job.scenes) {
       scene.run(
         sceneId(job.id, s.index), ORG_ID, job.id, s.index, s.assetName ?? null, s.index, s.act, s.heading,
         s.beat, s.narration, s.visual, s.mood, s.status, s.stage, s.percent, s.seconds,
-        s.assetId ?? null, s.assetName ?? null, s.error ?? null, JSON.stringify(s.route),
+        s.assetId ?? null, s.assetName ?? null, s.error ?? null, s.backend ?? null, JSON.stringify(s.route),
         s.startedAt ?? null, s.endedAt ?? null,
       );
     }
@@ -421,6 +427,7 @@ export class FactoryDb {
       scene_number: row.scene_number,
       status: row.status,
       video_path: row.video_path,
+      backend: row.backend,
     }));
   }
 

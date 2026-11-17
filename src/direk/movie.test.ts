@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   parseScript, fallbackScript, sceneCount, scriptPrompt, moodPalette,
-  wavFromPcm, parsePcmRate, wrapText, renderFeatureScene, videoBackendReady,
+  wavFromPcm, parsePcmRate, wrapText, renderFeatureScene, renderMovie, videoBackendReady,
   MOODS, MOOD_LABELS, TTS_VOICES,
 } from './movie.ts';
 import { probe } from './render.ts';
@@ -116,8 +116,8 @@ test('every mood has a Tagalog label and every voice is listed', () => {
 
 test('an unknown mood falls back to a real palette instead of crashing the render', () => {
   // A screenplay can arrive with a mood outside MOODS (a model slip, a hand
-  // written script); moodPalette must still return a usable palette so the
-  // ffmpeg gradient is not built from `undefined`.
+  // written script); moodPalette must still return a usable palette for the
+  // title/credit card colours instead of building them from `undefined`.
   for (const bad of ['calm', '', 'WARM ', 'dramatic']) {
     const p = moodPalette(bad as any);
     assert.equal(p.base.length, 3);
@@ -287,24 +287,24 @@ test('narrationBackends exposes the chain for the status endpoint', async () => 
 
 
 test('renderFeatureScene makes one standalone clip at the scene length', async (t) => {
-  // The unit of the factory: a single five-minute scene, rendered alone, at a
-  // fixed size/rate so it can later be joined with `ffmpeg -c copy`. ComfyUI is
-  // stood in for by a mock HTTP server, so the real orchestration runs against
-  // a genuinely valid MP4 instead of a fabricated buffer.
+  // UNIT TEST (mock ComfyUI, not proof of video). The unit of the factory: a
+  // single five-minute scene, rendered alone, at a fixed size/rate so it can
+  // later be joined with `ffmpeg -c copy`. ComfyUI is stood in for by a mock
+  // HTTP server, so the real orchestration runs against a genuinely valid MP4
+  // instead of a fabricated buffer. This proves the call path, not the model.
   const mock = await startMockComfyUI();
   t.after(mock.close);
   const workflowDir = fs.mkdtempSync(path.join(os.tmpdir(), 'comfy-wf-'));
   t.after(() => fs.rmSync(workflowDir, { recursive: true, force: true }));
-  const prev = { url: process.env.COMFYUI_URL, wf: process.env.COMFYUI_VIDEO_WORKFLOW, off: process.env.COMFYUI_DISABLE, tts: process.env.TTS_TAGALOG_DISABLE, ttsG: process.env.TTS_DISABLE, engine: process.env.PREFERRED_RENDER_ENGINE };
-  // Pin the local-first path: this test exercises the ComfyUI GPU render.
-  process.env.PREFERRED_RENDER_ENGINE = 'comfyui';
+  const prev = { url: process.env.COMFYUI_URL, wf: process.env.COMFYUI_VIDEO_WORKFLOW, off: process.env.COMFYUI_DISABLE, tts: process.env.TTS_TAGALOG_DISABLE, ttsG: process.env.TTS_DISABLE };
+  // Video is ComfyUI-only: point the service at the mock and let it render.
   process.env.COMFYUI_URL = mock.url;
   process.env.COMFYUI_VIDEO_WORKFLOW = writeVideoWorkflow(workflowDir);
   delete process.env.COMFYUI_DISABLE;
   process.env.TTS_TAGALOG_DISABLE = '1';
   process.env.TTS_DISABLE = '1';
   t.after(() => {
-    for (const [k, v] of Object.entries({ COMFYUI_URL: prev.url, COMFYUI_VIDEO_WORKFLOW: prev.wf, COMFYUI_DISABLE: prev.off, TTS_TAGALOG_DISABLE: prev.tts, TTS_DISABLE: prev.ttsG, PREFERRED_RENDER_ENGINE: prev.engine })) {
+    for (const [k, v] of Object.entries({ COMFYUI_URL: prev.url, COMFYUI_VIDEO_WORKFLOW: prev.wf, COMFYUI_DISABLE: prev.off, TTS_TAGALOG_DISABLE: prev.tts, TTS_DISABLE: prev.ttsG })) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
     }
   });
@@ -326,18 +326,13 @@ test('renderFeatureScene makes one standalone clip at the scene length', async (
   fs.rmSync(file, { force: true });
 });
 
-test('renderFeatureScene fails with AI_UNAVAILABLE when every engine is off', async () => {
+test('renderFeatureScene fails with AI_UNAVAILABLE when ComfyUI is off', async () => {
   // No backend, no fabrication: the scene must fail instead of writing a
-  // placeholder clip that only looks like a result. Every engine is disabled so
-  // the failure is the real no-backend path, not the free motion engine.
-  const prev = {
-    comfy: process.env.COMFYUI_DISABLE,
-    poll: process.env.POLLINATIONS_DISABLE,
-    motion: process.env.MOTION_DISABLE,
-  };
+  // placeholder clip that only looks like a result. Video is ComfyUI-only, so
+  // turning ComfyUI off is the whole no-backend path: there is no free engine to
+  // fall back to.
+  const prev = process.env.COMFYUI_DISABLE;
   process.env.COMFYUI_DISABLE = '1';
-  process.env.POLLINATIONS_DISABLE = '1';
-  process.env.MOTION_DISABLE = '1';
   const scene = { heading: 'SCENE 1', narration: 'Wala.', visual: 'wide', mood: 'grim' as const };
   try {
     await assert.rejects(
@@ -345,8 +340,73 @@ test('renderFeatureScene fails with AI_UNAVAILABLE when every engine is off', as
       (err: any) => err?.code === 'AI_UNAVAILABLE' && err?.name === 'VideoBackendUnavailable',
     );
   } finally {
-    if (prev.comfy === undefined) delete process.env.COMFYUI_DISABLE; else process.env.COMFYUI_DISABLE = prev.comfy;
-    if (prev.poll === undefined) delete process.env.POLLINATIONS_DISABLE; else process.env.POLLINATIONS_DISABLE = prev.poll;
-    if (prev.motion === undefined) delete process.env.MOTION_DISABLE; else process.env.MOTION_DISABLE = prev.motion;
+    if (prev === undefined) delete process.env.COMFYUI_DISABLE; else process.env.COMFYUI_DISABLE = prev;
   }
 });
+
+test('renderMovie fails with AI_UNAVAILABLE when ComfyUI is off, before any slideshow', async () => {
+  // The whole film goes through ComfyUI. With it off the film must fail up
+  // front, not quietly produce a gradient/zoom slideshow that only looks like a
+  // movie. No narration or shot is rendered first.
+  const prev = process.env.COMFYUI_DISABLE;
+  process.env.COMFYUI_DISABLE = '1';
+  const script = fallbackScript('Isang maikling pelikula.', { minutes: 1 });
+  try {
+    await assert.rejects(
+      () => renderMovie(script, { minutes: 1 }),
+      (err: any) => err?.code === 'AI_UNAVAILABLE' && err?.name === 'VideoBackendUnavailable',
+    );
+  } finally {
+    if (prev === undefined) delete process.env.COMFYUI_DISABLE; else process.env.COMFYUI_DISABLE = prev;
+  }
+});
+
+test('renderMovie credits the ComfyUI backend when the model renders', async (t) => {
+  // UNIT TEST (mock ComfyUI, not proof of video). A short film is rendered end
+  // to end against a mock ComfyUI so the real orchestration runs; the result
+  // must name ComfyUI as the picture engine, and the mock must have been called
+  // for every scene. This proves the call path, not the model's output.
+  const mock = await startMockComfyUI();
+  t.after(mock.close);
+  const workflowDir = fs.mkdtempSync(path.join(os.tmpdir(), 'comfy-wf-'));
+  t.after(() => fs.rmSync(workflowDir, { recursive: true, force: true }));
+  const keys = ['COMFYUI_URL', 'COMFYUI_VIDEO_WORKFLOW', 'COMFYUI_DISABLE', 'TTS_TAGALOG_DISABLE', 'TTS_DISABLE'];
+  const prev: Record<string, string | undefined> = {};
+  for (const k of keys) prev[k] = process.env[k];
+  process.env.COMFYUI_URL = mock.url;
+  process.env.COMFYUI_VIDEO_WORKFLOW = writeVideoWorkflow(workflowDir);
+  delete process.env.COMFYUI_DISABLE;
+  process.env.TTS_TAGALOG_DISABLE = '1';
+  process.env.TTS_DISABLE = '1';
+  t.after(() => {
+    for (const k of keys) {
+      if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k];
+    }
+  });
+
+  const script = {
+    title: 'Ang Maikling Pelikula',
+    logline: 'Isang pagsubok.',
+    scenes: [
+      { heading: 'SCENE 1', narration: 'Unang eksena.', visual: 'wide shot', mood: 'warm' as const },
+      { heading: 'SCENE 2', narration: 'Pangalawang eksena.', visual: 'close up', mood: 'tense' as const },
+    ],
+  };
+  const before = mock.requests();
+  const result = await renderMovie(script, { minutes: 1 });
+  assert.equal(result.backend, 'comfyui', 'the film names ComfyUI as the picture engine');
+  assert.ok(mock.requests() >= before + script.scenes.length, 'ComfyUI was called for every scene');
+  assert.ok(result.seconds > 0);
+});
+
+test('the film render path has no gradient, backdrop or zoompan fallback', async () => {
+  // A static guard: the slideshow path (a gradient still pushed in with
+  // zoompan) must not exist in movie.ts. If someone re-adds it, this fails.
+  const src = fs.readFileSync(path.join(import.meta.dirname, 'movie.ts'), 'utf8');
+  assert.equal(/gradientExpr/.test(src), false, 'no gradientExpr in the film path');
+  assert.equal(/\bbackdrop\s*\(/.test(src), false, 'no backdrop() in the film path');
+  assert.equal(/zoompan/.test(src), false, 'no zoompan in the film path');
+  // And the scene render must be sourced from renderVideo (the ComfyUI client).
+  assert.match(src, /renderShot[\s\S]*?await renderVideo\(/, 'renderShot renders through renderVideo');
+});
+

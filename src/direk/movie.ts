@@ -4,10 +4,11 @@
  * Everything here runs locally with ffmpeg except the two things that need a
  * model: the screenplay (a text model) and the narration. Narration tries, in
  * order, Fish Audio (best Tagalog, needs a key), the cloud voice, Meta's offline
- * Tagalog voice (free, CPU, real Tagalog) and Piper. The pictures are drawn
- * procedurally from the scene's mood, so no image model and no ComfyUI are
- * required for a movie to come out. When ComfyUI *is* running the shots use its
- * images instead.
+ * Tagalog voice (free, CPU, real Tagalog) and Piper. Every scene picture is a
+ * real, moving clip from the ComfyUI video model (COMFYUI_URL, Server-2 GPU):
+ * when ComfyUI cannot render, the film fails honestly (503 AI_UNAVAILABLE)
+ * instead of falling back to a gradient, a zoom or any other slideshow. Title
+ * and credit cards are the only stills, and they are cards, not scenes.
  *
  * The output is a normal MP4 with narration, a music bed, titles and credits,
  * saved into the asset store so it can be downloaded from the UI.
@@ -601,25 +602,17 @@ export function narrationBackends(): {
 // Pictures (procedural, no model needed)
 // ---------------------------------------------------------------------------
 
-/** A drifting multi-colour gradient, drawn from the scene's mood. */
-function gradientExpr(mood: Mood, period: number): string {
-  const { base, amp } = moodPalette(mood);
-  const wave = (offset: number, speed: number) =>
-    `0.5+0.5*sin(2*PI*(X/${WIDTH}*0.6+Y/${HEIGHT}*0.3+T/${period}+${offset}))`;
-  const wave2 = (offset: number) =>
-    `0.5+0.5*sin(2*PI*((X+Y)/${WIDTH + HEIGHT}*1.4-T/${period * 0.7}+${offset}))`;
-  const ch = (i: number) =>
-    `${base[i]}+${amp[i]}*(0.6*${wave(0.1 * i, period)}+0.4*${wave2(0.25 * i)})`;
-  return `geq=r='${ch(0)}':g='${ch(1)}':b='${ch(2)}'`;
-}
-
-/** Draw one still at double size so the zoom stays sharp. */
-async function backdrop(dir: string, mood: Mood, index: number): Promise<string> {
-  const file = path.join(dir, `bg${index}.png`);
+/**
+ * A plain, dark still for the title and credit cards to sit on. Title and
+ * credits are the only non-model pictures in a film; they are cards, never a
+ * stand-in for a scene. Scene pictures always come from the ComfyUI video
+ * model (see `renderSceneClip`).
+ */
+async function cardBackground(dir: string, name: string): Promise<string> {
+  const file = path.join(dir, `${name}-bg.png`);
   await ff([
     '-y', '-hide_banner', '-loglevel', 'error',
-    '-f', 'lavfi', '-i', `color=c=black:s=${WIDTH * 2}x${HEIGHT * 2}:d=1:r=${FPS}`,
-    '-vf', gradientExpr(mood, 9 + index),
+    '-f', 'lavfi', '-i', `color=c=0x0b0b0f:s=${WIDTH}x${HEIGHT}:d=1:r=${FPS}`,
     '-frames:v', '1', file,
   ]);
   return file;
@@ -654,9 +647,12 @@ export function wrapText(text: string, maxChars = 46): string {
 }
 
 /**
- * One shot: the mood backdrop with a slow push-in, a grade, grain, a vignette,
- * the scene heading fading in, and the narration shown as a caption so the
- * story reads even when the voice is unavailable.
+ * One scene picture: a real, moving clip from the ComfyUI video model
+ * (COMFYUI_URL), normalised to the film's fixed size/rate. There is no
+ * procedural, gradient or zoom stand-in: when ComfyUI cannot render, the error
+ * propagates and the film fails honestly (503 AI_UNAVAILABLE) instead of
+ * shipping a slideshow. The scene heading and caption are drawn on top of the
+ * model's clip.
  */
 export async function renderShot(
   scene: MovieScene,
@@ -665,27 +661,28 @@ export async function renderShot(
   seconds: number,
   opts: { caption?: boolean } = {},
 ): Promise<string> {
-  const still = await backdrop(dir, scene.mood, index);
+  const prompt = buildVeoStylePrompt(`${scene.heading}. ${scene.visual}`);
+  const { data } = await renderVideo({ prompt, negative: buildVeoStyleNegative() });
+  const raw = path.join(dir, `scene${index}-comfy.mp4`);
+  fs.writeFileSync(raw, data);
+  const clip = await normaliseShot(raw, dir, seconds);
   const out = path.join(dir, `shot${index}.mp4`);
-  const frames = Math.max(1, Math.round(seconds * FPS));
   const filters = [
-    `scale=${WIDTH * 2}:${HEIGHT * 2}:force_original_aspect_ratio=increase`,
-    `crop=${WIDTH * 2}:${HEIGHT * 2}`,
-    `zoompan=z='min(zoom+0.00035,1.22)':d=${frames}:s=${WIDTH}x${HEIGHT}:fps=${FPS}`,
-    'format=yuv420p',
-    'colorbalance=rs=0.06:bs=-0.04,eq=contrast=1.12:saturation=1.06',
-    'noise=alls=5:allf=t',
-    'vignette=PI/4.6',
     drawtext(scene.heading, { size: 30, y: 'h*0.09', color: 'white', from: 0.6, to: Math.min(5.6, seconds) }),
   ];
   if (opts.caption) {
     filters.push(drawtext(wrapText(scene.narration), { size: 26, y: 'h-text_h-h*0.07', color: 'white', from: 0.8, to: seconds }));
   }
-  await ff(['-y', '-hide_banner', '-loglevel', 'error', '-loop', '1', '-i', still, '-t', String(seconds), '-vf', filters.join(','), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', out]);
+  await ff(['-y', '-hide_banner', '-loglevel', 'error', '-i', clip, '-vf', filters.join(','), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy', out]);
   return out;
 }
 
-/** A title or credit card: a still with text, no push-in. */
+/**
+ * A title or credit CARD: a plain solid-colour still with text, no gradient and
+ * no push-in. This is deliberately NOT video content: it is the film's title and
+ * credit slate. Scene pictures never come from here; they are rendered by the
+ * ComfyUI video model in `renderShot`.
+ */
 export async function renderCard(
   lines: { text: string; size: number; color: string }[],
   seconds: number,
@@ -693,7 +690,7 @@ export async function renderCard(
   dir: string,
   name: string,
 ): Promise<string> {
-  const still = await backdrop(dir, mood, 99);
+  const still = await cardBackground(dir, name);
   const out = path.join(dir, `${name}.mp4`);
   const filters = lines.map((line, i) =>
     drawtext(line.text, { size: line.size, y: `${0.28 + i * 0.14}*h`, color: line.color, from: 0.4, to: seconds + 5 }),
@@ -856,8 +853,8 @@ export async function renderFeatureScene(
     const voice = opts.voice ?? 'Kore';
     const seconds = opts.seconds ?? MAX_SCENE_SECONDS;
 
-    // 1. The picture: local ComfyUI first, Wan 2.2 on fal.ai as the fallback.
-    // No backend -> no scene.
+    // 1. The picture: the local ComfyUI video model (COMFYUI_URL) only. There
+    // is no free fallback engine, so no backend -> no scene.
     stage('scripting');
     if (!(await videoBackendReady())) {
       throw new VideoBackendUnavailable(await videoBackendDetail());
@@ -904,6 +901,12 @@ export interface MovieResult {
   narrated: boolean;
   /** Which voice actually spoke, or 'none' when the film carries captions. */
   voice_source: NarrationSource;
+  /**
+   * Which engine made the picture. Always `'comfyui'`: every scene clip comes
+   * from the ComfyUI video model, and a film that cannot render fails instead of
+   * falling back to a slideshow.
+   */
+  backend: 'comfyui';
   note: string;
 }
 
@@ -919,6 +922,14 @@ export async function renderMovie(
 ): Promise<MovieResult> {
   const dir = workDir();
   try {
+    // 0. The picture backend must be real before anything is narrated or
+    //    rendered. Every scene picture comes from the ComfyUI video model
+    //    (COMFYUI_URL); when it is off, unreachable or has no workflow, the
+    //    film fails here with the exact reason (503 AI_UNAVAILABLE) instead of
+    //    producing a slideshow that only looks like a film.
+    if (!(await videoBackendReady())) {
+      throw new VideoBackendUnavailable(await videoBackendDetail());
+    }
     const voice = opts.voice ?? 'Kore';
     resetNarration();
     const backends = narrationBackends();
@@ -997,7 +1008,7 @@ export async function renderMovie(
       [
         { text: 'MOVIE CREATOR', size: 44, color: 'white' },
         { text: `Direksyon: Movie Robo · Boses: ${voice}`, size: 24, color: '0xf0e6c8' },
-        { text: 'Gawa sa local render engine (ffmpeg)', size: 22, color: '0xc8c8c8' },
+        { text: 'Gawa sa ComfyUI video model (Wan 2.2)', size: 22, color: '0xc8c8c8' },
       ],
       CREDIT_SECONDS,
       titleMood,
@@ -1051,6 +1062,7 @@ export async function renderMovie(
       scenes: script.scenes.length,
       narrated,
       voice_source: used,
+      backend: 'comfyui',
       note: narrated
         ? `Pelikula: ${script.scenes.length} eksena, ${info.duration.toFixed(0)}s. Boses: ${voiceLabel} (${voiced}/${script.scenes.length} linya).`
         : `Pelikula: ${script.scenes.length} eksena, ${info.duration.toFixed(0)}s. Walang boses — nakasulat ang kuwento sa video at may musika.`,

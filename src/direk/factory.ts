@@ -13,6 +13,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { classifyTask, planExecution, route_to_cloud, type TaskRoute } from './taskRouter.ts';
 import { saveAsset, assetPath, listAssets, type ReviewStatus } from './assets.ts';
 import { concatCopy } from './render.ts';
@@ -52,6 +53,8 @@ export interface SceneState {
   assetName?: string;
   /** Public URL of the scene file in the local render store. */
   renderUrl?: string;
+  /** Which engine made the scene video. Set to 'comfyui' on success. */
+  backend?: 'comfyui';
   error?: string;
   route: TaskRoute;
   startedAt?: number;
@@ -134,7 +137,8 @@ export class FeatureFactory {
   create(opts: ConceptOptions): FeatureJobView {
     const concept = buildConcept(opts);
     const scenes = buildScenes(concept, opts.mood);
-    const id = `FILM-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    // A UUID so two jobs created in the same millisecond cannot share an id.
+    const id = `FILM-${randomUUID()}`;
     const job: FeatureJobView = {
       id,
       orgId: ORG_ID,
@@ -334,11 +338,15 @@ export class FeatureFactory {
         state.seconds = seconds;
         state.status = 'rendered';
         state.stage = 'completed';
+        state.backend = 'comfyui';
         state.percent = 100;
         state.endedAt = Date.now();
       } catch (error: any) {
-        // Fail-safe: log it, skip it, keep going.
+        // Fail-safe: log it, skip it, keep going. No placeholder is written:
+        // the scene keeps no asset, so its `video_path` stays null and the row
+        // carries the real reason.
         state.status = 'failed';
+        state.backend = undefined;
         state.percent = 100;
         state.error = error?.message || 'Nabigo ang render.';
         state.endedAt = Date.now();
@@ -372,6 +380,22 @@ export class FeatureFactory {
       .sort((a, b) => a.index - b.index)
       .filter(s => s.assetName);
     if (approved.length < 2) return undefined;
+    // Two scenes must never share one asset: a duplicate assetId means the
+    // review decision of one scene silently approves the other, so the film
+    // would be stitched from the wrong set. Fail loudly instead of counting a
+    // scene twice.
+    const seenAssets = new Map<string, number>();
+    for (const s of approved) {
+      if (!s.assetId) continue;
+      const first = seenAssets.get(s.assetId);
+      if (first !== undefined) {
+        throw new Error(
+          `Magkapareho ang asset ng eksena ${first} at ${s.index} (${s.assetId}). ` +
+          'Hindi maidudugtong ang pelikula hangga\'t hindi natatangi ang bawat asset.',
+        );
+      }
+      seenAssets.set(s.assetId, s.index);
+    }
     if (!(await this.deps.ffmpegAvailable())) {
       throw new Error('Walang ffmpeg, kaya hindi maidugtong ang mga eksena.');
     }
@@ -483,9 +507,11 @@ export class FeatureFactory {
       state.renderUrl = stored.url;
       state.status = 'rendered';
       state.stage = 'completed';
+      state.backend = 'comfyui';
       state.percent = 100;
     } catch (error: any) {
       state.status = 'failed';
+      state.backend = undefined;
       state.error = error?.message || 'Nabigo ang render.';
       console.error(`[FILM ERROR] Eksena ${index} ("${scene.heading}") nabigo: ${state.error}`);
     }

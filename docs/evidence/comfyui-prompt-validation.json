@@ -1,0 +1,69 @@
+{
+  "note": "SANDBOX ONLY - NOT PROOF OF VIDEO. Local CPU ComfyUI v0.43.0, no models installed. This captures the HONEST failure when the Wan 2.2 model files are absent. The only valid proof of video is a job record from Server-2 ComfyUI (RX 9070) with backend='comfyui'. Sandbox has no GPU (devices[0].type='cpu').",
+  "endpoint": "http://127.0.0.1:8199/prompt",
+  "comfyui_version": "0.43.0",
+  "models_installed": false,
+  "placeholder_models_removed": true,
+  "http_status": 400,
+  "error_type": "prompt_outputs_failed_validation",
+  "missing_models": {
+    "39": {
+      "class_type": "VAELoader",
+      "error": "value_not_in_list",
+      "detail": "vae_name: 'wan2.2_vae.safetensors' not in ['pixel_space']"
+    },
+    "38": {
+      "class_type": "CLIPLoader",
+      "error": "value_not_in_list",
+      "detail": "clip_name: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors' not in []"
+    },
+    "37": {
+      "class_type": "UNETLoader",
+      "error": "value_not_in_list",
+      "detail": "unet_name: 'wan2.2_ti2v_5B_fp16.safetensors' not in []"
+    }
+  },
+  "app_level_result": {
+    "videoRenderReady": true,
+    "thrown": "VideoBackendUnavailable",
+    "code": "AI_UNAVAILABLE",
+    "http": 503
+  },
+  "conclusion": "The workflow graph is structurally valid (nodes accepted), but ComfyUI rejects /prompt with HTTP 400 value_not_in_list for the three missing model files. No clip is produced. This is an honest failure, not a fallback.",
+  "sandbox_system_stats": {
+    "comfyui_version": "0.43.0",
+    "pytorch_version": "2.15.0+cpu",
+    "python_version": "3.13.15",
+    "device_type": "cpu",
+    "argv": [
+      "main.py",
+      "--cpu",
+      "--port",
+      "8199",
+      "--listen",
+      "127.0.0.1"
+    ]
+  },
+  "workflow": {
+    "file": "workflows/video_api.json",
+    "template": "official ComfyUI video_wan2_2_5B_ti2v",
+    "nodes": 11,
+    "all_core_no_custom_nodes": true,
+    "placeholders_used": [
+      "__PROMPT__",
+      "__NEGATIVE__",
+      "__SEED__",
+      "__WIDTH__",
+      "__HEIGHT__",
+      "__FRAMES__"
+    ],
+    "placeholders_supported_but_unused": [
+      "__CHECKPOINT__"
+    ],
+    "models_required": [
+      "diffusion_models/wan2.2_ti2v_5B_fp16.safetensors",
+      "text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "vae/wan2.2_vae.safetensors"
+    ]
+  }
+}

@@ -40,9 +40,36 @@ test('listAssets returns newest first', () => {
     const b = saveAsset(Buffer.from('b'), { title: 'Pangalawa', ext: 'png', mime: 'image/png', source: 't' });
     const all = listAssets();
     assert.equal(all.length, 2);
-    // Same-millisecond saves are allowed to tie, so accept either order here
-    // but require both present.
+    // Both saves can land in the same millisecond; the ids must still be
+    // distinct, so accept either order but require both present.
     assert.deepEqual(new Set(all.map(x => x.id)), new Set([a.id, b.id]));
+  });
+});
+
+test('every asset id is unique even when saves land in the same millisecond', () => {
+  // The bug this guards: a timestamp+counter id collided for renders saved in
+  // the same millisecond, so `reviewAsset` approved the wrong scene and the
+  // stitched film gained an extra scene. 18 saves in a tight loop must yield 18
+  // distinct ids.
+  withTempDir(() => {
+    const metas = Array.from({ length: 18 }, (_v, i) =>
+      saveAsset(Buffer.from(`scene-${i}`), { title: `Scene ${i}`, ext: 'mp4', mime: 'video/mp4', source: 't' }),
+    );
+    assert.equal(new Set(metas.map(m => m.id)).size, 18, 'all 18 asset ids are distinct');
+    assert.match(metas[0].id, /^AST-[0-9a-f-]{36}$/, 'the id carries a UUID');
+  });
+});
+
+test('reviewAsset matches exactly one asset when two scenes are saved together', () => {
+  withTempDir(() => {
+    const metas = Array.from({ length: 18 }, (_v, i) =>
+      saveAsset(Buffer.from(`scene-${i}`), { title: `Scene ${i}`, ext: 'mp4', mime: 'video/mp4', source: 't' }),
+    );
+    // Approve scene 9 only; exactly one asset may read back as approved.
+    reviewAsset(metas[8].id, 'approved');
+    const approved = listAssets().filter(a => a.reviewStatus === 'approved');
+    assert.equal(approved.length, 1, 'only the targeted asset is approved');
+    assert.equal(approved[0].id, metas[8].id);
   });
 });
 

@@ -63,8 +63,7 @@ import {
   type MovieProgress, type MovieScript, type MovieOptions, type Mood, type TtsVoice,
   type NarrationSource,
 } from './src/direk/movie.ts';
-import { renderVideo, preferredRenderEngine } from './src/direk/videoRenderService.ts';
-import { wanEndpoint } from './src/direk/fal.ts';
+import { renderVideo } from './src/direk/videoRenderService.ts';
 import { MIN_MINUTES, MAX_MINUTES, sceneCount } from './src/movieMeta.ts';
 import { groundMovie, groundingBlock } from './src/direk/grounding.ts';
 import { FactoryDb, factoryDbPath } from './src/direk/factoryDb.ts';
@@ -295,6 +294,8 @@ interface MediaItem {
   aspect_ratio: string;
   timestamp: string;
   model: string;
+  /** Which engine made the video. Always 'comfyui' for video. */
+  backend?: 'comfyui';
   sourceImageUrl?: string;
   details?: string;
 }
@@ -614,19 +615,12 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   const formattedPrompt = buildTacticalVideoPrompt(prompt);
   const startTime = Date.now();
 
-  // Video renders on the engine chosen by PREFERRED_RENDER_ENGINE: cloud-first
-  // routes to Wan 2.2 on fal.ai, local-first tries the ComfyUI GPU (Server-2),
-  // then the free motion engine, then Wan 2.2 when ALLOW_PAID_CLOUD=1, and
-  // `motion` is the free still-plus-ffmpeg path.
+  // Video renders only on the local ComfyUI (COMFYUI_URL, Server-2 GPU). There
+  // is no slideshow fallback: when ComfyUI cannot render, the endpoint answers
+  // 503 AI_UNAVAILABLE with the exact cause instead of a fake clip.
   const videoPlan = planExecution('video_render', { prompt });
   broadcastThought(`[ROUTER] video_render → ${videoPlan.route.tier} (${videoPlan.run})`);
-  const preferred = preferredRenderEngine();
-  const preferredNote = preferred === 'fal'
-    ? 'Wan 2.2 on fal.ai (paid cloud-first, ComfyUI skipped)'
-    : preferred === 'motion'
-      ? 'libreng motion engine (free image + ffmpeg, walang gastos)'
-      : 'local ComfyUI first, then libreng motion engine, then Wan 2.2';
-  broadcastThought(`[ROUTER] PREFERRED_RENDER_ENGINE=${preferred} → ${preferredNote}`);
+  broadcastThought(`[ROUTER] video engine → local ComfyUI (COMFYUI_URL)`);
 
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
@@ -650,6 +644,7 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
       aspect_ratio: validAspect,
       timestamp: new Date().toLocaleTimeString(),
       model: engine,
+      backend: engine,
       details: editor ? `${engine} render, edited with ${editor}` : `${engine} render`,
     };
     mediaGallery.unshift(mediaRecord);
@@ -665,34 +660,32 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
     res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
   } catch (error: any) {
     const reason = error?.message || 'Unknown error';
-    let detail = error?.name === 'VideoBackendUnavailable' ? 'Walang video backend.' : 'Check the server logs.';
-    // When ComfyUI is the chosen engine but its URL cannot be reached, name the
-    // exact URL and the underlying cause (timeout, HTTP status, connection
-    // error) so the operator can fix .env instead of guessing. No fake clip.
-    if (preferred === 'comfyui') {
-      const reach = await checkComfyReachability();
-      if (!reach.reachable) {
-        detail = `${reach.error}${reach.detail ? ` (${reach.detail})` : ''}. ` +
-          'I-set ang COMFYUI_URL sa .env sa tamang host:port at siguraduhing tumatakbo ang ComfyUI.';
-      }
+    let detail = error?.name === 'VideoBackendUnavailable'
+      ? await videoBackendDetail()
+      : 'Check the server logs.';
+    // Video is ComfyUI-only. Name the exact URL and the underlying cause
+    // (timeout, HTTP status, connection error, missing workflow) so the operator
+    // can fix .env instead of guessing. No fake clip is ever returned.
+    const reach = await checkComfyReachability();
+    if (!reach.reachable) {
+      detail = `${reach.error}${reach.detail ? ` (${reach.detail})` : ''}. ` +
+        'I-set ang COMFYUI_URL sa .env sa tamang host:port at siguraduhing tumatakbo ang ComfyUI.';
     }
     console.error('[VIDEO ERROR] render failed:', reason);
     broadcastThought(`[VIDEO ERROR] ${reason}`);
-    res.status(503).json(aiUnavailable('video', detail, reason));
+    res.status(503).json(aiUnavailable('comfyui', detail, reason));
   }
 });
 
 // Why the video backend is or is not working, in one place. The UI and the
-// operator both read this instead of guessing: it reports the preferred engine
-// and, for ComfyUI, the exact cause (disabled, no workflow, workflow file
-// missing, unfilled placeholder, or the URL unreachable).
+// operator both read this instead of guessing. Video is ComfyUI-only, so this
+// reports the exact ComfyUI cause (disabled, no workflow, workflow file missing,
+// unfilled placeholder, or the URL unreachable).
 app.get('/api/direk/video/backend', async (_req: Request, res: Response) => {
-  const preferred = preferredRenderEngine();
   const comfy = await diagnoseComfyVideo();
-  const falReady = Boolean(process.env.FAL_KEY?.trim());
   res.json({
     ready: await videoBackendReady(),
-    preferred_engine: preferred,
+    engine: 'comfyui',
     detail: await videoBackendDetail(),
     comfyui: {
       enabled: process.env.COMFYUI_DISABLE !== '1',
@@ -704,10 +697,6 @@ app.get('/api/direk/video/backend', async (_req: Request, res: Response) => {
       problem: comfy.problem,
       unfilled_placeholders: comfy.unfilled,
       detail: comfy.detail,
-    },
-    fal: {
-      key_configured: falReady,
-      endpoint: wanEndpoint(),
     },
   });
 });
@@ -1262,6 +1251,8 @@ interface MovieJob {
   voiceSource?: NarrationSource;
   note?: string;
   asset?: AssetMeta;
+  /** Which engine made the video. Always 'comfyui'; a job fails otherwise. */
+  backend?: 'comfyui';
   /** What the screenplay was grounded in, for the UI and the logs. */
   grounding?: { genre: string | null; references: number; market: boolean; pacing: string };
   error?: string;
@@ -1305,6 +1296,7 @@ app.get('/api/direk/jobs', (_req: Request, res: Response) => {
     updated_at: j.updated_at,
     title: (j.data.title as string) ?? undefined,
     asset: j.data.asset ?? undefined,
+    backend: (j.data.backend as string) ?? undefined,
     error: (j.data.error as string) ?? undefined,
   }));
   res.json({ count: jobs.length, jobs });
@@ -1376,6 +1368,7 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
 
     const result = await renderMovie(script, opts, tick);
     job.status = 'done';
+    job.backend = 'comfyui';
     job.title = script.title;
     job.scenes = result.scenes;
     job.seconds = result.seconds;

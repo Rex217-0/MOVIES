@@ -293,6 +293,32 @@ test('stitchMovie(id) gathers the approved scenes and joins them with -c copy', 
   );
 });
 
+test('assemble refuses to stitch two scenes that share one assetId', async () => {
+  // A duplicate assetId means the review decision of one scene silently
+  // approves another, so the film would gain a scene it never approved. The
+  // guard must throw, not quietly count the scene twice.
+  freshStore();
+  const { factory } = makeFactory();
+  const job = factory.create({ brief: 'Isang drama sa probinsya.' });
+  factory.start(job.id);
+  await settle(factory, job.id);
+
+  // Approve four scenes, then force two of them onto the same assetId, which is
+  // what the id collision used to produce.
+  for (const i of [1, 4, 9, 15]) reviewAsset(job.scenes.find(s => s.index === i)!.assetId!, 'approved');
+  const view = factory.get(job.id)!;
+  const dup = view.scenes.find(s => s.index === 4)!;
+  const victim = view.scenes.find(s => s.index === 9)!;
+  victim.assetId = dup.assetId;
+  victim.assetName = dup.assetName;
+
+  await assert.rejects(
+    () => factory.stitchMovie(job.id),
+    /Magkapareho ang asset/,
+    'a shared assetId is refused instead of stitched',
+  );
+});
+
 test('stitchMovie reads a film back from the database when memory was cleared', async () => {
   freshStore();
   const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitchdb-'));

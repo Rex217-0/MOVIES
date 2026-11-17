@@ -126,13 +126,14 @@ test('sceneDocs carries the exact SceneJobs columns, scene_number 1-18', () => {
   const docs = db.sceneDocs(job.id);
   assert.equal(docs.length, 18);
   assert.deepEqual(Object.keys(docs[0]).sort(), [
-    'id', 'movie_id', 'org_id', 'scene_number', 'status', 'video_path',
+    'backend', 'id', 'movie_id', 'org_id', 'scene_number', 'status', 'video_path',
   ]);
   assert.ok(docs.every(d => d.org_id === 'LJRgroupORG'));
   assert.deepEqual(docs.map(d => d.scene_number), Array.from({ length: 18 }, (_, i) => i + 1));
   assert.ok(docs.every(d => d.movie_id === job.id));
   assert.equal(docs[0].status, 'pending');
   assert.equal(docs[0].video_path, null);
+  assert.equal(docs[0].backend, null, 'a pending scene has no engine yet');
   assert.equal(docs[0].id, `${job.id}-S01`);
   assert.equal(docs[17].id, `${job.id}-S18`);
   db.close();
@@ -157,6 +158,7 @@ test('a rendered scene writes its asset name into SceneJobs.video_path', async (
   const docs = db.sceneDocs(job.id);
   assert.equal(docs[0].status, 'rendered');
   assert.ok(docs[0].video_path && docs[0].video_path.endsWith('.mp4'), 'video_path points at the rendered mp4');
+  assert.equal(docs[0].backend, 'comfyui', 'a rendered scene records the ComfyUI engine');
   db.close();
 });
 

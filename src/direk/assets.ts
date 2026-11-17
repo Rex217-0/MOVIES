@@ -8,6 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { createZip, type ZipEntry } from './zip.ts';
 
 export interface AssetMeta {
@@ -66,7 +67,10 @@ export function saveAsset(
 ): AssetMeta {
   const dir = ensureDir();
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const id = `AST-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  // A UUID, not a timestamp+counter: two renders saved in the same millisecond
+  // used to be able to collide, which made `reviewAsset`/`statusOf` confuse one
+  // scene for another. The id must be unique per asset.
+  const id = `AST-${randomUUID()}`;
   const name = `${stamp}_${slug(opts.title, 'asset')}.${opts.ext}`;
   fs.writeFileSync(path.join(dir, name), data);
   const meta: AssetMeta = {

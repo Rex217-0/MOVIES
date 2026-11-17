@@ -45,11 +45,11 @@ async function waitForServer(port: number, headers: Record<string, string> = {})
 }
 
 test('without a Gemini key, AI endpoints return 503 AI_UNAVAILABLE instead of fake success', async (t) => {
-  // Switch the free engines off too: otherwise the no-cost motion engine makes
-  // the video endpoint succeed for real, and this test is about the honest
-  // 503 when no backend at all can answer.
+  // No ComfyUI is reachable (the default URL is probed and refused) and no
+  // fal.ai key is set. Video is ComfyUI-only, so the video endpoint must answer
+  // an honest 503 rather than fall back to a free slideshow.
   const { child, port } = startServer({
-    APP_AUTH_TOKEN: '', POLLINATIONS_DISABLE: '1', MOTION_DISABLE: '1',
+    APP_AUTH_TOKEN: '', POLLINATIONS_DISABLE: '1', MOTION_DISABLE: '1', COMFYUI_URL: 'http://127.0.0.1:9',
   });
   t.after(() => child.kill());
   await waitForServer(port);
@@ -73,7 +73,11 @@ test('without a Gemini key, AI endpoints return 503 AI_UNAVAILABLE instead of fa
     body: JSON.stringify({ prompt: 'a cruiser', aspect_ratio: '16:9' }),
   });
   assert.equal(video.status, 503);
-  assert.equal((await video.json() as any).code, 'AI_UNAVAILABLE');
+  const videoBody: any = await video.json();
+  assert.equal(videoBody.code, 'AI_UNAVAILABLE');
+  // The reason must name the ComfyUI host that failed, so the operator can fix
+  // it; it must not be a generic "check the logs".
+  assert.match(String(videoBody.detail), /ComfyUI|COMFYUI_URL/);
 
   const image = await fetch(`http://127.0.0.1:${port}/api/pilot/image/generate`, {
     method: 'POST',
