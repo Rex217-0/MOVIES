@@ -4,8 +4,8 @@ import {
 } from 'lucide-react';
 import {
   assetDownloadUrl, featureAssemble, featureCreate, featurePause, featurePilot, featureRerender,
-  featureStart, featureStatus,
-  type FeatureJobView, type FeatureSceneView, type FeatureStatus,
+  featureStart, featureStatus, marilagCreate, marilagStart, marilagStatus,
+  type FeatureJobView, type FeatureSceneView, type FeatureStatus, type MarilagView,
 } from '../api';
 
 const IDEAS = [
@@ -53,6 +53,7 @@ export function FeatureFilmFactory() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [pilotSource, setPilotSource] = useState('');
+  const [marilag, setMarilag] = useState<MarilagView | null>(null);
   const alive = useRef(true);
 
   const load = useCallback((id?: string) => {
@@ -75,6 +76,15 @@ export function FeatureFilmFactory() {
     const id = setInterval(() => load(job.id), 2000);
     return () => clearInterval(id);
   }, [job, load]);
+
+  // Poll the Marilag batch while it is running.
+  useEffect(() => {
+    if (marilag?.batch?.status !== 'running') return;
+    const id = setInterval(() => {
+      marilagStatus().then(v => { if (alive.current) setMarilag(v); }).catch(() => {});
+    }, 3000);
+    return () => clearInterval(id);
+  }, [marilag?.batch?.status]);
 
   const makeConcept = async () => {
     const text = brief.trim();
@@ -105,6 +115,32 @@ export function FeatureFilmFactory() {
       setJob(await featureStart(job.id));
     } catch (e: any) {
       setError(e?.message || 'Hindi nag-start ang batch.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Marilag Originals: create the 10-movie queue, then start it. The queue
+  // renders one movie at a time; this UI only reflects the live batch state.
+  const marilagQueue = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      setMarilag(await marilagCreate());
+    } catch (e: any) {
+      setError(e?.message || 'Hindi nagawa ang Marilag batch.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const marilagRun = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      setMarilag(await marilagStart());
+    } catch (e: any) {
+      setError(e?.message || 'Hindi nag-start ang Marilag batch.');
     } finally {
       setBusy(false);
     }
@@ -340,7 +376,46 @@ export function FeatureFilmFactory() {
               </button>
             </>
           )}
+          <button
+            type="button"
+            onClick={marilag?.batch ? marilagRun : marilagQueue}
+            disabled={busy || marilag?.batch?.status === 'running'}
+            title="10 pelikulang Marilag Originals, sunod-sunod na render sa ComfyUI. Walang publish sa labas."
+            className="inline-flex items-center gap-2 rounded-pill border border-primary/40 bg-primary/10 px-4 py-2.5 text-sm font-medium text-primary disabled:opacity-40"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clapperboard className="h-4 w-4" />}
+            Marilag Originals: 10-Movie Batch
+          </button>
         </div>
+
+        {marilag?.batch && (
+          <div className="mt-4 rounded-card border border-subtle bg-raised p-4 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="font-medium text-ink">Marilag Originals — {marilag.batch.status}</span>
+              <span className="text-xs text-ink-muted">{marilag.batch.id}</span>
+            </div>
+            <p className="mt-1 text-xs text-ink-muted">{marilag.batch.note}</p>
+            <ul className="mt-3 space-y-1.5">
+              {marilag.batch.movies.map(m => (
+                <li key={m.index} className="flex items-center justify-between gap-2">
+                  <span className="text-ink">
+                    {m.index}. {m.title} <span className="text-ink-muted">· {m.genre}</span>
+                  </span>
+                  <span className={
+                    m.status === 'done' ? 'text-growth'
+                      : m.status === 'failed' ? 'text-danger'
+                        : m.status === 'queued' ? 'text-ink-muted' : 'text-primary'
+                  }>
+                    {m.status === 'rendering' ? `render ${m.scenesRendered}/${m.scenesTotal}`
+                      : m.status === 'stitching' ? `pagdugtong (${m.scenesRendered}/${m.scenesTotal})`
+                        : m.status === 'done' ? `tapos · ${bytes(m.filmBytes ?? 0)}`
+                          : m.status === 'failed' ? `bigo: ${m.error || ''}` : 'naghihintay'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {error && (
           <p className="mt-3 flex items-start gap-2 rounded-card border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-300">

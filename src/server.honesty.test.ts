@@ -232,3 +232,30 @@ test('with a ComfyUI backend, the LoRA set bundles generated images', async (t) 
   assert.ok(names.includes('dataset/direk_ang_huling_tala_001.txt'));
   assert.ok(names.includes('dataset/IMAGES.md'));
 });
+
+test('the Marilag batch queues ten movies and refuses to start without a video backend', async (t) => {
+  // No ComfyUI: the batch must not pretend to render. It queues the ten
+  // concepts, then answers an honest 503 AI_UNAVAILABLE on start.
+  const { child, port } = startServer({ APP_AUTH_TOKEN: '', COMFYUI_URL: 'http://127.0.0.1:9' });
+  t.after(() => child.kill());
+  await waitForServer(port);
+
+  const view = await (await fetch(`http://127.0.0.1:${port}/api/direk/marilag`)).json();
+  assert.equal(view.available, true);
+  assert.equal(view.movies, 10);
+  assert.equal(view.scenes_per_movie, 12);
+  assert.equal(view.minutes_per_movie, 60);
+  assert.equal(view.publishing, false, 'it does not claim to publish anywhere');
+
+  const created = await fetch(`http://127.0.0.1:${port}/api/direk/marilag/create`, { method: 'POST' });
+  assert.equal(created.status, 201);
+  const body = await created.json();
+  assert.equal(body.batch.movies.length, 10);
+  assert.ok(body.batch.movies.every((m: any) => m.status === 'queued'));
+  assert.ok(body.batch.movies.every((m: any) => m.title && m.genre));
+
+  const started = await fetch(`http://127.0.0.1:${port}/api/direk/marilag/start`, { method: 'POST' });
+  assert.equal(started.status, 503, 'no video backend means no batch');
+  const err = await started.json();
+  assert.equal(err.code, 'AI_UNAVAILABLE');
+});

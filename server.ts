@@ -72,6 +72,10 @@ import {
   FeatureFactory, factorySummary,
 } from './src/direk/factory.ts';
 import {
+  runMarilagBatch, newMarilagBatch, MARILAG_MOVIES, MARILAG_SCENES, MARILAG_SECONDS,
+  type MarilagBatchView,
+} from './src/direk/marilagBatch.ts';
+import {
   breakdownPrompt, parseBreakdown, type ConceptOptions,
 } from './src/direk/featureFilm.ts';
 import {
@@ -1677,6 +1681,87 @@ app.post('/api/direk/feature/stitch', async (req: Request, res: Response) => {
   } catch (error: any) {
     res.status(500).json({ error: error?.message || 'Hindi naidugtong ang pelikula.' });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Marilag Originals: the 10-movie batch.
+//
+// Queues ten distinct Tagalog concepts and renders them one at a time. Each
+// movie renders every scene through ComfyUI, approves what rendered, and stitches
+// the film. A movie that cannot render fails with its real reason and the batch
+// moves on. This does NOT publish anywhere: there is no CineStream/MyStream API
+// in this repository, so nothing is sent off-box.
+// ---------------------------------------------------------------------------
+let marilagBatch: MarilagBatchView | null = null;
+let marilagRunning = false;
+
+function marilagView() {
+  const batch = marilagBatch;
+  return {
+    available: true,
+    movies: MARILAG_MOVIES,
+    scenes_per_movie: MARILAG_SCENES,
+    seconds_per_movie: MARILAG_SECONDS,
+    minutes_per_movie: MARILAG_SECONDS / 60,
+    publishing: false,
+    publish_note:
+      'Walang CineStream o MyStream API sa repo na ito. Hindi nagpapadala ang batch ng ' +
+      'video sa labas. Kung may endpoint ka, ibigay ang URL at contract at doon lang gagawa ng publisher.',
+    batch,
+  };
+}
+
+app.get('/api/direk/marilag', (_req: Request, res: Response) => {
+  res.json(marilagView());
+});
+
+// Create the batch: ten concepts queued, nothing rendered yet.
+app.post('/api/direk/marilag/create', (_req: Request, res: Response) => {
+  marilagBatch = newMarilagBatch();
+  res.status(201).json(marilagView());
+});
+
+// Start the batch: renders the ten movies in order. Refuses to start without a
+// working video backend, because every movie would otherwise fail.
+app.post('/api/direk/marilag/start', async (_req: Request, res: Response) => {
+  if (!marilagBatch) {
+    res.status(400).json({ error: 'Wala pang batch. I-create muna (POST /api/direk/marilag/create).' });
+    return;
+  }
+  if (marilagRunning) {
+    res.status(409).json({ error: 'Tumatakbo na ang batch.', batch: marilagBatch });
+    return;
+  }
+  const detail = await videoBackendDetail();
+  if (!(await videoBackendReady())) {
+    res.status(503).json(aiUnavailable('comfyui', detail, 'Walang video backend para sa Marilag batch'));
+    return;
+  }
+
+  marilagBatch.status = 'running';
+  marilagRunning = true;
+  broadcastThought(`[MARILAG] Batch START: ${MARILAG_MOVIES} pelikula, sunod-sunod.`);
+  // The batch runs in the background; the status endpoint shows live progress.
+  runMarilagBatch(marilagBatch, {
+    createJob: opts => featureFactory.create(opts),
+    startJob: id => { featureFactory.start(id); },
+    getJob: id => featureFactory.get(id),
+    approveScene: (assetId, status) => { reviewAsset(assetId, status); },
+    stitch: id => featureFactory.stitchMovie(id),
+  })
+    .then(() => {
+      marilagRunning = false;
+      broadcastThought(`[MARILAG] Batch tapos: ${marilagBatch?.status}.`);
+    })
+    .catch((error: any) => {
+      marilagRunning = false;
+      if (marilagBatch) {
+        marilagBatch.status = 'error';
+        marilagBatch.updatedAt = Date.now();
+      }
+      broadcastThought(`[MARILAG] Batch error: ${error?.message || error}`);
+    });
+  res.status(202).json(marilagView());
 });
 
 // Local factory database: which films and scenes are stored.

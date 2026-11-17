@@ -773,6 +773,54 @@ export const featurePause = (id: string) => featureAction('pause', { id });
 export const featureRerender = (id: string, scene: number) => featureAction('rerender', { id, scene });
 export const featureAssemble = (id: string) => featureAction('assemble', { id });
 
+// --- Marilag Originals: the 10-movie batch ---
+export interface MarilagBatchItem {
+  index: number;
+  title: string;
+  genre: string;
+  movieId?: string;
+  status: 'queued' | 'rendering' | 'stitching' | 'done' | 'failed';
+  scenesTotal: number;
+  scenesRendered: number;
+  filmBytes?: number;
+  assetName?: string;
+  error?: string;
+}
+
+export interface MarilagView {
+  available: boolean;
+  movies: number;
+  scenes_per_movie: number;
+  seconds_per_movie: number;
+  minutes_per_movie: number;
+  publishing: boolean;
+  publish_note: string;
+  batch: {
+    id: string;
+    status: 'idle' | 'running' | 'done' | 'error';
+    createdAt: number;
+    updatedAt: number;
+    movies: MarilagBatchItem[];
+    note: string;
+  } | null;
+}
+
+export async function marilagStatus(): Promise<MarilagView> {
+  const res = await apiFetch('/api/direk/marilag');
+  if (!res.ok) throw new Error(`Marilag status failed (${res.status})`);
+  return res.json();
+}
+
+async function marilagAction(path: 'create' | 'start'): Promise<MarilagView> {
+  const res = await apiFetch(`/api/direk/marilag/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || body.detail || `Marilag ${path} failed (${res.status})`);
+  return body;
+}
+
+export const marilagCreate = () => marilagAction('create');
+export const marilagStart = () => marilagAction('start');
+
 /**
  * Ask the Dual-Pilot for the screenplay, character bible and 18-scene
  * breakdown, and store them on the job. Kaggle (T3 heavy batch) is tried
