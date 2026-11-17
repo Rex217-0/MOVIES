@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { apiUrl, normalizeApiBaseUrl } from './api';
+import { apiUrl, normalizeApiBaseUrl, resolveApiBaseUrl } from './api';
 
 /**
  * The Android build (Capacitor) loads the web app from `https://localhost`, so a
@@ -36,4 +36,19 @@ test('surrounding whitespace in the env value is ignored', () => {
   assert.equal(normalizeApiBaseUrl('  http://192.0.2.10:3000  '), 'http://192.0.2.10:3000');
   assert.equal(normalizeApiBaseUrl(undefined), '');
   assert.equal(normalizeApiBaseUrl(null), '');
+});
+
+test('a runtime server override wins over the baked build value', () => {
+  assert.equal(resolveApiBaseUrl('http://192.168.1.10:3000', 'http://192.0.2.10:3000'), 'http://192.168.1.10:3000');
+});
+
+test('with no override the baked build value is used', () => {
+  assert.equal(resolveApiBaseUrl('', 'http://192.0.2.10:3000'), 'http://192.0.2.10:3000');
+  assert.equal(resolveApiBaseUrl(null, 'http://192.0.2.10:3000/'), 'http://192.0.2.10:3000');
+  assert.equal(resolveApiBaseUrl('  ', undefined), '');
+});
+
+test('a trailing slash in the override is stripped before the join', () => {
+  const base = resolveApiBaseUrl('http://192.168.1.10:3000///', 'http://192.0.2.10:3000');
+  assert.equal(apiUrl('/api/direk/movie/status', base), 'http://192.168.1.10:3000/api/direk/movie/status');
 });

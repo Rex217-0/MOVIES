@@ -8,21 +8,67 @@
  */
 
 const TOKEN_STORAGE_KEY = 'direk_auth_token';
+const SERVER_URL_STORAGE_KEY = 'direk_server_url';
 
 /**
- * Base URL of the API server, baked in at build time from `VITE_API_BASE_URL`.
+ * Base URL of the API server.
+ *
+ * Two sources, in priority order:
+ *  1. A runtime override — set from `?server=` on first load, or typed into the
+ *     Setup panel. Kept in localStorage. This is what makes the installed
+ *     Android app configurable without a rebuild.
+ *  2. The build-time `VITE_API_BASE_URL`, baked into the bundle.
  *
  * Empty means "same origin": the browser build served by the app itself keeps
  * using relative `/api/...` URLs. The Capacitor Android build loads the web app
  * from `https://localhost`, where a relative URL would hit the WebView, not
- * Server-2 — so that build must set `VITE_API_BASE_URL` (see
- * docs/capacitor-android.md). No server address is hardcoded here.
+ * Server-2 — so it needs one of the two sources above.
  */
 export function normalizeApiBaseUrl(raw: string | undefined | null): string {
   return (raw ?? '').trim().replace(/\/+$/, '');
 }
 
-export function apiBaseUrl(): string {
+/** A runtime override always wins over the baked value. */
+export function resolveApiBaseUrl(runtime: string | undefined | null, baked: string | undefined | null): string {
+  return normalizeApiBaseUrl(runtime) || normalizeApiBaseUrl(baked);
+}
+
+/** The server address the user typed (or passed as `?server=`), if any. */
+export function getServerUrl(): string {
+  try {
+    const url = new URL(window.location.href);
+    const param = url.searchParams.get('server');
+    if (param) {
+      const normalized = normalizeApiBaseUrl(param);
+      localStorage.setItem(SERVER_URL_STORAGE_KEY, normalized);
+      url.searchParams.delete('server');
+      window.history.replaceState({}, '', url.toString());
+      return normalized;
+    }
+  } catch {
+    // Non-browser environment.
+  }
+  try {
+    return normalizeApiBaseUrl(localStorage.getItem(SERVER_URL_STORAGE_KEY));
+  } catch {
+    return '';
+  }
+}
+
+/** Persist the server address. An empty value clears the override. */
+export function setServerUrl(raw: string): string {
+  const normalized = normalizeApiBaseUrl(raw);
+  try {
+    if (normalized) localStorage.setItem(SERVER_URL_STORAGE_KEY, normalized);
+    else localStorage.removeItem(SERVER_URL_STORAGE_KEY);
+  } catch {
+    // Non-browser environment.
+  }
+  return normalized;
+}
+
+/** The build-time base baked into the bundle, empty when the build set none. */
+export function bakedApiBaseUrl(): string {
   try {
     return normalizeApiBaseUrl((import.meta as { env?: Record<string, string> }).env?.VITE_API_BASE_URL);
   } catch {
@@ -30,10 +76,14 @@ export function apiBaseUrl(): string {
   }
 }
 
+export function apiBaseUrl(): string {
+  return resolveApiBaseUrl(getServerUrl(), bakedApiBaseUrl());
+}
+
 /**
  * Resolve an API path against the configured base. Absolute URLs (another host)
  * and already-qualified paths pass through untouched. `base` is injectable so
- * the join logic is testable without touching `import.meta.env`.
+ * the join logic is testable without touching `import.meta.env` or localStorage.
  */
 export function apiUrl(path: string, base: string = apiBaseUrl()): string {
   if (!path.startsWith('/')) return path;

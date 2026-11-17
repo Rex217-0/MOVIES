@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import {
   direkGetSettings, direkSaveSettings, direkSetup,
+  getServerUrl, setServerUrl,
   type DirekSettings, type SetupReport,
 } from '../api';
 
@@ -27,6 +28,7 @@ export const SetupModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
  isOpen, onClose,
 }) => {
  const [settings, setSettings] = useState<DirekSettings>({});
+ const [serverUrl, setServerUrlState] = useState(getServerUrl());
  const [report, setReport] = useState<SetupReport | null>(null);
  const [saving, setSaving] = useState(false);
  const [checking, setChecking] = useState(false);
@@ -67,6 +69,7 @@ export const SetupModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
  setSaving(true);
  setError(null);
  try {
+ setServerUrl(serverUrl);
  await direkSaveSettings(settings);
  setSaved(true);
  await check();
@@ -127,6 +130,28 @@ export const SetupModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
  />
  </div>
  )}
+
+ {/* SERVER ADDRESS */}
+ <div className="border border-primary rounded-card p-3 space-y-3">
+ <div className="text-[10px] text-primary uppercase tracking-wider">
+ Server address (kailangan ng Android app)
+ </div>
+ <Field
+ label="Server URL"
+ hint="Ang PC na tumatakbo ng server (Server-2). Halimbawa: http://192.168.1.10:3000 o ang https tunnel. Sa browser na naka-serve mismo ng app, puwedeng iwanang blangko."
+ >
+ <input
+ value={serverUrl}
+ onChange={e => setServerUrlState(e.target.value)}
+ placeholder="http://192.168.1.10:3000"
+ className={inputCls}
+ />
+ </Field>
+ <div className="text-[9px] text-dim">
+ Kung blangko, gagamitin ang naka-bake na address ng build (kung mayroon).
+ I-type ang totoong server at pindutin ang SAVE.
+ </div>
+ </div>
 
  {/* AI TEXT */}
  <div className="border border-subtle rounded-card p-3 space-y-3">

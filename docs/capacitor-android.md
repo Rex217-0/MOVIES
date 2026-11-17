@@ -26,8 +26,17 @@ tests still point at `android-legacy/movie-creator.apk`.
 The browser build is served by the app itself, so its `/api/...` calls are
 relative and hit the same origin — no configuration. The Capacitor app loads the
 web app from `https://localhost` inside the WebView, where a relative `/api/...`
-call would hit the WebView, not Server-2. So the server address is **baked into
-the bundle at build time** through `VITE_API_BASE_URL`:
+call would hit the WebView, not Server-2. So the app needs the server address
+from somewhere.
+
+**You no longer have to rebuild to change it.** Set it at runtime, either way:
+
+- In the app: **Setup → Server address → Server URL**, then SAVE. Kept in
+  `localStorage`, so it survives restarts.
+- On first load: open the app with `?server=http://192.168.1.10:3000` in the URL.
+
+The runtime value wins. If it is empty, the build-time `VITE_API_BASE_URL` baked
+into the bundle is used:
 
 ```ts
 // src/api.ts
