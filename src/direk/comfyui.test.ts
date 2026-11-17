@@ -326,3 +326,54 @@ test('checkComfyReachability names the exact URL when unreachable', async () => 
     if (saved === undefined) delete process.env.COMFYUI_URL; else process.env.COMFYUI_URL = saved;
   }
 });
+
+// The workflow that ships for Server-2. If a node is renamed, a model file name
+// drifts, or a placeholder is left unfilled, `buildVideoWorkflow` must still turn
+// it into a graph that ComfyUI would accept. This test exercises the real file
+// through the real code path, so a broken workflow fails here instead of only on
+// the GPU box.
+const SERVER2_WORKFLOW = path.resolve(import.meta.dirname, '../../workflows/video_api.json');
+const CORE_VIDEO_NODES = [
+  'UNETLoader', 'CLIPLoader', 'VAELoader', 'CLIPTextEncode', 'ModelSamplingSD3',
+  'Wan22ImageToVideoLatent', 'KSampler', 'VAEDecode', 'CreateVideo', 'SaveVideo',
+];
+
+test('the shipped Server-2 workflow is a valid Wan 2.2 graph with core nodes only', () => {
+  assert.ok(fs.existsSync(SERVER2_WORKFLOW), `workflow file is missing: ${SERVER2_WORKFLOW}`);
+  const saved = process.env.COMFYUI_VIDEO_WORKFLOW;
+  process.env.COMFYUI_VIDEO_WORKFLOW = SERVER2_WORKFLOW;
+  try {
+    const graph = buildVideoWorkflow('a fishing boat at dawn', {
+      negative: 'blurry, low quality', seed: 12345, width: 704, height: 480, frames: 25,
+    });
+    const nodes = Object.values<any>(graph);
+    // Every node has a class_type and an inputs object: the shape ComfyUI needs.
+    for (const node of nodes) {
+      assert.equal(typeof node.class_type, 'string', 'every node names a class_type');
+      assert.equal(typeof node.inputs, 'object', `${node.class_type} carries inputs`);
+    }
+    const used = new Set(nodes.map(n => n.class_type));
+    for (const cls of used) {
+      assert.ok(CORE_VIDEO_NODES.includes(cls), `${cls} is a core node, not a custom one`);
+    }
+    // The three Wan 2.2 model files are referenced by the exact names Server-2 will have.
+    const byClass = (cls: string) => nodes.filter(n => n.class_type === cls);
+    assert.equal(byClass('UNETLoader')[0].inputs.unet_name, 'wan2.2_ti2v_5B_fp16.safetensors');
+    assert.equal(byClass('CLIPLoader')[0].inputs.clip_name, 'umt5_xxl_fp8_e4m3fn_scaled.safetensors');
+    assert.equal(byClass('VAELoader')[0].inputs.vae_name, 'wan2.2_vae.safetensors');
+    // Both text encoders (positive and negative) are filled from the builder's args.
+    const texts = byClass('CLIPTextEncode').map(n => n.inputs.text).sort();
+    assert.deepEqual(texts, ['a fishing boat at dawn', 'blurry, low quality'].sort());
+    // The values the builder fills actually landed, and no token survived.
+    const latent = byClass('Wan22ImageToVideoLatent')[0].inputs;
+    assert.equal(latent.width, '704');
+    assert.equal(latent.height, '480');
+    assert.equal(latent.length, '25');
+    assert.equal(byClass('KSampler')[0].inputs.seed, '12345');
+    assert.doesNotMatch(JSON.stringify(graph), /__[A-Z0-9_]+__/, 'no placeholder survives into the graph');
+    // The graph ends in a video node, not an image node.
+    assert.ok(used.has('SaveVideo'), 'the output is a video, not a still');
+  } finally {
+    if (saved === undefined) delete process.env.COMFYUI_VIDEO_WORKFLOW; else process.env.COMFYUI_VIDEO_WORKFLOW = saved;
+  }
+});

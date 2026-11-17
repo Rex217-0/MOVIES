@@ -1,33 +1,47 @@
 =====================================================================
-EXPECTED OUTPUT TEMPLATE - NOT YET RUN ON SERVER-2
+SERVER-2 REAL OUTPUT - steps 1-10 (copied from your console)
 =====================================================================
-This file is written by scripts/server2-check.ps1 when it runs on Server-2.
-Until it is run there, the content below is the EXPECTED output, not proof.
-When the script runs, it overwrites this file with the real output.
-A sandbox result is NEVER proof of video. The only proof of video is a job
-record from Server-2 ComfyUI with "backend": "comfyui".
+Source: C:\Windows\System32> session on Server-2, 2026-11-13.
+This is the real /system_stats, /object_info and file-size output from the
+Server-2 ComfyUI (RX 9070, ROCm). It is NOT the sandbox.
+
+--- 1. GET /system_stats (HTTP 200) ---
+comfyui_version=0.43.0  python=3.12.3 (GCC 13.3.0)  pytorch=2.9.1+rocm6.4
+argv: ["main.py", "--listen", "0.0.0.0", "--port", "8188"]
+device: name="cuda:0 AMD Radeon RX 9070 : native"  type=cuda  index=0
+        vram_total=16974905344  vram_free=16963579904
+=> GPU present, ROCm reports as cuda. Matches the expected target.
+
+--- 2. GET /object_info/UNETLoader (before download) ---
+"unet_name": [[]]        <- empty, no model yet
+
+--- 3. df -h ~ ---
+/dev/sdd  1007G  73G  884G  8%  /
+=> 884G free. Plenty for the ~18 GB of models.
+
+--- 4/5. diffusion model ---
+downloaded wan2.2_ti2v_5B_fp16.safetensors
+stat -c '%s' = 9999658848        <- EXACT match to the expected size
+
+--- 6/7. text encoder ---
+downloaded umt5_xxl_fp8_e4m3fn_scaled.safetensors
+stat -c '%s' = 6735906897        <- EXACT match
+
+--- 8/9. vae ---
+downloaded wan2.2_vae.safetensors
+stat -c '%s' = 1409400960        <- EXACT match
+(One stray paste produced "'wsl' is not recognized..."; the command was
+ re-run and succeeded. No effect on the file.)
+
+--- 10. GET /object_info/<loader> (after download) ---
+UNETLoader.unet_name = ["wan2.2_ti2v_5B_fp16.safetensors"]           OK
+CLIPLoader.clip_name = ["clip_l.safetensors", "t5xxl_fp8_e4m3fn.safetensors",
+                        "umt5_xxl_fp8_e4m3fn_scaled.safetensors"]     OK
+VAELoader.vae_name   = ["ae.safetensors", "wan2.2_vae.safetensors",
+                        "pixel_space"]                                OK
+=> All three Wan 2.2 model files are visible to ComfyUI. Steps 1-10 PASS.
+
 =====================================================================
-
-=== server2-check: <ISO timestamp> ===
-ComfyUrl   : http://127.0.0.1:8188
-AppUrl     : http://127.0.0.1:3000
-ModelsRoot : ~/isa_movie/ComfyUI/models (in WSL)
-
---- A. GET /system_stats (must be HTTP 200) ---
-HTTP 200. comfyui_version=0.43.0 python=3.12.3 ... pytorch=2.9.1+rocm6.4
-device: name=cuda:0 type=cuda vram_total=16974905344
-
---- B. GET /object_info/<loader> (model names must appear) ---
-OK   UNETLoader.unet_name contains 'wan2.2_ti2v_5B_fp16.safetensors'
-OK   CLIPLoader.clip_name contains 'umt5_xxl_fp8_e4m3fn_scaled.safetensors'
-OK   VAELoader.vae_name contains 'wan2.2_vae.safetensors'
-
---- C. model files on disk in WSL (exact byte size) ---
-OK   ~/isa_movie/ComfyUI/models/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors = 9999658848 bytes
-OK   ~/isa_movie/ComfyUI/models/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors = 6735906897 bytes
-OK   ~/isa_movie/ComfyUI/models/vae/wan2.2_vae.safetensors = 1409400960 bytes
-
---- D. GET /api/direk/video/backend (ready: true, engine: comfyui) ---
-ready=True engine=comfyui problem=ready reachable=True workflow_exists=True
-
-RESULT: PASS - all checks OK. The next step is a real render (POST /api/pilot/video/generate).
+STILL TO DO (steps 11-15): workflow file, .env, start app, backend
+check, and the real render that returns the job record.
+=====================================================================
