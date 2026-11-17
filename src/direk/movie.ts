@@ -241,7 +241,7 @@ export function moodPalette(mood: Mood): { base: [number, number, number]; amp: 
     grim: { base: [18, 18, 20], amp: [70, 70, 78], accent: '0xbfc4cc' },
     hopeful: { base: [22, 40, 34], amp: [90, 170, 120], accent: '0x9dffc4' },
   };
-  return table[mood];
+  return table[mood] ?? table.warm;
 }
 
 // ---------------------------------------------------------------------------

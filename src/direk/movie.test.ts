@@ -114,6 +114,17 @@ test('every mood has a Tagalog label and every voice is listed', () => {
   assert.ok(TTS_VOICES.includes('Kore'));
 });
 
+test('an unknown mood falls back to a real palette instead of crashing the render', () => {
+  // A screenplay can arrive with a mood outside MOODS (a model slip, a hand
+  // written script); moodPalette must still return a usable palette so the
+  // ffmpeg gradient is not built from `undefined`.
+  for (const bad of ['calm', '', 'WARM ', 'dramatic']) {
+    const p = moodPalette(bad as any);
+    assert.equal(p.base.length, 3);
+    assert.match(p.accent, /^0x[0-9a-f]{6}$/);
+  }
+});
+
 test('wavFromPcm writes a valid 16-bit mono WAV header', () => {
   const pcm = Buffer.alloc(1000, 7);
   const wav = wavFromPcm(pcm, 24000);

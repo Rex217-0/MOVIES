@@ -17,12 +17,27 @@ factory.db-shm
 factory.db-wal
 gdrive.token.json
 
-# Android build artifacts
+# Android build artifacts (legacy no-Gradle shell, kept for the /android page)
+android-legacy/build/
+android-legacy/*.keystore
+android-legacy/*.idsig
+# android-legacy/movie-creator.apk is committed on purpose: the /android
+# download page must work on any deploy (Server-2) without an Android SDK.
+# Rebuild with android-legacy/build.sh.
+
+# Capacitor Android (Gradle) build output and local config
+android/app/build/
+android/.gradle/
 android/build/
-android/*.keystore
-android/*.idsig
-# The APK is committed on purpose: the /android download page must work on any
-# deploy (Server-2) without an Android SDK. Rebuild with android/build.sh.
+android/local.properties
+android/capacitor-cordova-android-plugins/
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+
+# Firebase config: contains an API key, so keep it out of the repo.
+google-services.json
 
 # Cloudflare tunnel binary (downloaded by scripts/tunnel.ps1 / tunnel.sh)
 tools/cloudflared*
+android/keystore.properties
+android/*.keystore
