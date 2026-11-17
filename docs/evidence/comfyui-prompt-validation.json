@@ -65,5 +65,12 @@
       "text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
       "vae/wan2.2_vae.safetensors"
     ]
+  },
+  "structural_probe": {
+    "what": "POST the real workflows/video_api.json (filled) to the sandbox ComfyUI /prompt.",
+    "result": "HTTP 400 prompt_outputs_failed_validation",
+    "only_errors": "the three model files are absent (UNETLoader/CLIPLoader/VAELoader value_not_in_list)",
+    "node_and_wiring_errors": "none",
+    "meaning": "The graph is structurally valid: every node type and every link is accepted. The only thing that stops a run is the missing Wan 2.2 models, which exist on Server-2. This is SANDBOX ONLY and still NOT proof of video."
   }
 }
