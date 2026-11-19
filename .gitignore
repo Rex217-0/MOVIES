@@ -21,6 +21,10 @@ gdrive.token.json
 android/build/
 android/*.keystore
 android/*.idsig
+# Local machine state and signing secrets: never commit these.
+android/.gradle/
+android/local.properties
+android/keystore.properties
 # The APK is committed on purpose: the /android download page must work on any
 # deploy (Server-2) without an Android SDK. Rebuild with android/build.sh.
 

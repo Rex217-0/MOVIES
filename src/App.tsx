@@ -9,6 +9,7 @@ import { CognitiveMatrixModal } from './components/CognitiveMatrixModal';
 import { DirectorsChair } from './components/DirectorsChair';
 import { LoraStudio } from './components/LoraStudio';
 import { MovieMakerWithFirebase } from './components/MovieMakerWithFirebase';
+import { MovieMaker } from './components/MovieMaker';
 import { FeatureFilmFactory } from './components/FeatureFilmFactory';
 import { SetupModal } from './components/SetupModal';
 import { direkStatus } from './api';
@@ -16,6 +17,9 @@ import { Sparkles, Radio, Terminal, Video, Wand2, Film, Clapperboard, Boxes, Fol
 
 type TabId = 'movie' | 'feature' | 'direk' | 'lora' | 'cockpit' | 'radar' | 'video' | 'image' | 'vault' | 'staging';
 type Tab = { id: TabId; label: string; icon: React.ComponentType<{ size?: number; className?: string }> };
+
+/** Firebase auth is opt-in: local SQLite is the default so no auth wall blocks use. */
+const ENABLE_FIREBASE = import.meta.env.VITE_ENABLE_FIREBASE === 'true';
 
 const TABS: Tab[] = [
   { id: 'movie', label: 'Movie Maker', icon: Film },
@@ -79,7 +83,7 @@ export default function App() {
       </header>
       <main className="mx-auto flex min-h-0 w-full max-w-[1700px] flex-1 flex-col p-3 sm:p-4">
         <div className="flex-1 flex flex-col h-full min-h-[680px]">
-          {activeTab === 'movie' ? <MovieMakerWithFirebase />
+          {activeTab === 'movie' ? (ENABLE_FIREBASE ? <MovieMakerWithFirebase /> : <MovieMaker />)
             : activeTab === 'feature' ? <FeatureFilmFactory />
             : activeTab === 'direk' ? <DirectorsChair />
             : activeTab === 'lora' ? <LoraStudio />

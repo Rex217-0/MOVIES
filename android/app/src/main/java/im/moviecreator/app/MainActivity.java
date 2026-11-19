@@ -107,6 +107,8 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(Color.parseColor("#0b0f1a"));
         root.addView(bar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(buildTopBar(), new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(web, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
@@ -211,7 +213,39 @@ public class MainActivity extends Activity {
         return holder;
     }
 
-    /** When connected, the setup screen is hidden; it is one tap away via the menu. */
+    /**
+     * A bar that is always visible, with a Server Setup button. Modern phones have no
+     * hardware KEYCODE_MENU, so without this the setup screen could only be
+     * reached on first launch.
+     */
+    private View buildTopBar() {
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setBackgroundColor(Color.parseColor("#111827"));
+        top.setPadding(dp(10), dp(6), dp(10), dp(6));
+
+        TextView title = label("Movie Creator", 15, Color.parseColor("#e5e7eb"));
+        top.addView(title, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button serverSetup = new Button(this);
+        serverSetup.setText("Server Setup");
+        serverSetup.setAllCaps(false);
+        serverSetup.setTextSize(13);
+        serverSetup.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showSetup(false);
+            }
+        });
+        top.addView(serverSetup, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        return top;
+    }
+
+    /** When connected, the setup screen is hidden; the top bar reopens it. */
     private void showSetup(boolean hide) {
         setup.setVisibility(hide ? View.GONE : View.VISIBLE);
         web.setVisibility(hide ? View.VISIBLE : View.GONE);
