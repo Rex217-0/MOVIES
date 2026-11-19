@@ -35,6 +35,20 @@ KS_ALIAS="moviecreator"
 rm -rf "$BUILD"
 mkdir -p "$BUILD/compiled" "$BUILD/gen" "$BUILD/classes" "$BUILD/dex"
 
+# The web UI is compiled by Vite into dist/. Copy it in so the APK carries the
+# real app instead of an empty WebView that can only ask for a server address.
+ASSETS="$APP/src/main/assets/public"
+DIST="$HERE/../dist"
+if [ -f "$DIST/index.html" ]; then
+  echo "[0/7] bundle the web UI into assets/public"
+  rm -rf "$ASSETS"
+  mkdir -p "$ASSETS"
+  cp -R "$DIST"/. "$ASSETS"/
+else
+  echo "[0/7] WARNING: $DIST/index.html is missing; the APK will have no bundled UI."
+  echo "      Run 'npm run build' first."
+fi
+
 echo "[1/7] aapt2 compile resources"
 "$BT/aapt2" compile --dir "$APP/src/main/res" -o "$BUILD/compiled/res.zip"
 
@@ -46,8 +60,9 @@ echo "[2/7] aapt2 link (manifest + resources -> base.apk + R.java)"
   --java "$BUILD/gen" \
   --min-sdk-version 21 \
   --target-sdk-version 34 \
-  --version-code 3 \
-  --version-name 1.0.2 \
+  --version-code 4 \
+  --version-name 1.0.3 \
+  -A "$APP/src/main/assets" \
   "$BUILD/compiled/res.zip"
 
 echo "[3/7] javac"
@@ -57,7 +72,13 @@ find "$APP/src/main/java" "$BUILD/gen" -name '*.java' > "$BUILD/sources.txt"
   -bootclasspath "$PLATFORM" \
   -classpath "$PLATFORM" \
   -d "$BUILD/classes" \
-  @"$BUILD/sources.txt" 2>&1 | grep -v 'bootstrap class path' || true
+  @"$BUILD/sources.txt" 2>&1 | grep -v 'bootstrap class path'
+# A compile failure must stop the build. Without this the script went on to
+# package an APK with no classes.dex, which installs and then crashes.
+[ -f "$BUILD/classes/im/moviecreator/app/MainActivity.class" ] || {
+  echo "javac produced no MainActivity.class - the build failed above" >&2
+  exit 1
+}
 
 echo "[4/7] d8 (class files -> classes.dex)"
 find "$BUILD/classes" -name '*.class' > "$BUILD/classes.txt"

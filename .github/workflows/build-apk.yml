@@ -24,6 +24,16 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build the web UI
+        run: |
+          npm ci
+          npm run build
+
       - name: Install the Android SDK
         run: bash scripts/setup-android-sdk.sh
 

@@ -42,6 +42,9 @@ public class MainActivity extends Activity {
     private static final String KEY_TOKEN = "auth_token";
 
     private SharedPreferences prefs;
+    private static final String APP_ORIGIN = "https://app.local";
+    private String apiBase = "";
+    private String apiToken = "";
     private WebView web;
     private ProgressBar bar;
     private LinearLayout setup;
@@ -67,10 +70,25 @@ public class MainActivity extends Activity {
         CookieManager.getInstance().setAcceptCookie(true);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
-            s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+            // The UI is served over https (app.local) while a LAN server is plain
+            // http, so without this every API call is blocked as mixed content.
+            s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
 
         web.setWebViewClient(new WebViewClient() {
+            @Override
+            public android.webkit.WebResourceResponse shouldInterceptRequest(
+                    WebView v, WebResourceRequest req) {
+                Uri u = req.getUrl();
+                if (u == null) return null;
+                // The app is served from a fixed https origin instead of file://,
+                // because a file:// page reports "Origin: null" and the server
+                // cannot allow that safely. This origin is one the server knows.
+                if (!APP_ORIGIN.equals(u.getScheme() + "://" + u.getHost())) return null;
+                String path = u.getPath() == null ? "/" : u.getPath();
+                if (path.equals("/") || path.equals("/index.html")) return injectedIndex();
+                return asset(path.substring(1));
+            }
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
                 Uri u = req.getUrl();
@@ -118,12 +136,16 @@ public class MainActivity extends Activity {
 
         setContentView(root);
 
+        // The UI ships inside the APK, so show it immediately. The setup screen
+        // is only for pointing it at a server, and the top bar can reopen it, so
+        // a first launch is not a blank page with a form.
         String url = prefs.getString(KEY_URL, "");
-        if (url == null || url.isEmpty()) {
-            showSetup(false);
-        } else {
-            showSetup(true);
-            load(url, prefs.getString(KEY_TOKEN, ""));
+        String token = prefs.getString(KEY_TOKEN, "");
+        if (url == null) url = "";
+        load(url, token);
+        showSetup(true);
+        if (url.isEmpty()) {
+            Toast.makeText(this, "Walang server na naka-set. Pindutin ang Server Setup.", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -245,18 +267,114 @@ public class MainActivity extends Activity {
         return top;
     }
 
+    /**
+     * index.html with the server address injected before the app bundle.
+     *
+     * The page runs from file:///android_asset, where a relative /api would
+     * resolve against the APK itself, so the UI needs the absolute server URL.
+     * Doing it here rather than after load guarantees the value is set before
+     * React mounts and issues its first request.
+     */
+    /** One file out of the APK's bundled web build. */
+    private android.webkit.WebResourceResponse asset(String name) {
+        try (java.io.InputStream in = getAssets().open("public/" + name)) {
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            int n;
+            while ((n = in.read(chunk)) > 0) buf.write(chunk, 0, n);
+            java.util.Map<String, String> headers = new java.util.HashMap<>();
+            headers.put("Access-Control-Allow-Origin", APP_ORIGIN);
+            return new android.webkit.WebResourceResponse(
+                    mimeOf(name), null, 200, "OK", headers,
+                    new java.io.ByteArrayInputStream(buf.toByteArray()));
+        } catch (Exception e) {
+            return new android.webkit.WebResourceResponse(
+                    "text/plain", "UTF-8", 404, "Not Found", null,
+                    new java.io.ByteArrayInputStream(new byte[0]));
+        }
+    }
+
+    private static String mimeOf(String name) {
+        if (name.endsWith(".js")) return "application/javascript";
+        if (name.endsWith(".css")) return "text/css";
+        if (name.endsWith(".html")) return "text/html";
+        if (name.endsWith(".json") || name.endsWith(".webmanifest")) return "application/json";
+        if (name.endsWith(".png")) return "image/png";
+        if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+        if (name.endsWith(".svg")) return "image/svg+xml";
+        if (name.endsWith(".woff2")) return "font/woff2";
+        if (name.endsWith(".woff")) return "font/woff";
+        if (name.endsWith(".ico")) return "image/x-icon";
+        return "application/octet-stream";
+    }
+
+    private android.webkit.WebResourceResponse injectedIndex() {
+        String config = "<script>window.__MOVIE_CREATOR_API_BASE__=" + jsString(apiBase) + ";"
+                + "try{if(" + jsString(apiToken) + "){sessionStorage.setItem('direk_auth_token',"
+                + jsString(apiToken) + ");}}catch(e){}</script>";
+        try (java.io.InputStream in = getAssets().open("public/index.html")) {
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            int n;
+            while ((n = in.read(chunk)) > 0) buf.write(chunk, 0, n);
+            String html = buf.toString("UTF-8");
+            // Ahead of the bundle, so the global exists by the time it runs.
+            html = html.replace("</head>", config + "</head>");
+            java.util.Map<String, String> headers = new java.util.HashMap<>();
+            headers.put("Access-Control-Allow-Origin", "*");
+            headers.put("Cache-Control", "no-store");
+            return new android.webkit.WebResourceResponse("text/html", "UTF-8", 200,
+                    "OK", headers,
+                    new java.io.ByteArrayInputStream(html.getBytes("UTF-8")));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String jsString(String value) {
+        if (value == null) return "\"\"";
+        StringBuilder out = new StringBuilder("\"");
+        for (char c : value.toCharArray()) {
+            switch (c) {
+                case '"': out.append("\\\""); break;
+                case '\\': out.append("\\\\"); break;
+                case '\n': out.append("\\n"); break;
+                case '\r': out.append("\\r"); break;
+                default: out.append(c);
+            }
+        }
+        return out.append("\"").toString();
+    }
+
     /** When connected, the setup screen is hidden; the top bar reopens it. */
     private void showSetup(boolean hide) {
         setup.setVisibility(hide ? View.GONE : View.VISIBLE);
         web.setVisibility(hide ? View.VISIBLE : View.GONE);
     }
 
+    /**
+     * Load the UI that ships inside the APK, not a blank page.
+     *
+     * The web build is copied into assets/public by android/build.sh, so the app
+     * has a real interface with no server running. Only the data calls need the
+     * server, and they are pointed at it through the injected API base.
+     */
     private void load(String url, String token) {
-        String target = url;
-        if (token != null && !token.isEmpty()) {
-            // The app reads ?token= once and keeps it in sessionStorage, so the
-            // token does not stay in the address bar afterwards.
-            target = url + (url.contains("?") ? "&" : "?") + "token=" + Uri.encode(token);
+        apiBase = url == null ? "" : url.trim();
+        apiToken = token == null ? "" : token.trim();
+        if (getAssets() != null) {
+            try {
+                getAssets().open("public/index.html").close();
+                web.loadUrl(APP_ORIGIN + "/index.html");
+                return;
+            } catch (Exception missing) {
+                // No bundled build: fall back to the server, which serves the
+                // same UI, so the app still works when deployed.
+            }
+        }
+        String target = apiBase;
+        if (!apiToken.isEmpty()) {
+            target = target + (target.contains("?") ? "&" : "?") + "token=" + Uri.encode(apiToken);
         }
         web.loadUrl(target);
     }

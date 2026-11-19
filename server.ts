@@ -122,10 +122,18 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // allow-list so a random site cannot call the billable API, and a per-client
 // rate limit so one client cannot exhaust the shared free tier.
 // ---------------------------------------------------------------------------
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+// https://app.local is the Android shell's own origin: the APK serves its UI
+// from that fixed host so its calls are a normal CORS request instead of the
+// unallowable "Origin: null" a file:// page would send. No website can claim
+// it, so allowing it by default costs nothing.
+const ANDROID_SHELL_ORIGIN = 'https://app.local';
+const ALLOWED_ORIGINS = [
+  ...(process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean),
+  ANDROID_SHELL_ORIGIN,
+];
 const RATE_LIMIT = Math.max(1, parseInt(process.env.RATE_LIMIT_PER_MIN || '120', 10));
 const rateLimiter = new RateLimiter(RATE_LIMIT, 60_000);
 
