@@ -53,6 +53,25 @@ export function pixabayBase(): string {
 const MIN_CLIP_BYTES = 20_000;
 
 /**
+ * Read at call time, not import time: a module-level constant froze the value
+ * before a caller (or a test) could set it, so the budget silently ignored.
+ */
+function downloadTimeoutMs(): number {
+  return Number(process.env.STOCK_DOWNLOAD_TIMEOUT_MS) || 30_000;
+}
+
+/**
+ * A stock search is a fan-out - queries x hits x candidate URLs - so an
+ * unbounded one can run for hours against a throttled provider. Cap the whole
+ * search and let the caller fall back to the free engine instead.
+ */
+function stockSearchBudgetMs(): number {
+  // 45s: a real Commons hit lands in about a second, so anything slower is a
+  // throttled provider. Waiting longer only delays the free-engine fallback.
+  return Number(process.env.STOCK_SEARCH_BUDGET_MS) || 45_000;
+}
+
+/**
  * A scene is seconds long, so there is no reason to pull a 60 MB archival
  * master. Wikimedia holds plenty of those, and their originals are exactly what
  * its CDN throttles, so anything past this cap is skipped in favour of the next
@@ -248,7 +267,11 @@ function plainText(html: string | undefined): string {
  * makes it the only real-footage source that works out of the box. It serves
  * Ogg/WebM rather than MP4, so the caller transcodes before delivery.
  */
-async function searchCommons(query: string, minSeconds: number): Promise<StockClip | null> {
+async function searchCommons(
+  query: string,
+  minSeconds: number,
+  deadline: number,
+): Promise<StockClip | null> {
   const search = new URLSearchParams({
     action: 'query',
     format: 'json',
@@ -257,7 +280,7 @@ async function searchCommons(query: string, minSeconds: number): Promise<StockCl
     srnamespace: '6',
     srlimit: '15',
   });
-  const listing = (await commonsApiJson(`${commonsApi()}?${search}`, 'search')) as {
+  const listing = (await commonsApiJson(`${commonsApi()}?${search}`, 'search', deadline)) as {
     query?: { search?: Array<{ title: string }> };
   };
   const titles = (listing.query?.search ?? []).map((r) => r.title);
@@ -273,12 +296,13 @@ async function searchCommons(query: string, minSeconds: number): Promise<StockCl
     prop: 'videoinfo',
     viprop: 'derivatives|url|size|extmetadata',
   });
-  const pages = (await commonsApiJson(`${commonsApi()}?${info}`, 'videoinfo')) as {
+  const pages = (await commonsApiJson(`${commonsApi()}?${info}`, 'videoinfo', deadline)) as {
     query?: { pages?: Record<string, CommonsHit> };
   };
 
   const hits = Object.values(pages.query?.pages ?? {});
   for (const hit of hits) {
+    if (Date.now() > deadline) return null;
     const ii = hit.videoinfo?.[0];
     if (!ii?.url) continue;
     if (ii.duration !== undefined && ii.duration < minSeconds) continue;
@@ -300,8 +324,9 @@ async function searchCommons(query: string, minSeconds: number): Promise<StockCl
     if (!candidates.length) continue;
 
     for (const url of candidates) {
+      if (Date.now() > deadline) return null;
       try {
-        const data = await downloadCommons(url);
+        const data = await downloadCommons(url, deadline);
         if (!data || data.length < MIN_CLIP_BYTES) continue;
         if (data.length > MAX_CLIP_BYTES) continue;
         const meta = ii.extmetadata ?? {};
@@ -328,15 +353,38 @@ async function searchCommons(query: string, minSeconds: number): Promise<StockCl
  * serving the same URL happily over HTTP/2, and `fetch` only speaks HTTP/1.1.
  * Using node:http2 directly is what makes Commons downloads work at all.
  */
-function http2Download(url: string, headers: Record<string, string>): Promise<Buffer> {
+function http2Download(
+  url: string,
+  headers: Record<string, string>,
+  deadline?: number,
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const target = new URL(url);
     const client = http2.connect(`${target.protocol}//${target.host}`);
+    // destroy(), not close(): close() waits for open streams, so a stalled
+    // stream kept the socket - and the whole process - alive after we gave up.
     const fail = (error: Error) => {
-      client.close();
+      client.destroy();
       reject(error);
     };
     client.on('error', fail);
+
+    // Without a deadline a stream that stalls mid-body never emits 'end' or
+    // 'error', so the download hangs until the process dies.
+    // Never outlive the search: a flat per-attempt timeout let three retries
+    // of one URL add up past the whole budget.
+    const remaining = deadline === undefined
+      ? downloadTimeoutMs()
+      : Math.min(downloadTimeoutMs(), Math.max(deadline - Date.now(), 0));
+    const timer = setTimeout(
+      () => fail(new Error('HTTP/2 download timed out')),
+      remaining,
+    );
+    const done = (error: Error | null, data?: Buffer) => {
+      clearTimeout(timer);
+      if (error) fail(error);
+      else resolve(data!);
+    };
 
     const req = client.request({
       ':method': 'GET',
@@ -355,8 +403,8 @@ function http2Download(url: string, headers: Record<string, string>): Promise<Bu
     });
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
-      client.close();
-      resolve(Buffer.concat(chunks));
+      client.destroy();
+      done(null, Buffer.concat(chunks));
     });
     req.end();
   });
@@ -366,15 +414,16 @@ function http2Download(url: string, headers: Record<string, string>): Promise<Bu
  * Wikimedia answers a burst of downloads with HTTP 429. Backing off and asking
  * again is the documented behaviour, so retry twice before giving up on a URL.
  */
-async function downloadCommons(url: string): Promise<Buffer | null> {
+async function downloadCommons(url: string, deadline?: number): Promise<Buffer | null> {
   const isHttps = url.startsWith('https:');
   for (let attempt = 0; attempt < 3; attempt++) {
+    if (deadline !== undefined && Date.now() > deadline) return null;
     try {
       // HTTP/2 is required for the real CDN but only exists over TLS; a plain
       // http URL (a proxy or a test server) goes through fetch instead.
       const data = isHttps
-        ? await http2Download(url, { 'User-Agent': commonsUserAgent() })
-        : await plainDownload(url);
+        ? await http2Download(url, { 'User-Agent': commonsUserAgent() }, deadline)
+        : await plainDownload(url, deadline);
       if (data.length) return data;
     } catch {
       // Fall through to the backoff; a failed attempt is not fatal yet.
@@ -388,12 +437,21 @@ async function downloadCommons(url: string): Promise<Buffer | null> {
  * The Commons query API also throttles, so a single 429 must not lose a search.
  * Retrying with backoff is what the API etiquette asks for.
  */
-async function commonsApiJson(url: string, label: string): Promise<unknown> {
+async function commonsApiJson(
+  url: string,
+  label: string,
+  deadline?: number,
+): Promise<unknown> {
   let lastStatus = 0;
   for (let attempt = 0; attempt < 3; attempt++) {
+    if (deadline !== undefined && Date.now() > deadline) break;
     const res = await fetch(url, {
       headers: { 'User-Agent': commonsUserAgent() },
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(
+        deadline === undefined
+          ? 30_000
+          : Math.min(30_000, Math.max(deadline - Date.now(), 1)),
+      ),
     });
     if (res.ok) return res.json();
     lastStatus = res.status;
@@ -403,10 +461,16 @@ async function commonsApiJson(url: string, label: string): Promise<unknown> {
   throw new Error(`Wikimedia ${label} HTTP ${lastStatus}`);
 }
 
-async function plainDownload(url: string): Promise<Buffer> {
+async function plainDownload(url: string, deadline?: number): Promise<Buffer> {
   const res = await fetch(url, {
     headers: { 'User-Agent': commonsUserAgent() },
-    signal: AbortSignal.timeout(180_000),
+    // Share the download deadline; a hardcoded 180s here let one stalled body
+    // outlive the whole search budget.
+    signal: AbortSignal.timeout(
+      deadline === undefined
+        ? downloadTimeoutMs()
+        : Math.min(downloadTimeoutMs(), Math.max(deadline - Date.now(), 0)),
+    ),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
@@ -529,6 +593,8 @@ export async function fetchStockClip(prompt: string, minSeconds = 3): Promise<St
   }
 
   const errors: string[] = [];
+  const budgetMs = stockSearchBudgetMs();
+  const deadline = Date.now() + budgetMs;
 
   const providers: Array<{
     name: string;
@@ -537,13 +603,17 @@ export async function fetchStockClip(prompt: string, minSeconds = 3): Promise<St
   }> = [
     { name: 'Pexels', enabled: () => Boolean(pexelsKey()), run: (q) => searchPexels(q, minSeconds) },
     { name: 'Pixabay', enabled: () => Boolean(pixabayKey()), run: (q) => searchPixabay(q) },
-    { name: 'Wikimedia Commons', enabled: commonsEnabled, run: (q) => searchCommons(q, minSeconds) },
+    { name: 'Wikimedia Commons', enabled: commonsEnabled, run: (q) => searchCommons(q, minSeconds, deadline) },
   ];
 
   for (const provider of providers) {
     if (!provider.enabled()) continue;
     let lastError: unknown = null;
     for (const query of queries) {
+      if (Date.now() > deadline) {
+        errors.push(`${provider.name}: lumampas sa ${budgetMs / 1000}s na budget`);
+        break;
+      }
       try {
         const hit = await provider.run(query);
         if (hit) return hit;

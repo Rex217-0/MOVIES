@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -409,5 +410,72 @@ test('toMp4 transcodes a non-MP4 container into H.264 MP4', async () => {
     assert.ok(out.length >= 20_000, `too small: ${out.length}`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Commons: a provider that never answers cannot stall the search forever', async () => {
+  // A fan-out over queries x hits x candidate URLs x retries is unbounded on
+  // its own: against a throttled provider it ran for hours. The search must
+  // give up within its budget so the caller can fall back to the free engine.
+  const sockets: net.Socket[] = [];
+  const apiServer = http.createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    if (url.searchParams.get('list') === 'search') {
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+        query: { search: [{ title: 'File:Ocean waves.ogv' }] },
+      }));
+      return;
+    }
+    if (url.searchParams.get('prop') === 'videoinfo') {
+      const base = `http://127.0.0.1:${(apiServer.address() as net.AddressInfo).port}`;
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+        query: {
+          pages: {
+            42: {
+              pageid: 42,
+              title: 'File:Ocean waves.ogv',
+              videoinfo: [{
+                url: `${base}/clip.webm`,
+                size: 60_000_000,
+                duration: 12,
+                derivatives: [{ src: `${base}/clip.webm`, type: 'video/webm', width: 854, height: 480 }],
+                extmetadata: {},
+              }],
+            },
+          },
+        },
+      }));
+      return;
+    }
+    // The clip URL never answers: headers only, no body, no end.
+    res.writeHead(200, { 'Content-Type': 'video/webm' });
+    sockets.push(req.socket);
+  });
+  await new Promise<void>((r) => apiServer.listen(0, '127.0.0.1', r));
+  const port = (apiServer.address() as net.AddressInfo).port;
+  const started = Date.now();
+  try {
+    await withEnv(
+      {
+        PEXELS_API_KEY: undefined,
+        PIXABAY_API_KEY: undefined,
+        COMMONS_DISABLE: undefined,
+        WIKIMEDIA_API_URL: `http://127.0.0.1:${port}/w/api.php`,
+        STOCK_SEARCH_BUDGET_MS: '1500',
+        STOCK_DOWNLOAD_TIMEOUT_MS: '500',
+      },
+      async () => {
+        await assert.rejects(
+          () => fetchStockClip('ocean waves'),
+          /lumampas sa .* na budget|walang tugmang video/,
+          'a stalled provider must surface as a bounded failure',
+        );
+      },
+    );
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 30_000, `search took ${elapsed}ms; the budget did not apply`);
+  } finally {
+    for (const s of sockets) s.destroy();
+    await new Promise<void>((r) => apiServer.close(() => r()));
   }
 });
