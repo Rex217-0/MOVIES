@@ -29,11 +29,35 @@ PLATFORM="$SDK/platforms/android-34/android.jar"
 [ -f "$PLATFORM" ] || { echo "missing $PLATFORM (install platforms;android-34)"; exit 1; }
 
 KEYSTORE="$HERE/moviecreator.keystore"
-KS_PASS="moviecreator"
 KS_ALIAS="moviecreator"
+KS_PASS="${MOVIECREATOR_KS_PASS:-moviecreator}"
+
+# Android refuses to update an installed app whose signature changed, so every
+# build must use the same key or users have to uninstall first and lose data.
+# CI has no committed key (it is a secret), so accept it from the environment
+# and fall back to generating one that the workflow then caches.
+if [ -n "${MOVIECREATOR_KEYSTORE_B64:-}" ]; then
+  printf '%s' "$MOVIECREATOR_KEYSTORE_B64" | base64 -d > "$KEYSTORE"
+fi
 
 rm -rf "$BUILD"
 mkdir -p "$BUILD/compiled" "$BUILD/gen" "$BUILD/classes" "$BUILD/dex"
+
+# The web UI is compiled by Vite into dist/. Copy it in so the APK carries the
+# real app instead of an empty WebView that can only ask for a server address.
+ASSETS="$APP/src/main/assets/public"
+DIST="$HERE/../dist"
+if [ -f "$DIST/index.html" ]; then
+  echo "[0/7] bundle the web UI into assets/public"
+  rm -rf "$ASSETS"
+  mkdir -p "$ASSETS"
+  cp -R "$DIST"/. "$ASSETS"/
+else
+  # Refuse rather than ship a blank app: an APK without the UI is the bug this
+  # step exists to prevent, and it installs fine, so nothing else would catch it.
+  echo "error: $DIST/index.html is missing. Run 'npm run build' first." >&2
+  exit 1
+fi
 
 echo "[1/7] aapt2 compile resources"
 "$BT/aapt2" compile --dir "$APP/src/main/res" -o "$BUILD/compiled/res.zip"
@@ -46,8 +70,9 @@ echo "[2/7] aapt2 link (manifest + resources -> base.apk + R.java)"
   --java "$BUILD/gen" \
   --min-sdk-version 21 \
   --target-sdk-version 34 \
-  --version-code 3 \
-  --version-name 1.0.2 \
+  --version-code 4 \
+  --version-name 1.0.3 \
+  -A "$APP/src/main/assets" \
   "$BUILD/compiled/res.zip"
 
 echo "[3/7] javac"
@@ -57,7 +82,13 @@ find "$APP/src/main/java" "$BUILD/gen" -name '*.java' > "$BUILD/sources.txt"
   -bootclasspath "$PLATFORM" \
   -classpath "$PLATFORM" \
   -d "$BUILD/classes" \
-  @"$BUILD/sources.txt" 2>&1 | grep -v 'bootstrap class path' || true
+  @"$BUILD/sources.txt" 2>&1 | grep -v 'bootstrap class path'
+# A compile failure must stop the build. Without this the script went on to
+# package an APK with no classes.dex, which installs and then crashes.
+[ -f "$BUILD/classes/im/moviecreator/app/MainActivity.class" ] || {
+  echo "javac produced no MainActivity.class - the build failed above" >&2
+  exit 1
+}
 
 echo "[4/7] d8 (class files -> classes.dex)"
 find "$BUILD/classes" -name '*.class' > "$BUILD/classes.txt"

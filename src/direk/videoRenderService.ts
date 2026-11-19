@@ -41,6 +41,7 @@ import {
   generateVideoWithWan, editWithOpenCut, uploadToFal,
 } from './fal.ts';
 import { paidCloudAllowed, paidReady, PAID_BLOCKED_DETAIL } from './costPolicy.ts';
+import { fetchStockClip, stockConfigured, toMp4 } from './stockVideo.ts';
 
 export class VideoBackendUnavailable extends Error {
   readonly code = 'AI_UNAVAILABLE';
@@ -51,18 +52,25 @@ export class VideoBackendUnavailable extends Error {
 }
 
 /** Which engine the pipeline prefers as primary. */
-export type PreferredRenderEngine = 'fal' | 'comfyui' | 'motion';
+export type PreferredRenderEngine = 'fal' | 'comfyui' | 'motion' | 'stock' | 'hybrid';
 
 /**
  * The PREFERRED_RENDER_ENGINE master switch. Free-first by default: an unset or
  * unrecognised value means `comfyui`, whose chain ends in the free motion
  * engine. Only an explicit `fal` routes to paid cloud (and still needs
  * ALLOW_PAID_CLOUD=1 to actually run).
+ *
+ * `stock` and `hybrid` are the real-footage modes. Stock searches Pexels or
+ * Pixabay for footage of real people, animals and places; it needs a free key
+ * but no GPU. `hybrid` tries stock first and falls back to the local ComfyUI
+ * chain, so a scene without a stock match is still generated rather than lost.
  */
 export function preferredRenderEngine(): PreferredRenderEngine {
   const raw = (process.env.PREFERRED_RENDER_ENGINE || 'comfyui').trim().toLowerCase();
   if (raw === 'fal' || raw === 'cloud') return 'fal';
   if (raw === 'motion' || raw === 'free' || raw === 'nocost') return 'motion';
+  if (raw === 'stock' || raw === 'real' || raw === 'footage') return 'stock';
+  if (raw === 'hybrid' || raw === 'mixed') return 'hybrid';
   return 'comfyui';
 }
 
@@ -84,8 +92,14 @@ export interface VideoRenderInput {
 
 export interface VideoRenderResult {
   data: Buffer;
-  /** Which engine produced the clip: `comfyui`, `wan`, or the free `motion`. */
-  engine: 'comfyui' | 'wan' | 'motion';
+  /** Which engine produced the clip: `stock`, `comfyui`, `wan`, or the free `motion`. */
+  engine: 'stock' | 'comfyui' | 'wan' | 'motion';
+  /** Who shot the footage, when the clip came from a stock provider. */
+  credit?: string;
+  /** The source page for a stock clip, for attribution. */
+  sourceUrl?: string;
+  /** The licence the footage is under, when the provider states it. */
+  licence?: string;
   /** Which engine edited it, when the editing pass ran. */
   editor?: 'opencut';
   /** A short human-readable note about the editing pass, for the logs. */
@@ -156,13 +170,69 @@ export async function videoRenderDetail(): Promise<string> {
  * clip is optionally routed through OpenCut, then returned as a Buffer.
  */
 export async function renderVideo(input: VideoRenderInput): Promise<VideoRenderResult> {
-  const { data, engine } = await generateRaw(input);
+  const { data, engine, credit, sourceUrl, licence } = await generateRaw(input);
   const edited = await maybeEdit(data, input.editInstructions);
-  return { data: edited.data, engine, editor: edited.editor, editNote: edited.note };
+  return {
+    data: edited.data,
+    engine,
+    credit,
+    sourceUrl,
+    licence,
+    editor: edited.editor,
+    editNote: edited.note,
+  };
 }
 
-async function generateRaw(input: VideoRenderInput): Promise<{ data: Buffer; engine: 'comfyui' | 'wan' | 'motion' }> {
+async function generateRaw(
+  input: VideoRenderInput,
+): Promise<{
+  data: Buffer;
+  engine: 'stock' | 'comfyui' | 'wan' | 'motion';
+  credit?: string;
+  sourceUrl?: string;
+  licence?: string;
+}> {
   const preferred = preferredRenderEngine();
+
+  // Real footage. A stock clip is a real camera pointed at real people, animals,
+  // weather and places, which no generative model can claim. `hybrid` tries it
+  // first and only falls through to the generated chain when there is no match.
+  if (preferred === 'stock' || preferred === 'hybrid') {
+    if (!stockConfigured()) {
+      if (preferred === 'stock') {
+        throw new VideoBackendUnavailable(
+          'PREFERRED_RENDER_ENGINE=stock ngunit walang PEXELS_API_KEY o PIXABAY_API_KEY. ' +
+            'Libre ang key sa pexels.com/api o pixabay.com/api/docs — walang GPU na kailangan.',
+        );
+      }
+      console.log('[RENDER] hybrid: walang stock key, generated chain ang gagamitin.');
+    } else {
+      try {
+        const clip = await fetchStockClip(input.prompt, input.seconds);
+        if (clip) {
+          const mp4 = await toMp4(clip.data);
+          const providerName = clip.provider === 'pexels' ? 'Pexels'
+            : clip.provider === 'pixabay' ? 'Pixabay' : 'Wikimedia Commons';
+          console.log(
+            `[RENDER] stock footage: ${clip.provider} #${clip.id} ni ${clip.author} ` +
+              `(${(mp4.length / 1e6).toFixed(1)} MB, ${clip.licence || 'licence sa page'})`,
+          );
+          return {
+            data: mp4,
+            engine: 'stock',
+            credit: `${clip.author} / ${providerName}`,
+            sourceUrl: clip.pageUrl,
+            licence: clip.licence,
+          };
+        }
+      } catch (error: any) {
+        console.log(`[RENDER] stock search nabigo: ${error?.message || error}`);
+        if (preferred === 'stock') {
+          throw new VideoBackendUnavailable(`stock footage: ${error?.message || error}`);
+        }
+      }
+    }
+  }
 
   // No cost: a free image, animated with ffmpeg. No cloud spend, no account.
   if (preferred === 'motion') {

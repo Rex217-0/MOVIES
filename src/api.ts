@@ -9,6 +9,31 @@
 
 const TOKEN_STORAGE_KEY = 'direk_auth_token';
 
+/**
+ * Where the API lives, when the UI is not served by it.
+ *
+ * In a browser the app is served by the same Express process that answers
+ * /api, so a relative path is right. The Android shell loads the UI from the
+ * APK's own assets, where a relative /api would point at a file:// path and
+ * fail, so it injects this global with the server the user configured.
+ */
+function apiBase(): string {
+  try {
+    const base = (window as { __MOVIE_CREATOR_API_BASE__?: string }).__MOVIE_CREATOR_API_BASE__;
+    if (typeof base === 'string' && base.trim()) return base.trim().replace(/\/+$/, '');
+  } catch {
+    // Non-browser environment.
+  }
+  return '';
+}
+
+/** Resolve an app path against the configured API base. */
+export function apiUrl(path: string): string {
+  const base = apiBase();
+  if (!base || !path.startsWith('/')) return path;
+  return `${base}${path}`;
+}
+
 function readTokenFromUrl(): string | null {
   try {
     const url = new URL(window.location.href);
@@ -38,7 +63,7 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
   const token = getAuthToken();
   const headers = new Headers(init.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  return fetch(input, { ...init, headers });
+  return fetch(apiUrl(input), { ...init, headers });
 }
 
 /**
@@ -48,15 +73,16 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
  */
 export async function thoughtStreamUrl(): Promise<string> {
   const token = getAuthToken();
-  if (!token) return '/api/pilot/thought-stream';
+  const plain = apiUrl('/api/pilot/thought-stream');
+  if (!token) return plain;
   try {
     const res = await apiFetch('/api/pilot/stream-ticket', { method: 'POST' });
-    if (!res.ok) return '/api/pilot/thought-stream';
+    if (!res.ok) return plain;
     const data = (await res.json()) as { ticket?: string };
-    if (!data.ticket) return '/api/pilot/thought-stream';
-    return `/api/pilot/thought-stream?ticket=${encodeURIComponent(data.ticket)}`;
+    if (!data.ticket) return plain;
+    return `${plain}?ticket=${encodeURIComponent(data.ticket)}`;
   } catch {
-    return '/api/pilot/thought-stream';
+    return plain;
   }
 }
 

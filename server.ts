@@ -122,10 +122,18 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // allow-list so a random site cannot call the billable API, and a per-client
 // rate limit so one client cannot exhaust the shared free tier.
 // ---------------------------------------------------------------------------
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+// https://app.local is the Android shell's own origin: the APK serves its UI
+// from that fixed host so its calls are a normal CORS request instead of the
+// unallowable "Origin: null" a file:// page would send. No website can claim
+// it, so allowing it by default costs nothing.
+const ANDROID_SHELL_ORIGIN = 'https://app.local';
+const ALLOWED_ORIGINS = [
+  ...(process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean),
+  ANDROID_SHELL_ORIGIN,
+];
 const RATE_LIMIT = Math.max(1, parseInt(process.env.RATE_LIMIT_PER_MIN || '120', 10));
 const rateLimiter = new RateLimiter(RATE_LIMIT, 60_000);
 
@@ -631,7 +639,7 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
   try {
-    const { data, engine, editor, editNote } = await renderVideo({
+    const { data, engine, editor, editNote, credit, sourceUrl } = await renderVideo({
       prompt: formattedPrompt,
       negative: buildVeoStyleNegative(),
       aspectRatio: validAspect,
@@ -642,6 +650,9 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
     const elapsedMs = Date.now() - startTime;
     const dataUrl = `data:video/mp4;base64,${data.toString('base64')}`;
     broadcastThought(`[VIDEO COMPLETE] ${engine} video rendered (${elapsedMs}ms).`);
+    // A stock clip is real footage of a real subject, so it carries the shooter
+    // and the source page. Generated clips have no one to credit.
+    if (credit) broadcastThought(`[VIDEO SOURCE] Tunay na footage ni ${credit} — ${sourceUrl}`);
     const mediaRecord: MediaItem = {
       id: `VID-${Date.now()}`,
       type: 'video',
@@ -650,7 +661,9 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
       aspect_ratio: validAspect,
       timestamp: new Date().toLocaleTimeString(),
       model: engine,
-      details: editor ? `${engine} render, edited with ${editor}` : `${engine} render`,
+      details: credit
+        ? `${engine} render ng tunay na footage — ${credit}`
+        : editor ? `${engine} render, edited with ${editor}` : `${engine} render`,
     };
     mediaGallery.unshift(mediaRecord);
     if (mediaGallery.length > 40) mediaGallery.pop();
