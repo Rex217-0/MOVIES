@@ -339,7 +339,7 @@ whether the file exists, the exact problem (`disabled`, `no-workflow`,
 `workflow-missing`, `placeholder`, `unreachable`, or `ready`), the unfilled
 placeholders when there are any, and whether a `FAL_KEY` fallback is present.
 
-### The three render engines, and what each one costs
+### The render engines, and what each one costs
 
 `PREFERRED_RENDER_ENGINE` chooses the engine. It defaults to `comfyui`, the free
 local-first chain, so a fresh install never reaches a paid call by accident.
@@ -347,9 +347,38 @@ Only an explicit `fal` routes to paid cloud. The honest trade-offs:
 
 | Engine | Cost | What it needs | What it makes |
 | --- | --- | --- | --- |
-| `fal` | **Paid** per call | `FAL_KEY` (fal.ai account) | Wan 2.2 text-to-video: real motion, prompt-driven |
-| `comfyui` | **Free** | A GPU and `COMFYUI_VIDEO_WORKFLOW` (AnimateDiff/SVD) | Real motion on your own hardware |
+| `stock` | **Free** | Nothing, for Wikimedia Commons; a free key for Pexels/Pixabay | **Real footage** shot on a real camera: actual people, animals, places, weather, skies |
+| `hybrid` | **Free** | The same as `stock` | Real footage when it matches, otherwise the generated chain |
+| `fal` | **Paid** per call | `FAL_KEY` (fal.ai account) | Wan 2.2 text-to-video: generated motion, prompt-driven |
+| `comfyui` | **Free** | A GPU and `COMFYUI_VIDEO_WORKFLOW` (AnimateDiff/SVD) | Generated motion on your own hardware |
 | `motion` | **Free, no account** | Nothing but the app — a free still (ComfyUI, else Pollinations) animated by the bundled ffmpeg | A real MP4: a slow ken-burns pan/zoom over a generated still |
+
+**Real footage vs generated video.** Only `stock` and `hybrid` put a real
+subject on screen. Wan, ComfyUI and `motion` generate pixels, so no setting of
+theirs can show you an actual person, animal or place — they invent one. When
+the scene must be real, use `stock` or `hybrid`.
+
+`stock` searches three providers in order: Pexels, Pixabay, then Wikimedia
+Commons. Commons needs **no key at all**, so real footage works on a bare
+install; Pexels and Pixabay give away a free key and a wider catalogue. Each
+provider is retried with a looser query before moving on, and a prompt is
+reduced to subject nouns first, so "slow camera push in, 35mm" does not poison
+the search. Every clip is returned as H.264 MP4, credited to its shooter, with
+its licence — Commons serves Ogg/WebM, so those are transcoded rather than
+mislabelled.
+
+`hybrid` tries `stock` first and falls back to the normal generated chain, so a
+scene with no stock match is still rendered instead of dropped.
+
+```
+PREFERRED_RENDER_ENGINE=stock    # real footage, no key needed (Commons)
+PREFERRED_RENDER_ENGINE=hybrid   # real footage first, generated fallback
+```
+
+```
+PEXELS_API_KEY=""    # free key: pexels.com/api
+PIXABAY_API_KEY=""   # free key: pixabay.com/api/docs
+```
 
 `motion` is the no-cost fallback when you have no `FAL_KEY` and no video
 workflow: it is **not** motion synthesis like Wan, it is one still with camera

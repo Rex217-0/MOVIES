@@ -631,7 +631,7 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
   try {
-    const { data, engine, editor, editNote } = await renderVideo({
+    const { data, engine, editor, editNote, credit, sourceUrl } = await renderVideo({
       prompt: formattedPrompt,
       negative: buildVeoStyleNegative(),
       aspectRatio: validAspect,
@@ -642,6 +642,9 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
     const elapsedMs = Date.now() - startTime;
     const dataUrl = `data:video/mp4;base64,${data.toString('base64')}`;
     broadcastThought(`[VIDEO COMPLETE] ${engine} video rendered (${elapsedMs}ms).`);
+    // A stock clip is real footage of a real subject, so it carries the shooter
+    // and the source page. Generated clips have no one to credit.
+    if (credit) broadcastThought(`[VIDEO SOURCE] Tunay na footage ni ${credit} — ${sourceUrl}`);
     const mediaRecord: MediaItem = {
       id: `VID-${Date.now()}`,
       type: 'video',
@@ -650,7 +653,9 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
       aspect_ratio: validAspect,
       timestamp: new Date().toLocaleTimeString(),
       model: engine,
-      details: editor ? `${engine} render, edited with ${editor}` : `${engine} render`,
+      details: credit
+        ? `${engine} render ng tunay na footage — ${credit}`
+        : editor ? `${engine} render, edited with ${editor}` : `${engine} render`,
     };
     mediaGallery.unshift(mediaRecord);
     if (mediaGallery.length > 40) mediaGallery.pop();
