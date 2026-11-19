@@ -9,6 +9,12 @@ on:
       - 'android/**'
       - 'scripts/setup-android-sdk.sh'
       - '.github/workflows/build-apk.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'src/**'
+      - 'scripts/setup-android-sdk.sh'
+      - '.github/workflows/build-apk.yml'
   workflow_dispatch:
 
 jobs:

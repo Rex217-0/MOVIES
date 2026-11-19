@@ -45,8 +45,10 @@ if [ -f "$DIST/index.html" ]; then
   mkdir -p "$ASSETS"
   cp -R "$DIST"/. "$ASSETS"/
 else
-  echo "[0/7] WARNING: $DIST/index.html is missing; the APK will have no bundled UI."
-  echo "      Run 'npm run build' first."
+  # Refuse rather than ship a blank app: an APK without the UI is the bug this
+  # step exists to prevent, and it installs fine, so nothing else would catch it.
+  echo "error: $DIST/index.html is missing. Run 'npm run build' first." >&2
+  exit 1
 fi
 
 echo "[1/7] aapt2 compile resources"
