@@ -43,7 +43,20 @@ jobs:
       - name: Install the Android SDK
         run: bash scripts/setup-android-sdk.sh
 
+      # A new signing key every run means every build is a different app: Android
+      # rejects the update and users must uninstall, losing their data. The key
+      # is a secret, so it is not committed; it is restored from repo secrets
+      # when configured, and otherwise cached between runs to stay stable.
+      - name: Restore the signing key
+        uses: actions/cache@v4
+        with:
+          path: android/moviecreator.keystore
+          key: moviecreator-keystore-v1
+
       - name: Build the APK
+        env:
+          MOVIECREATOR_KEYSTORE_B64: ${{ secrets.MOVIECREATOR_KEYSTORE_B64 }}
+          MOVIECREATOR_KS_PASS: ${{ secrets.MOVIECREATOR_KS_PASS }}
         run: |
           export JAVA_HOME="${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")}"
           export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"

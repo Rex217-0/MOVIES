@@ -29,8 +29,16 @@ PLATFORM="$SDK/platforms/android-34/android.jar"
 [ -f "$PLATFORM" ] || { echo "missing $PLATFORM (install platforms;android-34)"; exit 1; }
 
 KEYSTORE="$HERE/moviecreator.keystore"
-KS_PASS="moviecreator"
 KS_ALIAS="moviecreator"
+KS_PASS="${MOVIECREATOR_KS_PASS:-moviecreator}"
+
+# Android refuses to update an installed app whose signature changed, so every
+# build must use the same key or users have to uninstall first and lose data.
+# CI has no committed key (it is a secret), so accept it from the environment
+# and fall back to generating one that the workflow then caches.
+if [ -n "${MOVIECREATOR_KEYSTORE_B64:-}" ]; then
+  printf '%s' "$MOVIECREATOR_KEYSTORE_B64" | base64 -d > "$KEYSTORE"
+fi
 
 rm -rf "$BUILD"
 mkdir -p "$BUILD/compiled" "$BUILD/gen" "$BUILD/classes" "$BUILD/dex"
