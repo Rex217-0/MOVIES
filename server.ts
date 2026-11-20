@@ -30,7 +30,7 @@ import {
 import { ReferenceCatalog } from './src/direk/reference.ts';
 import { MarketIntel } from './src/direk/market.ts';
 import { runConnector, connectorCatalog, allAssets } from './src/direk/connectors.ts';
-import { ffmpegAvailable, ffmpegPath, toPng } from './src/direk/render.ts';
+import { ffmpegAvailable, ffmpegPath, isPng, toPng } from './src/direk/render.ts';
 import { assetsDir, assetPath, reviewAsset, type ReviewStatus } from './src/direk/assets.ts';
 import { driveStatus, authUrl, redirectUri, exchangeCode } from './src/direk/gdrive.ts';
 import { DirekService, type ChatMessage } from './src/direk/service.ts';
@@ -807,6 +807,37 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
       aiUnavailable(IMAGE_MODEL, NO_FREE_IMAGE_MODEL, 'Image generation is unavailable')
     );
     return;
+  }
+
+  // Pollinations is the free, key-less, GPU-less default. It is tried before
+  // the paid model; a failure here falls through to Gemini rather than 503.
+  if (backend === 'pollinations') {
+    try {
+      // Pollinations answers with a JPEG. Convert when ffmpeg is around; if it
+      // is not, serve the JPEG as-is and label it honestly rather than 503.
+      const raw = await generatePollinationsImage(enhancedPrompt);
+      const png = isPng(raw) ? raw : await toPng(raw).catch(() => raw);
+      const isRealPng = isPng(png);
+      const elapsedMs = Date.now() - startTime;
+      const mediaRecord: MediaItem = {
+        id: `IMG-${Date.now()}`,
+        type: 'image',
+        url: `data:image/${isRealPng ? 'png' : 'jpeg'};base64,${png.toString('base64')}`,
+        prompt: cleanPrompt(prompt),
+        aspect_ratio: validAspect,
+        timestamp: new Date().toLocaleTimeString(),
+        model: 'pollinations',
+        details: 'Pollinations free tier',
+      };
+      mediaGallery.unshift(mediaRecord);
+      if (mediaGallery.length > 40) mediaGallery.pop();
+      broadcastThought(`[IMAGE COMPLETE] Pollinations image generated (${elapsedMs}ms).`);
+      res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
+      return;
+    } catch (error: any) {
+      console.error(`[IMAGE ERROR] Pollinations failed:`, error?.message || error);
+      broadcastThought(`[IMAGE ERROR] Pollinations failed, susubukan ang Gemini...`);
+    }
   }
 
   try {
