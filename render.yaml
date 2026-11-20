@@ -3,14 +3,18 @@ services:
     name: movie-creator
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter
+    # Valid plan values are free | 0.5c-512mb | 1c-2g | ... "starter" is not a
+    # blueprint plan name and is rejected on deploy.
+    # free = 0.1 CPU / 512 MB: renders work but slowly, and the service spins
+    # down after 15 idle minutes (~1 min cold start). Use 1c-2g for real work.
+    plan: free
     region: singapore
     healthCheckPath: /healthz
     envVars:
       - key: NODE_ENV
         value: production
       - key: APP_AUTH_TOKEN
-        sync: false
+        generateValue: true
       - key: GEMINI_API_KEY
         sync: false
       - key: PREFERRED_RENDER_ENGINE
