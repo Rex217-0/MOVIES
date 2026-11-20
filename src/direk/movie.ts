@@ -27,6 +27,8 @@ import {
   videoRenderReady as videoBackendReady, videoRenderDetail as videoBackendDetail,
 } from './videoRenderService.ts';
 import type { SceneStage } from './factory.ts';
+import { imagine, type ImageBackend } from './imagine.ts';
+import { fetchStockClip, stockConfigured } from './stockVideo.ts';
 import { buildVeoStylePrompt, buildVeoStyleNegative } from '../tactical/rules.ts';
 import { paidReady } from './costPolicy.ts';
 
@@ -98,6 +100,9 @@ function cleanup(dir: string): void {
 // ---------------------------------------------------------------------------
 // Screenplay
 // ---------------------------------------------------------------------------
+
+/** Which backend actually drew a shot's still, so the result can say so. */
+export type PictureSource = ImageBackend | 'pexels' | 'pixabay' | 'commons' | 'gradient';
 
 export interface MovieScene {
   heading: string;
@@ -636,16 +641,47 @@ function gradientExpr(mood: Mood, period: number): string {
   return `geq=r='${ch(0)}':g='${ch(1)}':b='${ch(2)}'`;
 }
 
-/** Draw one still at double size so the zoom stays sharp. */
-async function backdrop(dir: string, mood: Mood, index: number): Promise<string> {
+/**
+ * Draw one still at double size so the zoom stays sharp.
+ *
+ * The picture is a real generated image of the scene when an image backend is
+ * up: local ComfyUI first, then Gemini, then the keyless Pollinations endpoint.
+ * The procedural gradient is the last resort only, and `pictureSource` reports
+ * which one was used so the film never claims a model it did not have.
+ */
+async function backdrop(dir: string, mood: Mood, index: number, prompt?: string): Promise<{ file: string; source: PictureSource }> {
   const file = path.join(dir, `bg${index}.png`);
+  if (prompt) {
+    // Real footage first: a camera pointed at the real thing beats any
+    // generated frame, and the keyless Commons index always answers.
+    if (stockConfigured()) {
+      try {
+        const clip = await fetchStockClip(prompt, 3);
+        if (clip) {
+          const clipFile = path.join(dir, `bg${index}-clip.mp4`);
+          fs.writeFileSync(clipFile, clip.data);
+          console.log(`[MOVIE] Tunay na footage: ${clip.provider} #${clip.id} ni ${clip.author}`);
+          return { file: clipFile, source: clip.provider };
+        }
+      } catch (error: any) {
+        console.log(`[MOVIE] Walang stock footage (${error?.message || error})`);
+      }
+    }
+    try {
+      const still = await imagine(prompt);
+      fs.writeFileSync(file, still.data);
+      return { file, source: still.backend };
+    } catch (error: any) {
+      console.log(`[MOVIE] Walang image backend (${error?.message || error}) — gradient na lang`);
+    }
+  }
   await ff([
     '-y', '-hide_banner', '-loglevel', 'error',
     '-f', 'lavfi', '-i', `color=c=black:s=${WIDTH * 2}x${HEIGHT * 2}:d=1:r=${FPS}`,
     '-vf', gradientExpr(mood, 9 + index),
     '-frames:v', '1', file,
   ]);
-  return file;
+  return { file, source: 'gradient' };
 }
 
 function drawtext(text: string, opts: { size: number; y: string; color: string; from: number; to: number }): string {
@@ -687,12 +723,15 @@ export async function renderShot(
   dir: string,
   seconds: number,
   opts: { caption?: boolean } = {},
-): Promise<string> {
-  const still = await backdrop(dir, scene.mood, index);
+): Promise<{ file: string; source: PictureSource }> {
+  // The scene's visual line is the prompt: it describes what the shot shows.
+  // The heading is a slugline ("EXT. STREET - NIGHT"), camera notation that
+  // would only dilute a stock search, so it stays out of the query.
+  const still = await backdrop(dir, scene.mood, index, scene.visual || scene.heading);
   const out = path.join(dir, `shot${index}.mp4`);
   const frames = Math.max(1, Math.round(seconds * FPS));
   const filters = [
-    `scale=${WIDTH * 2}:${HEIGHT * 2}:force_original_aspect_ratio=increase`,
+    `scale=${WIDTH * 2}:${HEIGHT * 2}:force_original_aspect_ratio=increase:flags=lanczos`,
     `crop=${WIDTH * 2}:${HEIGHT * 2}`,
     `zoompan=z='min(zoom+0.00035,1.22)':d=${frames}:s=${WIDTH}x${HEIGHT}:fps=${FPS}`,
     'format=yuv420p',
@@ -704,8 +743,15 @@ export async function renderShot(
   if (opts.caption) {
     filters.push(drawtext(wrapText(scene.narration), { size: 26, y: 'h-text_h-h*0.07', color: 'white', from: 0.8, to: seconds }));
   }
-  await ff(['-y', '-hide_banner', '-loglevel', 'error', '-loop', '1', '-i', still, '-t', String(seconds), '-vf', filters.join(','), '-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '22', out]);
-  return out;
+  // A still needs -loop 1 to fill the shot; a stock clip is already moving, so
+  // it is looped by the filter graph instead and trimmed to the scene length.
+  const isVideo = still.file.endsWith('.mp4');
+  const input = isVideo
+    ? ['-stream_loop', '-1', '-i', still.file]
+    : ['-loop', '1', '-i', still.file];
+  if (isVideo) filters.unshift('setpts=PTS-STARTPTS');
+  await ff(['-y', '-hide_banner', '-loglevel', 'error', ...input, '-t', String(seconds), '-vf', filters.join(','), '-an', '-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '22', out]);
+  return { file: out, source: still.source };
 }
 
 /** A title or credit card: a still with text, no push-in. */
@@ -729,7 +775,7 @@ export async function renderCard(
     'vignette=PI/4.4',
     ...filters,
   ].join(',');
-  await ff(['-y', '-hide_banner', '-loglevel', 'error', '-loop', '1', '-i', still, '-t', String(seconds), '-vf', vf, '-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '22', out]);
+  await ff(['-y', '-hide_banner', '-loglevel', 'error', '-loop', '1', '-i', still.file, '-t', String(seconds), '-vf', vf, '-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '22', out]);
   return out;
 }
 
@@ -990,6 +1036,10 @@ async function renderMovieUnlocked(
     const target = Math.max(30, opts.minutes * 60);
     const perScene = Math.max(6, (target - TITLE_SECONDS - CREDIT_SECONDS) / script.scenes.length);
     const pieces: string[] = [];
+    // Which backend drew the shots. A film that fell back to the procedural
+    // gradient must say so; the note never claims a model that did not run.
+    let picture: PictureSource | null = null;
+    let gradientShots = 0;
 
     const titleMood = opts.mood ?? script.scenes[0]?.mood ?? 'warm';
     onProgress({ stage: 'Titulo', percent: 34 });
@@ -1020,7 +1070,9 @@ async function renderMovieUnlocked(
         detail: `Eksena ${i + 1}/${script.scenes.length} · ${seconds.toFixed(1)}s`,
       });
       const shot = await renderShot(scene, i, dir, seconds, { caption: !narrationFile });
-      pieces.push(await muxNarration(shot, narrationFile, seconds, dir, `p_shot${i}`));
+      if (shot.source === 'gradient') gradientShots++;
+      else picture ??= shot.source;
+      pieces.push(await muxNarration(shot.file, narrationFile, seconds, dir, `p_shot${i}`));
     }
 
     onProgress({ stage: 'Credits', percent: 86 });
@@ -1082,9 +1134,12 @@ async function renderMovieUnlocked(
       scenes: script.scenes.length,
       narrated,
       voice_source: used,
-      note: narrated
+      note: `${narrated
         ? `Pelikula: ${script.scenes.length} eksena, ${info.duration.toFixed(0)}s. Boses: ${voiceLabel} (${voiced}/${script.scenes.length} linya).`
-        : `Pelikula: ${script.scenes.length} eksena, ${info.duration.toFixed(0)}s. Walang boses — nakasulat ang kuwento sa video at may musika.`,
+        : `Pelikula: ${script.scenes.length} eksena, ${info.duration.toFixed(0)}s. Walang boses — nakasulat ang kuwento sa video at may musika.`} Larawan: ${
+        picture === null
+          ? 'procedural gradient — walang image backend'
+          : `${picture} (${script.scenes.length - gradientShots}/${script.scenes.length} shot)`}.`,
     };
   } finally {
     cleanup(dir);
