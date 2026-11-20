@@ -332,11 +332,12 @@ export function buildVideoWorkflow(
   // The image path defaults to an SDXL checkpoint, which is the wrong model for
   // a Wan graph: loading it into UNETLoader is what turns a video into colour
   // noise. Video prefers its own variable, still honours the shared one so
-  // existing setups keep working, and otherwise falls back to the Wan UNET.
+  // existing setups keep working, and otherwise falls back to the Wan 2.2 5B
+  // UNET that Server-2 actually has installed.
   const checkpoint =
     process.env?.COMFYUI_VIDEO_CHECKPOINT ||
     process.env?.COMFYUI_CHECKPOINT ||
-    'wan2.1_t2v_1.3B_fp16.safetensors';
+    'wan2.2_ti2v_5B_fp16.safetensors';
 
   const template = fs.readFileSync(templatePath, 'utf8');
   const unfilled = unfilledPlaceholders(template);
