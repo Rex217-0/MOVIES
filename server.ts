@@ -238,6 +238,13 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
   });
 }
 
+// Public liveness probe for the hosting platform. It reports only that the
+// process is up: every /api route needs the token, so a platform health check
+// against those would read 401 and restart a healthy container.
+app.get('/healthz', (_req: Request, res: Response) => {
+  res.json({ ok: true, uptime_s: Math.round(process.uptime()) });
+});
+
 app.use('/api', requireAuth);
 
 // Mint a short-lived ticket for the thought stream, so the browser never puts

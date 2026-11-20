@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: movie-creator
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: singapore
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_AUTH_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: PREFERRED_RENDER_ENGINE
+        value: hybrid
