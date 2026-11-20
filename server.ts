@@ -1426,6 +1426,10 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
     }
     if (!script) script = fallbackScript(brief, opts);
 
+    // ffmpeg needs the container's memory more than a finished search does.
+    // Hand the catalog rows back first; the next genre lookup re-reads them.
+    referenceCatalog.release();
+
     const result = await renderMovie(script, opts, tick);
     job.status = 'done';
     job.title = script.title;

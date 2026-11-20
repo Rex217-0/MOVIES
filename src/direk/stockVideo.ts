@@ -542,7 +542,7 @@ export async function toMp4(data: Buffer): Promise<Buffer> {
           '-y', '-hide_banner', '-loglevel', 'error',
           '-i', input,
           '-an',
-          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+          '-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '23',
           '-pix_fmt', 'yuv420p',
           '-movflags', '+faststart',
           output,

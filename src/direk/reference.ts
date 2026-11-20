@@ -12,7 +12,7 @@
 
 import fs from 'node:fs';
 import { catalogTerms } from './genres.ts';
-import { parseCsvFile, pick, cleanListCell } from './csv.ts';
+import { forEachCsvRow, pick, cleanListCell } from './csv.ts';
 import { loadKaggleSources } from './kaggle.ts';
 
 export interface CatalogTitle {
@@ -47,13 +47,26 @@ export class ReferenceCatalog {
   private haystacks: string[] = [];
   private dataDir: string;
   private kaggleLoaded = false;
+  private baseLoaded = false;
   readonly maxResults: number;
 
   constructor(dataDir: string, maxResults = 5) {
     this.dataDir = dataDir;
     this.maxResults = Math.max(1, Math.min(maxResults, 20));
+  }
+
+  /**
+   * Read the four shipped CSVs on first use, not at construction.
+   *
+   * They hold 82k rows and cost ~163MB of RSS, which is a third of a 512MB
+   * free container before a single request arrives. Nothing needs them until a
+   * genre lookup runs, and the status endpoints deliberately never ask.
+   */
+  private ensureBase(): void {
+    if (this.baseLoaded) return;
+    this.baseLoaded = true;
     for (const source of SOURCES) {
-      const file = `${dataDir}/${source.file}`;
+      const file = `${this.dataDir}/${source.file}`;
       if (!fs.existsSync(file)) continue;
       try {
         this.rows.push(...this.loadSource(source, file));
@@ -83,9 +96,12 @@ export class ReferenceCatalog {
   }
 
   private loadSource(source: Source, file: string): CatalogTitle[] {
-    const csv = parseCsvFile(file);
-    if (!csv) return [];
-    return csv.rows.map(row => this.adapt(source.name, csv.header, row));
+    // Stream the file instead of splitting it whole: the split held every line
+    // and every cell at once, which is what left the heap 145MB larger than the
+    // data it kept.
+    const out: CatalogTitle[] = [];
+    forEachCsvRow(file, (header, row) => out.push(this.adapt(source.name, header, row)));
+    return out;
   }
 
   private adapt(name: string, header: string[], row: string[]): CatalogTitle {
@@ -148,6 +164,7 @@ export class ReferenceCatalog {
   }
 
   get available(): boolean {
+    this.ensureBase();
     return this.rows.length > 0;
   }
 
@@ -162,12 +179,29 @@ export class ReferenceCatalog {
   }
 
   get size(): number {
+    this.ensureBase();
     this.ensureKaggle();
     return this.rows.length;
   }
 
+  /**
+   * Drop the catalog rows and let the next search read them again.
+   *
+   * A render runs ffmpeg in the same 512MB container, and the 82k rows cost
+   * ~250MB of RSS that V8 does not hand back to the OS after a GC — so the
+   * memory has to be given up *before* ffmpeg starts, not after. Re-reading
+   * costs ~0.8s, which only a genre search pays.
+   */
+  release(): void {
+    this.rows = [];
+    this.haystacks = [];
+    this.kaggleLoaded = false;
+    this.baseLoaded = false;
+  }
+
   /** Count of rows per source, for the status endpoint. */
   sources(): Record<string, number> {
+    this.ensureBase();
     this.ensureKaggle();
     return this.loadedSources();
   }
@@ -187,7 +221,8 @@ export class ReferenceCatalog {
    * statistics source (with ratings and budgets) actually surface.
    */
   search(genre: string | null, kind?: string | null, n?: number): CatalogTitle[] {
-    if (!this.available || !genre) return [];
+    this.ensureBase();
+    if (!this.rows.length || !genre) return [];
     this.ensureKaggle();
     const limit = Math.min(n ?? this.maxResults, this.maxResults);
     const terms = (catalogTerms(genre) || []).map(t => t.toLowerCase());

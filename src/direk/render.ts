@@ -199,7 +199,7 @@ function textFile(dir: string, text: string): string {
   return file;
 }
 
-const ENCODE = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'];
+const ENCODE = ['-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'];
 
 /** Cut a clip down to a window. `start` in seconds, `duration` optional. */
 export async function trimVideo(input: string, start: number, duration?: number): Promise<RenderOutput> {
@@ -208,7 +208,7 @@ export async function trimVideo(input: string, start: number, duration?: number)
     const out = path.join(dir, 'out.mp4');
     const args = ['-y', '-ss', String(Math.max(0, start)), '-i', input];
     if (duration && duration > 0) args.push('-t', String(duration));
-    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-c:a', 'aac', '-movflags', '+faststart', out);
+    args.push('-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '23', '-c:a', 'aac', '-movflags', '+faststart', out);
     await run(args);
     return await readResult(out, MP4);
   } finally {
@@ -249,7 +249,7 @@ async function normalize(input: string, dir: string, index: number, width: numbe
   const vf = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps}`;
   const args = ['-y', '-i', input];
   if (!info.hasAudio) args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest');
-  args.push('-vf', vf, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', out);
+  args.push('-vf', vf, '-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', out);
   await run(args);
   return out;
 }

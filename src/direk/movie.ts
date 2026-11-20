@@ -47,6 +47,29 @@ const MAX_SCENE_SECONDS = 40;
 /** A voice-over line longer than this is clipped: one shot cannot hold more. */
 export const MAX_NARRATION_WORDS = 70;
 
+/**
+ * Render slots. ffmpeg peaks near 220MB per job, so two at once would exhaust a
+ * 512MB container and take the whole app down with it — the job then 404s on
+ * restart because its row says "running" but nothing is rendering it. One slot
+ * keeps the promise of the free plan; extra jobs wait their turn.
+ */
+const RENDER_SLOTS = Number(process.env.RENDER_SLOTS) || 1;
+let activeRenders = 0;
+const waitingRenders: (() => void)[] = [];
+
+async function withRenderSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeRenders >= RENDER_SLOTS) {
+    await new Promise<void>(resolve => waitingRenders.push(resolve));
+  }
+  activeRenders++;
+  try {
+    return await fn();
+  } finally {
+    activeRenders--;
+    waitingRenders.shift()?.();
+  }
+}
+
 function ff(args: string[], timeoutMs = 30 * 60 * 1000): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(ffmpegPath(), args, { maxBuffer: 1 << 26, timeout: timeoutMs }, (error, stdout, stderr) => {
@@ -681,7 +704,7 @@ export async function renderShot(
   if (opts.caption) {
     filters.push(drawtext(wrapText(scene.narration), { size: 26, y: 'h-text_h-h*0.07', color: 'white', from: 0.8, to: seconds }));
   }
-  await ff(['-y', '-hide_banner', '-loglevel', 'error', '-loop', '1', '-i', still, '-t', String(seconds), '-vf', filters.join(','), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', out]);
+  await ff(['-y', '-hide_banner', '-loglevel', 'error', '-loop', '1', '-i', still, '-t', String(seconds), '-vf', filters.join(','), '-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '22', out]);
   return out;
 }
 
@@ -706,7 +729,7 @@ export async function renderCard(
     'vignette=PI/4.4',
     ...filters,
   ].join(',');
-  await ff(['-y', '-hide_banner', '-loglevel', 'error', '-loop', '1', '-i', still, '-t', String(seconds), '-vf', vf, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', out]);
+  await ff(['-y', '-hide_banner', '-loglevel', 'error', '-loop', '1', '-i', still, '-t', String(seconds), '-vf', vf, '-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '22', out]);
   return out;
 }
 
@@ -798,7 +821,7 @@ async function normaliseShot(clip: string, dir: string, seconds: number): Promis
       '-vf', vf, '-map', '0:v', '-map', '1:a', '-c:a', 'aac', '-ar', '44100', '-ac', '2',
     );
   }
-  args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', norm);
+  args.push('-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '22', norm);
   await ff(args);
   const out = path.join(dir, 'shot.mp4');
   await ff([
@@ -916,6 +939,14 @@ export async function renderMovie(
   script: MovieScript,
   opts: MovieOptions,
   onProgress: ProgressFn = () => {},
+): Promise<MovieResult> {
+  return withRenderSlot(() => renderMovieUnlocked(script, opts, onProgress));
+}
+
+async function renderMovieUnlocked(
+  script: MovieScript,
+  opts: MovieOptions,
+  onProgress: ProgressFn,
 ): Promise<MovieResult> {
   const dir = workDir();
   try {

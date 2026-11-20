@@ -76,9 +76,17 @@ export function forEachCsvRow(
     const buf = Buffer.allocUnsafe(chunkSize);
     let carry = '';
     let header: string[] | null = null;
+    // A quoted field may contain newlines, so a line is only a record once its
+    // quotes balance. netflix_titles.csv has three such descriptions; treating
+    // each physical line as a record split them into fragments.
+    let pending = '';
     const handle = (line: string) => {
-      if (!line) return;
-      const cells = parseLine(line);
+      pending = pending ? `${pending}\n${line}` : line;
+      if (quoted(pending)) return;
+      const record = pending;
+      pending = '';
+      if (!record) return;
+      const cells = parseLine(record);
       if (!header) {
         header = cells;
         return;
@@ -103,6 +111,13 @@ export function forEachCsvRow(
   } finally {
     fs.closeSync(fd);
   }
+}
+
+/** True while an odd number of quotes leaves a field open. */
+function quoted(text: string): boolean {
+  let count = 0;
+  for (let i = 0; i < text.length; i++) if (text[i] === '"') count++;
+  return count % 2 === 1;
 }
 
 export function pick(header: string[], row: string[], name: string): string {
