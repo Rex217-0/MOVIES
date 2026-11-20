@@ -151,6 +151,16 @@ export class ReferenceCatalog {
     return this.rows.length > 0;
   }
 
+  /** Whether the large Kaggle files have been read into memory yet. */
+  get kaggleReady(): boolean {
+    return this.kaggleLoaded;
+  }
+
+  /** Rows held right now, without triggering the Kaggle load. For status probes. */
+  get loadedSize(): number {
+    return this.rows.length;
+  }
+
   get size(): number {
     this.ensureKaggle();
     return this.rows.length;
@@ -159,6 +169,11 @@ export class ReferenceCatalog {
   /** Count of rows per source, for the status endpoint. */
   sources(): Record<string, number> {
     this.ensureKaggle();
+    return this.loadedSources();
+  }
+
+  /** Source counts without loading the Kaggle files. For status probes. */
+  loadedSources(): Record<string, number> {
     const out: Record<string, number> = {};
     for (const row of this.rows) out[row.source] = (out[row.source] ?? 0) + 1;
     return out;

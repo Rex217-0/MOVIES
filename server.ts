@@ -464,7 +464,7 @@ app.get('/api/health', async (_req: Request, res: Response) => {
       model: backend === 'ollama' ? ollama.model : TEXT_MODEL,
       backend,
       reference_available: referenceCatalog.available,
-      reference_rows: referenceCatalog.size,
+      reference_rows: referenceCatalog.loadedSize,
     },
     image: {
       model: IMAGE_MODEL,
@@ -1087,7 +1087,8 @@ app.get('/api/direk/status', async (_req: Request, res: Response) => {
     pipeline: PIPELINE,
     genres: Object.keys(GENRE_MAP),
     skills: Object.entries(SKILLS).map(([id, spec]) => ({ id, ...spec })),
-    reference_sources: referenceCatalog.sources(),
+    reference_sources: referenceCatalog.loadedSources(),
+    reference_kaggle_loaded: referenceCatalog.kaggleReady,
     market_available: marketIntel.available,
     image_backend: backend,
     comfyui_url: comfyUrl(),
@@ -1754,11 +1755,13 @@ app.get('/api/direk/reference', (req: Request, res: Response) => {
     res.status(400).json({ error: 'genre query parameter is required.' });
     return;
   }
+  // Search first: it is what loads the Kaggle rows, so `rows` below counts them.
+  const items = referenceCatalog.search(genre, kind, n);
   res.json({
     genre,
     available: referenceCatalog.available,
     rows: referenceCatalog.size,
-    items: referenceCatalog.search(genre, kind, n),
+    items,
   });
 });
 
