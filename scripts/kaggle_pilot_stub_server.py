@@ -8,12 +8,16 @@ the prompt, so script, bible and scenes each come back in their real shape.
 Usage: python3 scripts/kaggle_pilot_stub_server.py [port]
 """
 import json
+import os
 import pathlib
 import sys
 import types
 
 NOTEBOOK = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "direk_kaggle_pilot.ipynb"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8077
+# The notebook binds whatever DIREK_PORT says (default 8000) and ignores argv,
+# so the requested port must reach it through the environment.
+os.environ["DIREK_PORT"] = str(PORT)
 
 SCENES = {
     "scenes": [
