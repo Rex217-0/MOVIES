@@ -7,7 +7,6 @@ android/*.keystore
 android/*.idsig
 android/local.properties
 android/keystore.properties
-android/movie-creator.apk
 android-legacy
 .openhands
 assets
