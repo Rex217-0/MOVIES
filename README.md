@@ -14,6 +14,10 @@ One app, two suites. A React + TypeScript front end with an Express backend:
 Both share the same server, the same honest-availability rules, and the same
 `GEMINI_API_KEY`.
 
+**Documentation map:** [`docs/INDEX.md`](docs/INDEX.md) — saan mahahanap ang ano,
+kasama ang [build outputs](docs/INDEX.md#build-outputs) (saan napupunta ang web
+build at ang APK).
+
 ## Datasets
 
 Grounding data lives in `data/` and is read at startup — nothing is fetched from
