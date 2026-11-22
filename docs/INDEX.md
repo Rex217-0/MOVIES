@@ -48,9 +48,18 @@ walang duplicate sa listahan.
 | [`colab-check.md`](colab-check.md) | Pagsusuri ng isang hand-built notebook laban sa protocol (2026-11-22) |
 | [`datasets.md`](datasets.md) | Ang mga dataset |
 
-**Ang tamang notebook ay `../scripts/colab_lora_train.ipynb`.** Nagsusulat iyon ng
-`status.json` at `manifest.json` na may sha256 — ang hinihintay ng app.
-Ang `lora_arsenal_train.ipynb` at `direk_kaggle_gear253b.ipynb` ay hiwalay na variants.
+### Aling notebook ang gagamitin
+
+| Notebook | Kailan gamitin |
+|---|---|
+| `../scripts/colab_lora_train.ipynb` | **Kapag konektado sa app.** Ito ang nagsusulat ng `status.json` at `manifest.json` na may sha256 — ang hinihintay ng `colabTrainer.ts`. |
+| `../scripts/lora_trainer_v2.ipynb` | **Manual na pag-train.** Self-contained, may dataset filter at resume. Pero flat ang folders — hindi nito nakikita ng app. |
+| `../scripts/lora_arsenal_train.ipynb` | Variant na batch (maraming folder). |
+| `../scripts/direk_kaggle_gear253b.ipynb` | Kaggle, hindi Colab. |
+
+⚠️ **Ang `lora_trainer_v2.ipynb` ay SD 1.5 ang default na base model.**
+SDXL ang default ng app (`comfyui.ts:164`, `colabTrainer.ts:345`). Kung SD 1.5
+ang itrain, i-set ang `COMFYUI_CHECKPOINT` para magtugma, o itrain sa SDXL.
 
 ---
 
