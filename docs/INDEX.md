@@ -52,14 +52,20 @@ walang duplicate sa listahan.
 
 | Notebook | Kailan gamitin |
 |---|---|
-| `../scripts/colab_lora_train.ipynb` | **Kapag konektado sa app.** Ito ang nagsusulat ng `status.json` at `manifest.json` na may sha256 — ang hinihintay ng `colabTrainer.ts`. |
-| `../scripts/lora_trainer_v2.ipynb` | **Manual na pag-train.** Self-contained, may dataset filter at resume. Pero flat ang folders — hindi nito nakikita ng app. |
+| `../scripts/colab_lora_train.ipynb` | **Kapag konektado sa app.** SDXL, `jobs/<job_id>/`, may `status.json` at `manifest.json` na may sha256 — ang hinihintay ng `colabTrainer.ts`. |
+| `../scripts/lora_trainer_v2.ipynb` | **Parehong konektado na ngayon (v2.1).** SDXL + `jobs/<job_id>/` protocol, may `MODE = "job" \| "manual"`. Job mode = katulad ng `colab_lora_train`; manual mode = flat folders para sa mabilisang pagsubok. |
 | `../scripts/lora_arsenal_train.ipynb` | Variant na batch (maraming folder). |
 | `../scripts/direk_kaggle_gear253b.ipynb` | Kaggle, hindi Colab. |
 
-⚠️ **Ang `lora_trainer_v2.ipynb` ay SD 1.5 ang default na base model.**
-SDXL ang default ng app (`comfyui.ts:164`, `colabTrainer.ts:345`). Kung SD 1.5
-ang itrain, i-set ang `COMFYUI_CHECKPOINT` para magtugma, o itrain sa SDXL.
+✅ **SDXL na ang `lora_trainer_v2.ipynb`** (`sdxl_train_network.py`, 1024 resolution
+sa manual mode). May hard check sa Cell 5: kapag mas maliit sa 5 GB ang base
+model, hihinto ito na may malinaw na mensahe — SD 1.5 iyon, at hindi magagamit
+ng renderer.
+
+Ang contract sa pagitan ng notebook at ng app ay sinasala ng
+`src/direk/loraNotebook.test.ts` (6 tests). Sinusuri nito ang `job.json` fields,
+ang `status.json` states, ang `manifest.json` shape, ang `jobs/` layout, at ang
+kawalan ng SD 1.5 trainer.
 
 ---
 
