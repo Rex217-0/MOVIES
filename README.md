@@ -18,6 +18,25 @@ Both share the same server, the same honest-availability rules, and the same
 kasama ang [build outputs](docs/INDEX.md#build-outputs) (saan napupunta ang web
 build at ang APK).
 
+## Deployment target — Server-2
+
+> **The Movie Creator App is designed to run on the physical Server-2 (AMD RX 9070 16GB VRAM, 64GB RAM). All heavy video rendering must be offloaded to this machine's local ComfyUI via its Tailscale IP, not a sandbox.**
+
+Exact hardware: [`SERVER_SPECS.md`](SERVER_SPECS.md). Setup and proof steps:
+[`docs/server2-comfy-video-setup.md`](docs/server2-comfy-video-setup.md).
+
+**Verified caveat (do not skip).** The Tailscale IP reaches ComfyUI only from a
+machine that is itself on the tailnet. When the app runs on Render, Render is
+not on the tailnet, and `100.64.0.0/10` is carrier-grade NAT with no public
+route, so `COMFYUI_URL=http://100.122.147.65:8188` cannot work there. Two
+working options:
+
+- Run the app on Server-2 itself and use `COMFYUI_URL=http://127.0.0.1:8188`
+  (recommended, nothing exposed).
+- Run on Render and set `COMFYUI_URL` to a public ComfyUI tunnel, opened on
+  purpose with `scripts\tunnel.ps1 -Port 8188 -IAcceptExposure`. ComfyUI has no
+  auth, so that URL is a public GPU.
+
 ## Datasets
 
 Grounding data lives in `data/` and is read at startup — nothing is fetched from
