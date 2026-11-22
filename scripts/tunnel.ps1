@@ -14,10 +14,30 @@
 
 param(
   [int]$Port = 3000,
-  [string]$Dir = "tools"
+  [string]$Dir = "tools",
+  # Ang ComfyUI (8188) ay WALANG authentication. Ang quick tunnel ay pampublikong
+  # URL, kaya kahit sino na makahula o makakita ng URL ay makakapagpatakbo ng
+  # prompt sa GPU mo. Kailangan ng tahasang pagpayag bago ito buksan.
+  [switch]$IAcceptExposure
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($Port -eq 8188 -and -not $IAcceptExposure) {
+  Write-Host ""
+  Write-Host "HINDI BINUKASAN. Ang port 8188 ay ComfyUI, at wala itong authentication." -ForegroundColor Yellow
+  Write-Host "Ang quick tunnel ay pampublikong URL: kahit sino na makakuha nito ay"
+  Write-Host "makakapagpatakbo ng prompt sa GPU mo, walang limitasyon."
+  Write-Host ""
+  Write-Host "Mas ligtas: patakbuhin ang app SA Server-2 mismo (COMFYUI_URL=http://127.0.0.1:8188),"
+  Write-Host "tapos i-tunnel ang port 3000 lang. Ganito ang default:"
+  Write-Host "    powershell -ExecutionPolicy Bypass -File .\scripts\tunnel.ps1"
+  Write-Host ""
+  Write-Host "Kung talagang kailangan ng Render na maabot ang ComfyUI, ulitin kasama ang:"
+  Write-Host "    powershell -ExecutionPolicy Bypass -File .\scripts\tunnel.ps1 -Port 8188 -IAcceptExposure"
+  Write-Host ""
+  exit 1
+}
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $here
 $toolsDir = Join-Path $root $Dir
@@ -29,7 +49,10 @@ if (-not (Test-Path $exe)) {
   Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile $exe
 }
 
-$log = Join-Path $toolsDir "tunnel.log"
+# Ang log ay per-port. Kung pareho ang pangalan, mabubura ng pangalawang
+# tunnel (hal. 8188 para sa ComfyUI) ang log ng una (3000), at mawawala ang
+# URL na kailangan mong i-paste sa Render.
+$log = Join-Path $toolsDir "tunnel-$Port.log"
 if (Test-Path $log) { Remove-Item $log -Force }
 
 Write-Host "Binubuksan ang tunnel papuntang http://127.0.0.1:$Port ..."

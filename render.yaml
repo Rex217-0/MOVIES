@@ -19,3 +19,12 @@ services:
         sync: false
       - key: PREFERRED_RENDER_ENGINE
         value: hybrid
+      # Kung sa Server-2 tumatakbo ang ComfyUI, i-paste dito ang public URL ng
+      # ComfyUI tunnel (hal. https://xxx.trycloudflare.com). Walang value dito:
+      # i-set ito sa Render dashboard, at bagong URL ito sa bawat tunnel start.
+      # Kung ito ay 127.0.0.1:8188 sa Render, wala itong mababang ComfyUI —
+      # ang 127.0.0.1 sa Render ay ang Render container mismo, hindi ang PC mo.
+      - key: COMFYUI_URL
+        sync: false
+      - key: COMFYUI_VIDEO_WORKFLOW
+        value: /app/workflows/wan22_video_api.json
