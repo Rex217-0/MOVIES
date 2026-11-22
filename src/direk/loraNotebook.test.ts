@@ -45,7 +45,7 @@ test('job.json written by the app has the fields the notebook reads', () => {
                      'lr_scheduler', 'max_train_epochs', 'save_every_n_epochs',
                      'mixed_precision', 'seed', 'save_model_as']) {
     assert.ok(key in job.train_args, `buildColabJob must emit train_args.${key}`);
-    assert.ok(src.includes(`cfg["${key}"]`), `notebook must read cfg["${key}"]`);
+    assert.ok(src.includes(`args["${key}"]`), `notebook must read args["${key}"]`);
   }
 });
 
@@ -93,6 +93,28 @@ test('jobPaths layout matches what the notebook builds', () => {
   assert.ok(src.includes('"status.json"'));
   assert.ok(src.includes('"manifest.json"'));
   assert.ok(src.includes('"cancel.flag"'));
+});
+
+test('the notebook splits --config_file from --dataset_config', () => {
+  const src = notebookSource();
+  // kohya silently ignores a [[datasets]] block inside --config_file: it only
+  // reads training args there, and dataset_config is a separate flag
+  // (library/args.py:609, library/config_util.py:49). One merged file trains on
+  // nothing and fails late with "No data found".
+  assert.ok(src.includes('"--config_file", train_config'), 'must pass --config_file');
+  assert.ok(src.includes('"--dataset_config", dataset_config'), 'must pass --dataset_config');
+  assert.ok(src.includes('train_config.toml') && src.includes('dataset_config.toml'),
+    'must write two separate config files');
+
+  // The dataset block must live in the dataset config, not the training one.
+  const trainToml = src.slice(src.indexOf('TRAIN_TOML = f"""'),
+                              src.indexOf('DATASET_TOML = f"""'));
+  assert.ok(!trainToml.includes('[[datasets]]'),
+    'TRAIN_TOML must not contain [[datasets]] — kohya ignores it there');
+  const dsToml = src.slice(src.indexOf('DATASET_TOML = f"""'));
+  assert.ok(dsToml.includes('[[datasets]]'), 'DATASET_TOML must contain [[datasets]]');
+  assert.ok(dsToml.includes('image_dir'), 'dataset config needs image_dir');
+  assert.ok(dsToml.includes('num_repeats'), 'dataset config needs num_repeats');
 });
 
 test('every code cell is valid Python', () => {
