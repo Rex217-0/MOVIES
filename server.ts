@@ -98,7 +98,7 @@ import {
 } from './src/direk/workerMesh.ts';
 import { buildSystemMap, realProbeEnv } from './src/direk/systemMap.ts';
 import {
-  securityHeaders, corsDecision, RateLimiter,
+  securityHeaders, corsDecision, selfOrigins, RateLimiter,
   issueTicket, verifyTicket, ticketToParam, paramToTicket,
 } from './src/direk/security.ts';
 import { JobStore } from './src/direk/jobStore.ts';
@@ -167,7 +167,11 @@ function chargeQuota(req: Request, res: Response): boolean {
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   for (const [k, v] of Object.entries(securityHeaders())) res.setHeader(k, v);
-  const decision = corsDecision(req.get('origin'), ALLOWED_ORIGINS);
+  // The app's own host is a legitimate caller of itself: a module script or a
+  // fetch sends an Origin, so without this a strict allow-list 403s /assets/*
+  // and the page renders blank. Only this request's own Host is added.
+  const origins = [...ALLOWED_ORIGINS, ...selfOrigins(req.get('host'))];
+  const decision = corsDecision(req.get('origin'), origins);
   if (!decision.allowed) {
     res.status(403).json({ error: 'Hindi pinapayagan ang origin na ito (CORS).' });
     return;
