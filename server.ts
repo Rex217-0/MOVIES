@@ -34,7 +34,9 @@ import { ffmpegAvailable, ffmpegPath, isPng, toPng } from './src/direk/render.ts
 import { assetsDir, assetPath, reviewAsset, type ReviewStatus } from './src/direk/assets.ts';
 import { driveStatus, authUrl, redirectUri, exchangeCode } from './src/direk/gdrive.ts';
 import { DirekService, type ChatMessage } from './src/direk/service.ts';
-import { configuredTextProviders, generateTextWithFallback } from './src/services/aiRouter.ts';
+import { configuredTextProviders, generateTextWithFallback, sanitizeError } from './src/services/aiRouter.ts';
+import { cloudflareConfigured, defaultCloudflareModel, isDynamicRouteUnavailable } from './src/lib/ai.ts';
+import { appendTurn, loadHistory, historyStatus } from './src/services/chatHistory.ts';
 import { PIPELINE, STAGE_SKILL } from './src/direk/pipeline.ts';
 import { GENRE_MAP } from './src/direk/genres.ts';
 import { SKILLS, setExtensionSkills } from './src/direk/skills.ts';
@@ -454,6 +456,17 @@ app.get('/api/health', async (_req: Request, res: Response) => {
   res.json({
     ok: textAvailable,
     gemini_key_configured: keyConfigured,
+    // Cloudflare AI Gateway sits at the front of the router chain when both
+    // CF_ACCOUNT_ID and CF_API_TOKEN are set. `dynamic_route` reports the
+    // process-lifetime breaker so a missing dynamic route is visible.
+    cloudflare: {
+      configured: cloudflareConfigured(),
+      gateway_id: (process.env.AI_GATEWAY_ID || 'movie-creator').trim() || 'movie-creator',
+      model: defaultCloudflareModel(),
+      dynamic_route: isDynamicRouteUnavailable() ? 'unavailable' : 'available',
+      status: cloudflareConfigured() ? 'active' : 'standby',
+    },
+    history: historyStatus(),
     // Every text provider the router would try, in the order it tries them.
     text_providers: providers,
     text: {
@@ -1025,13 +1038,15 @@ const marketIntel = new MarketIntel(path.join(__dirname, 'data'));
 // Text backends: Gemini when a key is set, otherwise a local Ollama model.
 // Both are free; Ollama needs no account at all.
 // ---------------------------------------------------------------------------
-type TextBackendName = 'gemini' | 'deepseek' | 'claude' | 'ollama' | 'none';
+type TextBackendName = 'cloudflare' | 'gemini' | 'deepseek' | 'claude' | 'ollama' | 'none';
 
 let textBackendCache: { backend: TextBackendName; at: number } | null = null;
 
 /** The model name a provider would use, for status output. */
 function modelLabelFor(backend: TextBackendName): string {
   switch (backend) {
+    case 'cloudflare':
+      return defaultCloudflareModel();
     case 'gemini':
       return TEXT_MODEL;
     case 'deepseek':
@@ -1252,9 +1267,9 @@ app.post('/api/direk/workers/dispatch', async (req: Request, res: Response) => {
   res.status(result.ok ? 200 : 503).json({ ...result, verification });
 });
 
-app.post('/api/direk/chat', async (req: Request, res: Response) => {
+const direkChatHandler = async (req: Request, res: Response) => {
   if (!chargeQuota(req, res)) return;
-  const { messages } = req.body as { messages?: ChatMessage[] };
+  const { messages, threadId } = req.body as { messages?: ChatMessage[]; threadId?: string };
   if (!Array.isArray(messages) || messages.length === 0) {
     res.status(400).json({ error: 'messages array is required.' });
     return;
@@ -1280,10 +1295,28 @@ app.post('/api/direk/chat', async (req: Request, res: Response) => {
     }
 
     broadcastThought(`[DIREK] Genre: ${result.genre ?? 'n/a'} · ${result.reply.slice(0, 60)}...`);
+    // Persist before answering: a client must not believe a turn is saved when
+    // it is not. A storage failure is reported in `persisted`, not as a failure
+    // of a reply that already exists.
+    const lastUser = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
+    let persisted = false;
+    let storedThreadId = (threadId || '').trim();
+    let turnId = '';
+    try {
+      const saved = await appendTurn(storedThreadId, lastUser, result.reply);
+      persisted = saved.persisted;
+      storedThreadId = saved.threadId;
+      turnId = saved.turnId;
+    } catch (error: any) {
+      console.error(`[DIREK HISTORY] Hindi na-save ang turn: ${sanitizeError(error)}`);
+    }
     res.json({
       status: 'success',
       model: textModelName,
       reply: result.reply,
+      threadId: storedThreadId,
+      turnId,
+      persisted,
       reference_genre: result.genre,
       references: result.references,
       gate: result.gate,
@@ -1299,6 +1332,30 @@ app.post('/api/direk/chat', async (req: Request, res: Response) => {
     res.status(503).json(
       aiUnavailable(TEXT_MODEL, 'Check the server logs and the AI provider keys (GEMINI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY), or run Ollama.', reason)
     );
+  }
+};
+
+app.post('/api/direk/chat', direkChatHandler);
+// The same handler under the short path, so an older client keeps working.
+app.post('/api/chat', direkChatHandler);
+
+/**
+ * Restore the last turns of a thread so a refresh does not wipe the
+ * conversation. The store (Firestore or factory.db) is chosen inside
+ * chatHistory.ts, so this route never branches on it.
+ */
+app.get('/api/direk/chat/history', async (req: Request, res: Response) => {
+  const threadId = String(req.query.threadId || '').trim();
+  if (!threadId) {
+    res.status(400).json({ error: 'threadId is required.' });
+    return;
+  }
+  try {
+    const turns = await loadHistory(threadId, 20);
+    res.json({ threadId, turns, count: turns.length, store: historyStatus().store });
+  } catch (error: any) {
+    console.error(`[DIREK HISTORY] Hindi mabasa ang history: ${sanitizeError(error)}`);
+    res.status(500).json({ error: 'Hindi mabasa ang chat history.', detail: sanitizeError(error) });
   }
 });
 

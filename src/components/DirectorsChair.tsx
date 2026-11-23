@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  direkChat, direkStatus, direkMarket, AiUnavailableError,
+  direkChat, direkStatus, direkMarket, direkChatHistory, AiUnavailableError,
   type DirekChatMessage, type DirekStatus, type CatalogTitle, type SkillAction,
   type ConnectorRunResult, assetDownloadUrl,
   type MarketIntel, type ShareStat,
@@ -30,6 +30,23 @@ const STARTERS = [
   'Gusto ko ng action na maikling pelikula, 2 minuto, tense.',
 ];
 
+/** A stable per-browser conversation id, so a refresh restores the thread. */
+function readThreadId(): string {
+  try {
+    const existing = localStorage.getItem('direk_thread');
+    if (existing) return existing;
+    const created =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem('direk_thread', created);
+    return created;
+  } catch {
+    // Private mode can block storage; a per-mount id still works for the session.
+    return `t-${Date.now().toString(36)}`;
+  }
+}
+
 export const DirectorsChair: React.FC = () => {
   const [status, setStatus] = useState<DirekStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -37,6 +54,7 @@ export const DirectorsChair: React.FC = () => {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [threadId] = useState<string>(() => readThreadId());
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -45,6 +63,27 @@ export const DirectorsChair: React.FC = () => {
       .catch(e => setStatusError(e.message));
     direkMarket().then(setMarket).catch(() => setMarket(null));
   }, []);
+
+  // Bring back the last turns so a refresh does not wipe the conversation.
+  useEffect(() => {
+    let cancelled = false;
+    direkChatHistory(threadId)
+      .then(saved => {
+        if (cancelled || saved.length === 0) return;
+        setTurns(
+          saved.map(t => ({
+            role: t.role,
+            content: t.content,
+          })),
+        );
+      })
+      .catch(() => {
+        // A cold or offline backend simply starts an empty thread.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -65,7 +104,7 @@ export const DirectorsChair: React.FC = () => {
     setIsSending(true);
 
     try {
-      const result = await direkChat(history);
+      const result = await direkChat(history, threadId);
       setTurns(prev => [
         ...prev,
         {
