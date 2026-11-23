@@ -5,20 +5,27 @@ on:
     branches:
       - main
       - 'fix/**'
+      - 'release/**'
     paths:
       - 'android/**'
+      - 'android-legacy/**'
+      - 'src/**'
+      - 'capacitor.config.ts'
       - 'scripts/setup-android-sdk.sh'
       - '.github/workflows/build-apk.yml'
   pull_request:
     paths:
       - 'android/**'
+      - 'android-legacy/**'
       - 'src/**'
+      - 'capacitor.config.ts'
       - 'scripts/setup-android-sdk.sh'
       - '.github/workflows/build-apk.yml'
   workflow_dispatch:
 
 jobs:
-  build:
+  # The Capacitor shell: the Gradle app users install going forward.
+  capacitor:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -33,39 +40,116 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
+
+      - name: Install the Android SDK
+        run: bash scripts/setup-android-sdk.sh
+
+      - name: Build the web UI and sync it into the APK
+        run: |
+          npm ci
+          npm run build
+          npx cap sync android
+
+      # Android will not install an unsigned APK, and it refuses to update an app
+      # whose signing key changed. So the key is restored from the repo secret when
+      # it exists; otherwise one is generated and cached, so every run after the
+      # first signs with the same key. The key is never committed.
+      - name: Cache a fallback signing key
+        uses: actions/cache@v4
+        with:
+          path: android/moviecreator.keystore
+          key: moviecreator-fallback-keystore-v1
+
+      - name: Provide the signing key
+        env:
+          MOVIECREATOR_KEYSTORE_B64: ${{ secrets.MOVIECREATOR_KEYSTORE_B64 }}
+          MOVIECREATOR_KS_PASS: ${{ secrets.MOVIECREATOR_KS_PASS }}
+        run: |
+          KS_PASS="${MOVIECREATOR_KS_PASS:-moviecreator}"
+          if [ -n "${MOVIECREATOR_KEYSTORE_B64:-}" ]; then
+            printf '%s' "$MOVIECREATOR_KEYSTORE_B64" | base64 -d > android/moviecreator.keystore
+            echo "Using the key from repo secrets."
+          elif [ ! -f android/moviecreator.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore android/moviecreator.keystore -alias moviecreator \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$KS_PASS" -keypass "$KS_PASS" \
+              -dname "CN=Movie Creator, O=LJR Group, C=PH"
+            echo "::warning::MOVIECREATOR_KEYSTORE_B64 is not set; generated a fallback key and cached it. Set the secret to use your own."
+          else
+            echo "Reusing the cached fallback key."
+          fi
+          {
+            echo "storeFile=moviecreator.keystore"
+            echo "storePassword=$KS_PASS"
+            echo "keyAlias=moviecreator"
+            echo "keyPassword=$KS_PASS"
+          } > android/keystore.properties
+
+      - name: Assemble the release APK
+        run: cd android && ./gradlew --no-daemon assembleRelease
+
+      - name: Collect the APK
+        run: |
+          find android/app/build/outputs/apk -name '*.apk' -print
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/*.apk out/movie-creator-capacitor.apk
+
+      # An unsigned APK is a failed build: Android will not install it, so do not
+      # let one reach the download page.
+      - name: Verify the APK is signed
+        run: |
+          APKSIGNER="$(find "${ANDROID_HOME:-/opt/android-sdk}/build-tools" -name apksigner -type f | sort | tail -1)"
+          test -n "$APKSIGNER" || { echo "apksigner not found"; exit 1; }
+          "$APKSIGNER" verify --verbose --print-certs out/movie-creator-capacitor.apk
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: movie-creator-capacitor-apk
+          path: out/movie-creator-capacitor.apk
+          if-no-files-found: error
+
+  # The legacy no-Gradle shell. It still serves the /android download page, and
+  # android-legacy/build.sh is the only thing that produces that APK.
+  legacy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the Android SDK
+        run: bash scripts/setup-android-sdk.sh
 
       - name: Build the web UI
         run: |
           npm ci
           npm run build
 
-      - name: Install the Android SDK
-        run: bash scripts/setup-android-sdk.sh
-
-      # A new signing key every run means every build is a different app: Android
-      # rejects the update and users must uninstall, losing their data. The key
-      # is a secret, so it is not committed; it is restored from repo secrets
-      # when configured, and otherwise cached between runs to stay stable.
-      - name: Restore the signing key
-        uses: actions/cache@v4
-        with:
-          path: android/moviecreator.keystore
-          key: moviecreator-keystore-v1
-
-      - name: Build the APK
+      - name: Build the legacy APK
         env:
           MOVIECREATOR_KEYSTORE_B64: ${{ secrets.MOVIECREATOR_KEYSTORE_B64 }}
           MOVIECREATOR_KS_PASS: ${{ secrets.MOVIECREATOR_KS_PASS }}
         run: |
-          export JAVA_HOME="${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")}"
           export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
           export ANDROID_SDK_ROOT="$ANDROID_HOME"
-          bash android/build.sh android/movie-creator.apk
+          bash android-legacy/build.sh android-legacy/movie-creator.apk
 
       - name: Upload the APK
         uses: actions/upload-artifact@v4
         with:
-          name: movie-creator-apk
-          path: android/movie-creator.apk
+          name: movie-creator-legacy-apk
+          path: android-legacy/movie-creator.apk
           if-no-files-found: error

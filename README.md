@@ -186,6 +186,19 @@ it already handles are:
 - **Signals** — the trainer stops child processes with `SIGTERM` on Windows
   instead of `SIGKILL`.
 
+### The Android app
+
+The React app also ships as an installable Android app via Capacitor. The phone
+is a client; the work stays on Server-2. Two Android projects exist:
+`android/` (Capacitor + Gradle, primary) and `android-legacy/` (the old no-Gradle
+WebView shell that `/android` still serves).
+
+The Capacitor app needs the server address baked in at build time
+(`VITE_API_BASE_URL`) because it loads the web app from `https://localhost`, and
+the server must allow that origin via `ALLOWED_ORIGINS`. Full steps, the Firebase
+package-name caveat, and the release signing note are in
+[docs/capacitor-android.md](docs/capacitor-android.md).
+
 ## Authentication
 
 Every `/api` route requires a bearer token when `APP_AUTH_TOKEN` is set. In

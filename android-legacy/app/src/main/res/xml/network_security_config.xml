@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This app is a remote to the user's OWN server. On a home LAN that server is
+  reached by IP over plain HTTP, where HTTPS is not set up, so cleartext must be
+  permitted or the app simply cannot connect. Public HTTPS is unaffected.
+  If you put the server behind HTTPS, tighten this back to
+  cleartextTrafficPermitted="false".
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

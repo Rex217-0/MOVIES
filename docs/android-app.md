@@ -1,5 +1,10 @@
 # Android app (installable APK)
 
+> This is the **legacy** no-Gradle shell (`android-legacy/`). The primary Android
+> app is now the Capacitor project in `android/` (see `docs/capacitor-android.md`).
+> This one still builds and is still what `/android` serves today; it stays for
+> anyone who wants a tiny WebView APK with no Gradle.
+
 The phone is a **remote**. The heavy work (rendering, LoRA, ffmpeg) still runs on
 Server-2 or wherever the web app is deployed. This APK is a thin, native shell
 around that web app: it stores the server address and the auth token, then loads
@@ -16,7 +21,7 @@ shows the real browser error — the same honesty rule as the rest of the projec
 - Permissions: `INTERNET`, `ACCESS_NETWORK_STATE` — nothing else.
 - Cleartext HTTP is allowed because Server-2 is reached by LAN IP over plain
   HTTP. If you put it behind HTTPS, tighten
-  `android/app/src/main/res/xml/network_security_config.xml` back to
+  `android-legacy/app/src/main/res/xml/network_security_config.xml` back to
   `cleartextTrafficPermitted="false"`.
 
 ## Build it (on Server-2)
@@ -33,11 +38,11 @@ export ANDROID_HOME=/path/to/android-sdk
 sdkmanager "platforms;android-34" "build-tools;35.0.0"
 
 # 2. Build the signed APK
-bash android/build.sh   # (Windows: powershell -ExecutionPolicy Bypass -File android\build.ps1)
-# -> android/movie-creator.apk
+bash android-legacy/build.sh   # (Windows: powershell -ExecutionPolicy Bypass -File android-legacy\build.ps1)
+# -> android-legacy/movie-creator.apk
 ```
 
-`build.sh` generates `android/moviecreator.keystore` on first run
+`build.sh` generates `android-legacy/moviecreator.keystore` on first run
 (passphrase `moviecreator`, alias `moviecreator`). **Keep that keystore**: Android
 refuses to update an app whose signature changed. It is git-ignored, so back it up
 yourself.
@@ -66,7 +71,7 @@ plain HTTP to the internet.
 ## Layout
 
 ```
-android/
+android-legacy/
   build.sh                 build + sign, no Gradle
   app/src/main/
     AndroidManifest.xml

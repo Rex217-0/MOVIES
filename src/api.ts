@@ -8,30 +8,104 @@
  */
 
 const TOKEN_STORAGE_KEY = 'direk_auth_token';
+const SERVER_URL_STORAGE_KEY = 'direk_server_url';
 
 /**
- * Where the API lives, when the UI is not served by it.
+ * Base URL of the API server.
  *
- * In a browser the app is served by the same Express process that answers
- * /api, so a relative path is right. The Android shell loads the UI from the
- * APK's own assets, where a relative /api would point at a file:// path and
- * fail, so it injects this global with the server the user configured.
+ * Two sources, in priority order:
+ *  1. A runtime override — set from `?server=` on first load, or typed into the
+ *     Setup panel. Kept in localStorage. This is what makes the installed
+ *     Android app configurable without a rebuild.
+ *  2. The build-time `VITE_API_BASE_URL`, baked into the bundle.
+ *
+ * Empty means "same origin": the browser build served by the app itself keeps
+ * using relative `/api/...` URLs. The Capacitor Android build loads the web app
+ * from `https://localhost`, where a relative URL would hit the WebView, not
+ * Server-2 — so it needs one of the two sources above.
  */
-function apiBase(): string {
+export function normalizeApiBaseUrl(raw: string | undefined | null): string {
+  return (raw ?? '').trim().replace(/\/+$/, '');
+}
+
+/** A runtime override always wins over the baked value. */
+export function resolveApiBaseUrl(runtime: string | undefined | null, baked: string | undefined | null): string {
+  return normalizeApiBaseUrl(runtime) || normalizeApiBaseUrl(baked);
+}
+
+/** The server address the user typed (or passed as `?server=`), if any. */
+export function getServerUrl(): string {
   try {
-    const base = (window as { __MOVIE_CREATOR_API_BASE__?: string }).__MOVIE_CREATOR_API_BASE__;
-    if (typeof base === 'string' && base.trim()) return base.trim().replace(/\/+$/, '');
+    const url = new URL(window.location.href);
+    const param = url.searchParams.get('server');
+    if (param) {
+      const normalized = normalizeApiBaseUrl(param);
+      localStorage.setItem(SERVER_URL_STORAGE_KEY, normalized);
+      url.searchParams.delete('server');
+      window.history.replaceState({}, '', url.toString());
+      return normalized;
+    }
   } catch {
     // Non-browser environment.
   }
-  return '';
+  try {
+    return normalizeApiBaseUrl(localStorage.getItem(SERVER_URL_STORAGE_KEY));
+  } catch {
+    return '';
+  }
 }
 
-/** Resolve an app path against the configured API base. */
-export function apiUrl(path: string): string {
-  const base = apiBase();
-  if (!base || !path.startsWith('/')) return path;
-  return `${base}${path}`;
+/** Persist the server address. An empty value clears the override. */
+export function setServerUrl(raw: string): string {
+  const normalized = normalizeApiBaseUrl(raw);
+  try {
+    if (normalized) localStorage.setItem(SERVER_URL_STORAGE_KEY, normalized);
+    else localStorage.removeItem(SERVER_URL_STORAGE_KEY);
+  } catch {
+    // Non-browser environment.
+  }
+  return normalized;
+}
+
+/** The build-time base baked into the bundle, empty when the build set none. */
+export function bakedApiBaseUrl(): string {
+  try {
+    return normalizeApiBaseUrl((import.meta as { env?: Record<string, string> }).env?.VITE_API_BASE_URL);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The base URL the native Android shell injects before the app boots.
+ *
+ * The legacy WebView shell loads the UI from inside the APK, where a relative
+ * `/api` would resolve against the APK itself, so it writes the server the user
+ * configured into this global. The Capacitor build does not use it, but keeping
+ * the read here means both shells work and neither needs a rebuild to change
+ * servers.
+ */
+function injectedApiBaseUrl(): string {
+  try {
+    const base = (window as { __MOVIE_CREATOR_API_BASE__?: string }).__MOVIE_CREATOR_API_BASE__;
+    return normalizeApiBaseUrl(base);
+  } catch {
+    return '';
+  }
+}
+
+export function apiBaseUrl(): string {
+  return resolveApiBaseUrl(getServerUrl(), injectedApiBaseUrl()) || bakedApiBaseUrl();
+}
+
+/**
+ * Resolve an API path against the configured base. Absolute URLs (another host)
+ * and already-qualified paths pass through untouched. `base` is injectable so
+ * the join logic is testable without touching `import.meta.env` or localStorage.
+ */
+export function apiUrl(path: string, base: string = apiBaseUrl()): string {
+  if (!path.startsWith('/')) return path;
+  return base ? `${base}${path}` : path;
 }
 
 function readTokenFromUrl(): string | null {
@@ -313,8 +387,8 @@ export async function direkTrainCancel(): Promise<boolean> {
 export function trainStreamUrl(): string {
   const token = getAuthToken();
   return token
-    ? `/api/direk/train/stream?token=${encodeURIComponent(token)}`
-    : '/api/direk/train/stream';
+    ? apiUrl(`/api/direk/train/stream?token=${encodeURIComponent(token)}`)
+    : apiUrl('/api/direk/train/stream');
 }
 
 export interface LoraFile {
@@ -417,7 +491,7 @@ export async function direkLoraDataset(input: LoraBriefInput): Promise<Blob> {
 export function assetDownloadUrl(name: string): string {
   const token = getAuthToken();
   const query = token ? `?token=${encodeURIComponent(token)}` : '';
-  return `/api/direk/assets/${encodeURIComponent(name)}/download${query}`;
+  return apiUrl(`/api/direk/assets/${encodeURIComponent(name)}/download${query}`);
 }
 
 // ---------------------------------------------------------------------------

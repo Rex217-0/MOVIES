@@ -2,15 +2,15 @@
 #
 # One-command Android toolchain setup for building the APK.
 #
-# Why this exists: android/build.sh needs a JDK and the Android SDK
+# Why this exists: android-legacy/build.sh needs a JDK and the Android SDK
 # command-line tools. Those are NOT part of the repo and are NOT installed in a
 # fresh container (and /opt is not persistent across sessions). This script
-# installs them so `bash android/build.sh` works.
+# installs them so `bash android-legacy/build.sh` works.
 #
 # Usage:  bash scripts/setup-android-sdk.sh
 # Then:   ANDROID_HOME=/opt/android-sdk \
 #         JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")" \
-#         bash android/build.sh
+#         bash android-legacy/build.sh
 #
 # Idempotent: re-running it is safe; already-present pieces are skipped.
 set -euo pipefail
@@ -46,7 +46,7 @@ else
   echo "[2/3] cmdline-tools present"
 fi
 
-# --- SDK packages android/build.sh expects: build-tools 35.0.0 + platform 34 ---
+# --- SDK packages android-legacy/build.sh expects: build-tools 35.0.0 + platform 34 ---
 export JAVA_HOME="${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")}"
 export ANDROID_HOME="$SDK"
 export ANDROID_SDK_ROOT="$SDK"
@@ -58,4 +58,4 @@ sdkmanager "platform-tools" "platforms;android-34" "build-tools;35.0.0" >/dev/nu
 
 echo
 echo "Done. Build the APK with:"
-echo "  ANDROID_HOME=$SDK JAVA_HOME=$JAVA_HOME bash android/build.sh"
+echo "  ANDROID_HOME=$SDK JAVA_HOME=$JAVA_HOME bash android-legacy/build.sh"

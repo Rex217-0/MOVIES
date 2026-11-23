@@ -2413,9 +2413,9 @@ function cleanPrompt(p: string): string {
 // Android download (public, no auth)
 // The phone needs the APK before it has a token, so this page and the file it
 // serves are deliberately unauthenticated. They expose nothing but the app
-// itself. The APK is built by android/build.sh (see docs/android-app.md).
+// itself. The APK is built by android-legacy/build.sh (see docs/android-app.md).
 // ---------------------------------------------------------------------------
-const APK_PATH = path.join(__dirname, 'android', 'movie-creator.apk');
+const APK_PATH = path.join(__dirname, 'android-legacy', 'movie-creator.apk');
 
 app.get('/android', (_req: Request, res: Response) => {
   const exists = fs.existsSync(APK_PATH);
@@ -2433,9 +2433,9 @@ app.get('/android', (_req: Request, res: Response) => {
 <h1>Movie Creator para sa Android</h1>
 ${exists
   ? `<a class="btn" href="/android/movie-creator.apk" download>I-download ang APK (${Math.round(size / 1024)} KB)</a>
-     <p class="dim">Bersyon 1.0 · pirmado · minSdk 21 (Android 5+) · para sa phone at tablet</p>`
+     <p class="dim">Bersyon 1.0.1 · pirmado · minSdk 21 (Android 5+) · para sa phone at tablet</p>`
   : `<p>Wala pa ang APK sa server na ito. Buuin ito sa Server-2:
-     <code>bash android/build.sh</code></p>`}
+     <code>bash android-legacy/build.sh</code></p>`}
 <ol>
   <li>Buksan ang download link sa phone (dapat parehong Wi-Fi/LAN ang phone at server).</li>
   <li>Payagan ang "Install unknown apps" para sa browser.</li>
@@ -2448,7 +2448,7 @@ ${exists
 
 app.get('/android/movie-creator.apk', (_req: Request, res: Response) => {
   if (!fs.existsSync(APK_PATH)) {
-    res.status(404).json({ error: 'Wala pa ang APK. Buuin ito sa Server-2: bash android/build.sh' });
+    res.status(404).json({ error: 'Wala pa ang APK. Buuin ito sa Server-2: bash android-legacy/build.sh' });
     return;
   }
   res.setHeader('Content-Type', 'application/vnd.android.package-archive');
