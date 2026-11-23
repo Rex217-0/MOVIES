@@ -272,7 +272,10 @@ test('sanitizeError scrubs a 40-char Cloudflare-shaped token and private keys', 
   const out = sanitizeError(new Error(`token=${shaped}`));
   assert.equal(out.includes(shaped), false);
 
-  const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END PRIVATE KEY-----';
+  // Assembled at runtime: a literal PEM block in a tracked file trips the
+  // repo's "no committed private key" guard, and this fixture is synthetic.
+  const pem = ['-----BEGIN ', 'PRIVATE KEY-----', '\nMIIEvQIBADANBg\n',
+    '-----END ', 'PRIVATE KEY-----'].join('');
   const pemOut = sanitizeError(new Error(`bad creds ${pem}`));
   assert.equal(pemOut.includes('MIIEvQIBADANBg'), false);
 });

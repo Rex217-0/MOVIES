@@ -48,9 +48,36 @@ export function writeVideoWorkflow(dir: string): string {
   return file;
 }
 
-/** A minimal ComfyUI server: real endpoints, real MP4 bytes. */
-export function startMockComfyUI(opts: { mp4?: Buffer } = {}) {
+/**
+ * The model lists ComfyUI reports on `/object_info`, in its own combo shape:
+ * a combo is `[[...names], {...}]`, so the first entry is the list.
+ */
+export const WAN22_OBJECT_INFO = {
+  UNETLoader: { input: { unet_name: [['wan2.2_ti2v_5B_fp16.safetensors', 'sd_xl_base_1.0.safetensors'], {}] } },
+  CLIPLoader: { input: { clip_name: [['umt5_xxl_fp8_e4m3fn_scaled.safetensors'], {}] } },
+  VAELoader: { input: { vae_name: [['wan2.2_vae.safetensors'], {}] } },
+};
+
+/**
+ * A minimal ComfyUI server: real endpoints, real MP4 bytes.
+ *
+ * `models` controls what `/object_info` advertises. An empty list stands for a
+ * ComfyUI that is running but has none of the Wan 2.2 weights installed.
+ */
+export function startMockComfyUI(
+  opts: { mp4?: Buffer; models?: string[]; objectInfo?: unknown } = {},
+) {
   const mp4 = opts.mp4 ?? tinyMp4();
+  const models = opts.models;
+  const objectInfo = opts.objectInfo ?? (
+    models === undefined
+      ? WAN22_OBJECT_INFO
+      : {
+        UNETLoader: { input: { unet_name: [models, {}] } },
+        CLIPLoader: { input: { clip_name: [models, {}] } },
+        VAELoader: { input: { vae_name: [models, {}] } },
+      }
+  );
   let counter = 0;
   let requests = 0;
   const server = http.createServer((req, res) => {
@@ -61,9 +88,30 @@ export function startMockComfyUI(opts: { mp4?: Buffer } = {}) {
       res.end('{}');
       return;
     }
+    if (url.startsWith('/object_info')) {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(objectInfo));
+      return;
+    }
     if (url.startsWith('/prompt') && req.method === 'POST') {
       req.resume();
       req.on('end', () => {
+        // A real ComfyUI rejects a graph that references a checkpoint it does
+        // not have, and puts the node-level reason in the body. An empty model
+        // list therefore fails the queue, exactly as a missing weight would.
+        if (Array.isArray(models) && models.length === 0) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            error: {
+              type: 'prompt_outputs_failed_validation',
+              message: 'Prompt outputs failed validation',
+              details: 'Value not in list: unet_name: wan2.2_ti2v_5B_fp16.safetensors not in []',
+            },
+            node_errors: {},
+          }));
+          return;
+        }
         counter += 1;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ prompt_id: `prompt-${counter}` }));

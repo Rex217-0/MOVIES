@@ -19,11 +19,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { toPng } from '../../direk/render.ts';
 import { isValidTrigger } from '../../direk/lora.ts';
+import { pexelsKey } from '../../direk/stockVideo.ts';
 
-/** The three free mines, in the order the harvester tries them. */
-export type HarvestSource = 'wallhaven' | 'openverse' | 'wikimedia';
+/**
+ * The free mines, in the order the harvester tries them.
+ *
+ * `pexels` is only in the list when a key is set: it is keyed, and asking it
+ * without one would add a guaranteed 401 to every harvest.
+ */
+export type HarvestSource = 'pexels' | 'wallhaven' | 'openverse' | 'wikimedia';
 
 export const HARVEST_SOURCES: HarvestSource[] = ['wallhaven', 'openverse', 'wikimedia'];
+
+/** The mines to try for this run: Pexels joins first when its key is present. */
+export function harvestSourcesFor(hasPexelsKey: boolean): HarvestSource[] {
+  return hasPexelsKey ? ['pexels', ...HARVEST_SOURCES] : [...HARVEST_SOURCES];
+}
 
 /** A real browser-ish UA: several of these APIs reject an empty or bot UA. */
 const USER_AGENT =
@@ -43,6 +54,10 @@ export interface HarvestCandidate {
   height?: number;
   /** The page the image was found on, kept for attribution. */
   page?: string;
+  /** Who shot it, when the provider says so (Pexels). */
+  photographer?: string;
+  /** The photographer's profile page (Pexels). */
+  photographerUrl?: string;
 }
 
 export interface HarvestedSample {
@@ -54,6 +69,12 @@ export interface HarvestedSample {
   width?: number;
   height?: number;
   bytes: number;
+  /** Who shot it, when the provider names them (Pexels). */
+  photographer?: string;
+  /** The photographer's profile page (Pexels). */
+  photographerUrl?: string;
+  /** The licence page for the image (Pexels). */
+  licenceUrl?: string;
 }
 
 export interface HarvestFailure {
@@ -95,6 +116,8 @@ function endpointFor(source: HarvestSource, override?: Partial<Record<HarvestSou
   const custom = override?.[source];
   if (custom) return custom;
   switch (source) {
+    case 'pexels':
+      return 'https://api.pexels.com/v1/search';
     case 'wallhaven':
       return 'https://wallhaven.cc/api/v1/search';
     case 'openverse':
@@ -104,9 +127,12 @@ function endpointFor(source: HarvestSource, override?: Partial<Record<HarvestSou
   }
 }
 
-function buildSearchUrl(source: HarvestSource, base: string, query: string): string {
+export function buildSearchUrl(source: HarvestSource, base: string, query: string): string {
   const q = encodeURIComponent(query);
   switch (source) {
+    case 'pexels':
+      // Landscape + large is the 24MP+ tier; Pexels caps per_page at 80.
+      return `${base}?query=${q}&orientation=landscape&size=large&per_page=24`;
     case 'wallhaven':
       return `${base}?q=${q}&purity=100&atleast=1280x720&sorting=relevance`;
     case 'openverse':
@@ -157,6 +183,27 @@ export function parseCandidates(
   query: string,
 ): HarvestCandidate[] {
   const out: HarvestCandidate[] = [];
+
+  if (source === 'pexels') {
+    // `src.original` is the full-resolution file; `src.large` is already
+    // downscaled, which is the opposite of what a 4K dataset wants.
+    for (const item of payload?.photos ?? []) {
+      const url = cleanImageUrl(String(item?.src?.original ?? ''));
+      if (!url) continue;
+      const width = Number(item?.width) || undefined;
+      const height = Number(item?.height) || undefined;
+      out.push({
+        url,
+        source,
+        width,
+        height,
+        page: item?.url,
+        photographer: item?.photographer,
+        photographerUrl: item?.photographer_url,
+      });
+    }
+    return out;
+  }
 
   if (source === 'wallhaven') {
     for (const item of payload?.data ?? []) {
@@ -212,6 +259,17 @@ export function nextFreeIndex(dir: string, triggerToken: string): number {
   return max + 1;
 }
 
+/**
+ * Pexels authenticates with the key in a bare `Authorization` header, not a
+ * bearer token; every other mine wants a descriptive User-Agent instead.
+ */
+export function searchHeaders(source: HarvestSource): Record<string, string> {
+  if (source === 'pexels') {
+    return { Authorization: pexelsKey(), Accept: 'application/json' };
+  }
+  return { 'User-Agent': USER_AGENT, Accept: 'application/json' };
+}
+
 async function search(
   source: HarvestSource,
   query: string,
@@ -222,9 +280,15 @@ async function search(
   for (const attempt of queryLadder(query)) {
     try {
       const res = await fetch(buildSearchUrl(source, base, attempt), {
-        headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+        headers: searchHeaders(source),
         signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
       });
+      // Pexels publishes the remaining monthly quota on every reply; logging it
+      // turns an opaque 429 later into a number the operator watched coming down.
+      if (source === 'pexels') {
+        const left = res.headers.get('X-Ratelimit-Remaining');
+        if (left !== null) console.log(`[HARVEST] Pexels X-Ratelimit-Remaining=${left}`);
+      }
       if (!res.ok) throw new Error(`search ${source} returned ${res.status}`);
       const candidates = parseCandidates(source, await res.json(), attempt);
       if (candidates.length > 0) return { candidates, usedQuery: attempt };
@@ -286,6 +350,10 @@ export async function harvestImagesForLora(options: HarvestOptions): Promise<Har
     options.targetDir || path.join(process.cwd(), 'lora_runs', triggerToken, 'dataset');
   fs.mkdirSync(targetDir, { recursive: true });
 
+  // Pexels joins the rotation only when its key is present, so a keyless run
+  // does not spend a request on a guaranteed 401.
+  const sources = harvestSourcesFor(Boolean(pexelsKey()));
+
   const scratchDir = fs.mkdtempSync(path.join(targetDir, '.harvest-'));
   const failures: HarvestFailure[] = [];
   const sourcesAnswered: HarvestSource[] = [];
@@ -294,7 +362,7 @@ export async function harvestImagesForLora(options: HarvestOptions): Promise<Har
   const pools = new Map<HarvestSource, HarvestCandidate[]>();
   const usedQueries = new Map<HarvestSource, string>();
   await Promise.all(
-    HARVEST_SOURCES.map(async source => {
+    sources.map(async source => {
       try {
         const { candidates, usedQuery } = await search(source, query, options.endpoints);
         pools.set(source, candidates);
@@ -314,7 +382,7 @@ export async function harvestImagesForLora(options: HarvestOptions): Promise<Har
 
   while (samples.length < count) {
     let progressed = false;
-    for (const source of HARVEST_SOURCES) {
+    for (const source of sources) {
       if (samples.length >= count) break;
       const pool = pools.get(source) ?? [];
       const candidate = pool[round];
@@ -340,6 +408,9 @@ export async function harvestImagesForLora(options: HarvestOptions): Promise<Har
           width: candidate.width,
           height: candidate.height,
           bytes: png.length,
+          photographer: candidate.photographer,
+          photographerUrl: candidate.photographerUrl,
+          licenceUrl: candidate.source === 'pexels' ? candidate.page : undefined,
         });
         index += 1;
       } catch (error: any) {
@@ -347,7 +418,7 @@ export async function harvestImagesForLora(options: HarvestOptions): Promise<Har
       }
     }
     round += 1;
-    const exhausted = HARVEST_SOURCES.every(s => (pools.get(s)?.length ?? 0) <= round);
+    const exhausted = sources.every(s => (pools.get(s)?.length ?? 0) <= round);
     if (!progressed || exhausted) break;
   }
 
@@ -356,8 +427,8 @@ export async function harvestImagesForLora(options: HarvestOptions): Promise<Har
   const note = samples.length > 0
     ? `Naka-save ang ${samples.length} PNG sa ${path.relative(process.cwd(), targetDir) || targetDir} (mula sa ${[...new Set(samples.map(s => s.source))].join(', ')}).`
     : failures.length > 0
-      ? `Walang na-save. Sinubukan ang ${HARVEST_SOURCES.join(', ')}; ${failures.length} ang bigo.`
-      : `Walang na-save: walang nahanap na larawan para sa "${query}" sa ${HARVEST_SOURCES.join(', ')}. Subukan ang mas simpleng query.`;
+      ? `Walang na-save. Sinubukan ang ${sources.join(', ')}; ${failures.length} ang bigo.`
+      : `Walang na-save: walang nahanap na larawan para sa "${query}" sa ${sources.join(', ')}. Subukan ang mas simpleng query.`;
 
   return {
     triggerToken,

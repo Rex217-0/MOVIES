@@ -42,12 +42,30 @@ import {
 } from './fal.ts';
 import { paidCloudAllowed, paidReady, PAID_BLOCKED_DETAIL } from './costPolicy.ts';
 import { fetchStockClip, stockConfigured, toMp4 } from './stockVideo.ts';
+import { strictRealVideoOnly, strictRefusalDetail } from './strictVideo.ts';
 
 export class VideoBackendUnavailable extends Error {
-  readonly code = 'AI_UNAVAILABLE';
+  readonly code: 'AI_UNAVAILABLE' | 'COMFYUI_WAN22_UNAVAILABLE' = 'AI_UNAVAILABLE';
   constructor(detail: string) {
     super(`Walang video backend: ${detail}`);
     this.name = 'VideoBackendUnavailable';
+  }
+}
+
+/**
+ * The strict guard's refusal: ComfyUI cannot render with the Wan 2.2 weights and
+ * `STRICT_REAL_VIDEO_ONLY` forbids a fallback clip. It carries its own code so
+ * the API can answer 503 `COMFYUI_WAN22_UNAVAILABLE` and the caller can tell a
+ * missing GPU dependency from a deployment with no backend at all.
+ */
+export class ComfyWan22Unavailable extends VideoBackendUnavailable {
+  override readonly code = 'COMFYUI_WAN22_UNAVAILABLE';
+  /** The exact files ComfyUI does not have, when the check could run. */
+  readonly missing: string[];
+  constructor(detail: string, missing: string[] = []) {
+    super(detail);
+    this.name = 'ComfyWan22Unavailable';
+    this.missing = missing;
   }
 }
 
@@ -271,9 +289,17 @@ async function generateRaw(
   const comfyFailure = await comfyAttempt(input);
   if (comfyFailure.data) return { data: comfyFailure.data, engine: 'comfyui' };
 
+  // Strict mode: the free engine would produce a still image with a ken-burns
+  // pan — a real MP4, but not a real render, and it lands in the vault looking
+  // like one. Wan 2.2 below is a genuine render, so it is still allowed.
+  const strict = strictRealVideoOnly(preferred);
+  if (strict) {
+    console.warn(`[RENDER] STRICT_REAL_VIDEO_ONLY: hindi papayagan ang libreng motion engine (${comfyFailure.reason}).`);
+  }
+
   // The free engine is the first thing that catches a missing ComfyUI: it needs
   // no key, no GPU and no account.
-  if (await motionReady()) {
+  if (!strict && (await motionReady())) {
     try {
       const { data } = await generateMotionClip(input);
       console.log(`[RENDER] ComfyUI hindi available (${comfyFailure.reason}); libreng motion engine ang sumalo.`);
@@ -299,6 +325,16 @@ async function generateRaw(
     }
   }
 
+  // Nothing real can render. In strict mode say exactly which Wan 2.2 weight is
+  // absent, so the operator fixes .env instead of wondering why a clip is gone.
+  if (strict) {
+    const cause = wanConfigured() && !paidCloudAllowed()
+      ? `${comfyFailure.reason}; at ${PAID_BLOCKED_DETAIL}`
+      : `${comfyFailure.reason}; at walang FAL_KEY (Wan 2.2 fallback)`;
+    const { detail, missing } = await strictRefusalDetail(cause);
+    console.error(`[RENDER] STRICT_REAL_VIDEO_ONLY: ${detail}`);
+    throw new ComfyWan22Unavailable(detail, missing);
+  }
   if (wanConfigured() && !paidCloudAllowed()) {
     throw new VideoBackendUnavailable(`${comfyFailure.reason}; at ${PAID_BLOCKED_DETAIL}`);
   }

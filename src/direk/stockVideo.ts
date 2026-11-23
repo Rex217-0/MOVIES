@@ -188,6 +188,91 @@ export function pickPexelsFile(files: PexelsVideoFile[], targetWidth = 1280): Pe
   );
 }
 
+/** The Pexels video search endpoint, alongside the photo search. */
+export function pexelsVideoBase(): string {
+  return process.env.PEXELS_VIDEO_BASE || 'https://api.pexels.com/v1/videos/search';
+}
+
+/** A 4K b-roll hit: the file to download plus everything needed to credit it. */
+export interface BrollClip {
+  id: number;
+  /** The 4K MP4 to download, when the provider has one. */
+  link: string;
+  width: number;
+  height: number;
+  /** Seconds, as the provider reports it. */
+  duration: number;
+  pageUrl: string;
+  photographer: string;
+  photographerUrl?: string;
+  licenceUrl?: string;
+}
+
+/**
+ * Pexels publishes 4K files for most clips. `pickPexelsFile` deliberately aims
+ * at 1280px because a scene only needs to fill a phone screen, but an
+ * establishing shot used as a Wan 2.2 motion reference wants the full 4K frame:
+ * the model reads detail the downscale would have thrown away.
+ */
+export function pickPexels4kFile(files: PexelsVideoFile[]): PexelsVideoFile | null {
+  const mp4 = files.filter((f) => f.file_type === 'video/mp4' && f.link);
+  if (!mp4.length) return null;
+  // 2160p is the 4K tier; fall back to the widest file available rather than
+  // returning null just because the uploader posted 1440p.
+  const uhd = mp4.filter((f) => f.height >= 2000);
+  const pool = uhd.length ? uhd : mp4;
+  return pool.reduce((best, f) => (f.width > best.width ? f : best));
+}
+
+/**
+ * Search Pexels for 4K landscape b-roll. Returns an empty list when no key is
+ * set, so a caller can treat "no key" and "no match" the same way.
+ *
+ * This is a separate call from `fetchStockClip`: that one returns a downloaded
+ * Buffer sized for a scene, this one returns the URLs and credit for footage
+ * that will be used as an establishing shot or a motion reference.
+ */
+export async function searchPexelsBroll(
+  query: string,
+  opts: { perPage?: number; minSeconds?: number } = {},
+): Promise<BrollClip[]> {
+  const key = pexelsKey();
+  if (!key) return [];
+
+  const params = new URLSearchParams({
+    query,
+    orientation: 'landscape',
+    size: 'large',
+    per_page: String(Math.min(Math.max(opts.perPage ?? 15, 1), 80)),
+  });
+
+  const res = await fetch(`${pexelsVideoBase()}?${params}`, {
+    headers: { Authorization: key },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`Pexels video search HTTP ${res.status}`);
+
+  const body = (await res.json()) as { videos?: Array<PexelsVideo & { duration: number; user: { name: string; url?: string } }> };
+  const out: BrollClip[] = [];
+  for (const video of body.videos ?? []) {
+    if (opts.minSeconds && video.duration < opts.minSeconds) continue;
+    const file = pickPexels4kFile(video.video_files ?? []);
+    if (!file) continue;
+    out.push({
+      id: video.id,
+      link: file.link,
+      width: file.width,
+      height: file.height,
+      duration: video.duration,
+      pageUrl: video.url,
+      photographer: video.user?.name ?? 'Pexels contributor',
+      photographerUrl: video.user?.url,
+      licenceUrl: video.url,
+    });
+  }
+  return out;
+}
+
 async function searchPexels(query: string, minSeconds: number): Promise<StockClip | null> {
   const key = pexelsKey();
   if (!key) return null;
