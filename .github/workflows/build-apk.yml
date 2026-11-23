@@ -96,6 +96,14 @@ jobs:
           mkdir -p out
           cp android/app/build/outputs/apk/release/*.apk out/movie-creator-capacitor.apk
 
+      # An unsigned APK is a failed build: Android will not install it, so do not
+      # let one reach the download page.
+      - name: Verify the APK is signed
+        run: |
+          APKSIGNER="$(find "${ANDROID_HOME:-/opt/android-sdk}/build-tools" -name apksigner -type f | sort | tail -1)"
+          test -n "$APKSIGNER" || { echo "apksigner not found"; exit 1; }
+          "$APKSIGNER" verify --verbose --print-certs out/movie-creator-capacitor.apk
+
       - name: Upload the APK
         uses: actions/upload-artifact@v4
         with:
