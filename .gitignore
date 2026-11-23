@@ -6,6 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+# Harvested datasets and generated media are local state, not source. Keeping
+# these ignored means `git pull` on Server-2 never overwrites a harvested
+# dataset or a trained LoRA. The starter captions under lora_runs/ are
+# recreated by scripts/seed-lora-dataset.mjs, so they need no exception here.
 lora_runs/
 direk.config.json
 comfy_loras/

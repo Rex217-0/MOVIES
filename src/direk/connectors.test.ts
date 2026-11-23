@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { CONNECTORS, connectorCatalog, runConnector } from './connectors.ts';
 import { SKILLS } from './skills.ts';
 import { ACTION_SKILLS, MOVIE_ROBO_SYSTEM } from './persona.ts';
+import { getExtensionSkills } from './skills.ts';
+import { SEASON_ONE_SKILLS } from '../extensions/season01/index.ts';
 
 test('every API skill in the registry has a free local connector', () => {
   const apiSkills = Object.entries(SKILLS)
@@ -43,7 +45,10 @@ test('delete_asset reports honestly when the name is unknown', async () => {
 });
 
 test('the persona lists exactly the connectors that exist', () => {
-  const listed = new Set(ACTION_SKILLS.map(s => s.skill));
+  // Season extensions own extra skills, so those are excluded here: this test is
+  // about the built-in connector table staying in step with the persona.
+  const extensionOwned = new Set<string>([...getExtensionSkills(), ...SEASON_ONE_SKILLS]);
+  const listed = new Set(ACTION_SKILLS.map(s => s.skill).filter(id => !extensionOwned.has(id)));
   for (const skill of Object.keys(CONNECTORS)) {
     assert.ok(listed.has(skill), `hindi nakalista sa persona: ${skill}`);
   }
