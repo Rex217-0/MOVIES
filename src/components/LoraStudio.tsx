@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import {
   direkLoraPlan, direkLoraDataset, direkTrainStatus, direkTrainStart, direkTrainCancel,
-  direkLoraList, trainStreamUrl,
+  direkLoraList, trainStreamUrl, direkHarvestLoraImages, direkLoraDatasets,
   type LoraBriefInput, type LoraPlanResult, type TrainJob, type TrainStatus, type LoraFile,
+  type HarvestResult, type LoraDatasetInfo,
 } from '../api';
 import {
   Layers, Download, Loader2, AlertTriangle, Wand2, Film, CheckCircle2, Boxes,
-  Play, Square, Terminal, Cpu,
+  Play, Square, Terminal, Cpu, Pickaxe,
 } from 'lucide-react';
 
 const GENRE_OPTIONS = [
@@ -43,6 +44,35 @@ export const LoraStudio: React.FC = () => {
   const [useLora, setUseLora] = useState('');
   const [loraStrength, setLoraStrength] = useState(1);
 
+  // Season 1 harvester: fill the dataset from three free mines.
+  const [harvesting, setHarvesting] = useState(false);
+  const [harvest, setHarvest] = useState<HarvestResult | null>(null);
+  const [harvestError, setHarvestError] = useState<string | null>(null);
+  const [datasets, setDatasets] = useState<LoraDatasetInfo[]>([]);
+
+  const refreshDatasets = () => {
+    direkLoraDatasets().then(r => setDatasets(r.datasets)).catch(() => {});
+  };
+
+  const harvestScifiNeon = async () => {
+    setHarvesting(true);
+    setHarvestError(null);
+    setHarvest(null);
+    try {
+      const result = await direkHarvestLoraImages({
+        query: 'cyberpunk neon portrait futuristic hologram sci-fi',
+        triggerToken: 'direk_scifi_neon',
+        count: 15,
+      });
+      setHarvest(result);
+      refreshDatasets();
+    } catch (e: any) {
+      setHarvestError(e?.message || 'Nabigo ang pag-harvest.');
+    } finally {
+      setHarvesting(false);
+    }
+  };
+
   const input = (): LoraBriefInput => ({
     title,
     genre,
@@ -75,6 +105,7 @@ export const LoraStudio: React.FC = () => {
   React.useEffect(() => {
     refreshTrainStatus();
     direkLoraList().then(r => setLoras(r.loras)).catch(() => {});
+    refreshDatasets();
   }, []);
 
   // A freshly trained LoRA becomes available; refresh and select it.
@@ -181,6 +212,72 @@ export const LoraStudio: React.FC = () => {
  <div className="flex-1 overflow-y-auto p-4 grid lg:grid-cols-2 gap-4 min-h-0">
  {/* BRIEF FORM */}
  <div className="space-y-3">
+ {/* SEASON 1: multi-source free harvester */}
+ <div className="border border-subtle rounded-card p-3 space-y-2 bg-page-soft">
+ <div className="flex items-center gap-2">
+ <Pickaxe className="w-3.5 h-3.5 text-primary" />
+ <div className="text-[10px] text-muted uppercase tracking-wider">
+ Minahan at Kargador — libreng dataset
+ </div>
+ </div>
+ <p className="text-[10px] text-dim leading-relaxed">
+ Humahakot ng libreng larawan mula sa <strong>Wallhaven</strong>,{' '}
+ <strong>Openverse</strong> at <strong>Wikimedia</strong>, at nagse-save ng tunay na PNG
+ at caption para sa <code className="text-primary">direk_scifi_neon</code>.
+ </p>
+ <button
+ onClick={harvestScifiNeon}
+ disabled={harvesting}
+ className="w-full flex items-center justify-center gap-2 bg-primary text-black font-bold text-[11px] py-2 rounded-card disabled:opacity-50"
+ >
+ {harvesting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Pickaxe className="w-3.5 h-3.5" />}
+ {harvesting ? 'Nag-haharvest… (hanggang 1 minuto)' : 'Harvest Sci-Fi Neon (15 larawan)'}
+ </button>
+
+ {harvestError && (
+ <div className="flex gap-2 text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-card p-2">
+ <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-[1px]" />
+ <span>{harvestError}</span>
+ </div>
+ )}
+
+ {harvest && (
+ <div className="text-[10px] space-y-1">
+ <div className="text-green-400 flex items-center gap-1">
+ <CheckCircle2 className="w-3 h-3" />
+ Naka-save: {harvest.saved} / {harvest.requested}
+ </div>
+ <div className="text-dim">
+ Mula sa: {harvest.sources.length ? harvest.sources.join(', ') : 'wala'}
+ </div>
+ {harvest.usedQueries && Object.keys(harvest.usedQueries).length > 0 && (
+ <div className="text-dim">
+ Query na tumama: {Object.entries(harvest.usedQueries).map(([s, q]) => `${s}="${q}"`).join(' · ')}
+ </div>
+ )}
+ {harvest.failures.length > 0 && (
+ <div className="text-amber-400">
+ {harvest.failures.length} bigo (patuloy pa rin ang iba)
+ </div>
+ )}
+ </div>
+ )}
+
+ {datasets.length > 0 && (
+ <div className="border-t border-subtle pt-2 space-y-1">
+ <div className="text-[10px] text-muted uppercase tracking-wider">Mga dataset sa disk</div>
+ {datasets.map(d => (
+ <div key={d.triggerToken} className="flex justify-between text-[10px]">
+ <span className="text-primary">{d.triggerToken}</span>
+ <span className={d.ready ? 'text-green-400' : 'text-dim'}>
+ {d.images} img · {d.captions} cap{d.ready ? '' : ' · hindi pa ready'}
+ </span>
+ </div>
+ ))}
+ </div>
+ )}
+ </div>
+
  <Field label="Pamagat">
  <input value={title} onChange={e => setTitle(e.target.value)} className={inputCls} />
  </Field>

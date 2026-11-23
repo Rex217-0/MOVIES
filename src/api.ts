@@ -487,6 +487,62 @@ export async function direkLoraDataset(input: LoraBriefInput): Promise<Blob> {
   return res.blob();
 }
 
+export interface HarvestResult {
+  ok: boolean;
+  saved: number;
+  requested: number;
+  trigger: string;
+  targetDir: string;
+  sources: string[];
+  usedQueries?: Record<string, string>;
+  samples: { file: string; source: string; bytes: number }[];
+  failures: { source: string; url: string; reason: string }[];
+  note: string;
+  error?: string;
+}
+
+/**
+ * Harvest free images from Wallhaven, Openverse and Wikimedia into a LoRA
+ * dataset. A run that saved nothing is reported as an error, not a success.
+ */
+export async function direkHarvestLoraImages(input: {
+  query: string;
+  triggerToken: string;
+  count?: number;
+}): Promise<HarvestResult> {
+  const res = await apiFetch('/api/extensions/season-01-harvester/harvest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !body.ok) {
+    throw new Error(body.error || body.note || `Harvest failed (${res.status})`);
+  }
+  return body;
+}
+
+export interface LoraDatasetInfo {
+  triggerToken: string;
+  dir: string;
+  images: number;
+  captions: number;
+  orphanCaptions: number;
+  uncaptioned: number;
+  ready: boolean;
+  bytes: number;
+}
+
+export async function direkLoraDatasets(): Promise<{
+  runs_root: string;
+  preset: { query: string; triggerToken: string; count: number };
+  datasets: LoraDatasetInfo[];
+}> {
+  const res = await apiFetch('/api/direk/lora/datasets');
+  if (!res.ok) throw new Error(`Datasets failed (${res.status})`);
+  return res.json();
+}
+
 /** Download URL for a saved asset, with the token attached. */
 export function assetDownloadUrl(name: string): string {
   const token = getAuthToken();

@@ -37,7 +37,7 @@ import { DirekService, type ChatMessage } from './src/direk/service.ts';
 import { configuredTextProviders, generateTextWithFallback } from './src/services/aiRouter.ts';
 import { PIPELINE, STAGE_SKILL } from './src/direk/pipeline.ts';
 import { GENRE_MAP } from './src/direk/genres.ts';
-import { SKILLS } from './src/direk/skills.ts';
+import { SKILLS, setExtensionSkills } from './src/direk/skills.ts';
 import { planLora } from './src/direk/loraPlan.ts';
 import {
   buildLoraArtifacts, buildLoraZip, buildCaption, isValidTrigger, toSlug,
@@ -48,6 +48,10 @@ import {
   publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
 } from './src/direk/comfyui.ts';
 import { pollinationsUrl, resetComfyCache } from './src/direk/imagine.ts';
+import { extensionRegistry } from './src/extensions/registry.ts';
+import { createSeasonOneHarvester, runsRoot as loraRunsRoot, SCIFI_NEON_PRESET } from './src/extensions/season01/index.ts';
+import { listDatasets } from './src/extensions/season01/datasets.ts';
+import { seedDataset, TRIGGER as STARTER_TRIGGER } from './src/extensions/season01/starterDataset.ts';
 import { trainingConfig } from './src/direk/trainer.ts';
 import { createTrainBackend, trainBackendName } from './src/direk/trainBackend.ts';
 import {
@@ -1128,6 +1132,7 @@ app.get('/api/direk/status', async (_req: Request, res: Response) => {
     pipeline: PIPELINE,
     genres: Object.keys(GENRE_MAP),
     skills: Object.entries(SKILLS).map(([id, spec]) => ({ id, ...spec })),
+    extension_skills: extensionRegistry.skillCatalog(),
     reference_sources: referenceCatalog.loadedSources(),
     reference_kaggle_loaded: referenceCatalog.kaggleReady,
     market_available: marketIntel.available,
@@ -1261,9 +1266,16 @@ app.post('/api/direk/chat', async (req: Request, res: Response) => {
     // so the reply comes with a real file. Confirmed skills wait for the user.
     let connector = null;
     if (result.action && result.action.status === 'ready') {
-      broadcastThought(`[CONNECTOR] ${result.action.skill} → ${result.action.connector} (free, local)`);
-      connector = await runConnector(result.action.skill, result.action.args);
-      broadcastThought(`[CONNECTOR] ${connector.ok ? 'OK' : 'FAIL'}: ${connector.note}`);
+      // A season extension may own the skill; it wins over the built-in connector
+      // so an upgrade can add skills without editing the connector table.
+      if (extensionRegistry.hasSkill(result.action.skill)) {
+        broadcastThought(`[EXTENSION] ${result.action.skill} (season upgrade)`);
+        connector = await extensionRegistry.runExtensionSkill(result.action.skill, result.action.args);
+      } else {
+        broadcastThought(`[CONNECTOR] ${result.action.skill} → ${result.action.connector} (free, local)`);
+        connector = await runConnector(result.action.skill, result.action.args);
+      }
+      broadcastThought(`[CONNECTOR] ${(connector as any)?.ok ? 'OK' : 'FAIL'}: ${(connector as any)?.note ?? ''}`);
     }
 
     broadcastThought(`[DIREK] Genre: ${result.genre ?? 'n/a'} · ${result.reply.slice(0, 60)}...`);
@@ -2480,6 +2492,44 @@ app.get('/landing', (_req: Request, res: Response) => {
 });
 app.get('/dashboard', (_req: Request, res: Response) => {
   res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'));
+});
+
+// ---------------------------------------------------------------------------
+// Season extensions. Mounted here, before the SPA catch-all, so their routes are
+// reachable. A broken extension disables only itself; the app still boots.
+// ---------------------------------------------------------------------------
+extensionRegistry.register(createSeasonOneHarvester());
+const extensionStatus = extensionRegistry.mountExtensions(app);
+// The action parser must know these ids before the first chat request.
+setExtensionSkills(extensionRegistry.skillCatalog().map(s => s.id));
+
+// The starter captions live in git, not in lora_runs/ (which is ignored), so
+// they are written into place on every boot. Existing captions are untouched.
+try {
+  const seeded = seedDataset(loraRunsRoot());
+  if (seeded.written.length) {
+    console.log(`[SEED] ${STARTER_TRIGGER}: wrote ${seeded.written.length} captions`);
+  }
+} catch (error: any) {
+  console.error('[SEED] Could not seed the starter dataset:', error?.message || error);
+}
+
+/** What season upgrades are installed, and whether each one really mounted. */
+app.get('/api/extensions', (_req: Request, res: Response) => {
+  res.json({ extensions: extensionStatus, mounted: extensionRegistry.isMounted });
+});
+
+/** The starter dataset and every other dataset already on disk. */
+app.get('/api/direk/lora/datasets', (_req: Request, res: Response) => {
+  try {
+    res.json({
+      runs_root: loraRunsRoot(),
+      preset: SCIFI_NEON_PRESET,
+      datasets: listDatasets(loraRunsRoot()),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || String(error) });
+  }
 });
 
 // Mount Vite or serve static files

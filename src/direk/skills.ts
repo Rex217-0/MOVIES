@@ -44,6 +44,20 @@ export interface SkillAction {
 
 const ACTION_RE = /```action\s*([\s\S]*?)```/;
 
+/**
+ * Skills owned by a mounted season extension. Injected at boot so a season
+ * upgrade can add a skill without this file knowing anything about it.
+ */
+let extensionSkills: string[] = [];
+
+export function setExtensionSkills(ids: string[]): void {
+  extensionSkills = [...ids];
+}
+
+export function getExtensionSkills(): string[] {
+  return [...extensionSkills];
+}
+
 /** Split a model reply into `[cleanText, action, error]`. */
 export function extractAction(text: string): [string, SkillAction | null, string | null] {
   const source = text || '';
@@ -59,6 +73,19 @@ export function extractAction(text: string): [string, SkillAction | null, string
   }
 
   const name = payload?.skill;
+  if (typeof name === 'string' && extensionSkills.includes(name)) {
+    return [
+      clean,
+      {
+        skill: name,
+        connector: 'Season extension',
+        args: payload.args ?? {},
+        needs_confirm: false,
+        status: 'ready',
+      },
+      null,
+    ];
+  }
   const spec = SKILLS[name];
   if (!spec) return [clean, null, `Walang skill na '${name}'.`];
   if (spec.kind === 'local') return [clean, null, null];
