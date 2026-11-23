@@ -214,33 +214,59 @@ async function callDeepSeek(messages: ChatMessage[], opts: RouterOptions): Promi
   return { text, provider: 'deepseek', model };
 }
 
+/** Claude model order: the app's own list first, then current models. */
+function claudeModels(): string[] {
+  const fromEnv = (process.env.ANTHROPIC_MODEL || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const base = fromEnv.length > 0
+    ? fromEnv
+    : ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'];
+  return [...new Set(base)];
+}
+
+/** The API version header. Pinned by default, overridable for a newer contract. */
+function anthropicVersion(): string {
+  return (process.env.ANTHROPIC_VERSION || '2026-10-21').trim();
+}
+
 async function callClaude(messages: ChatMessage[], opts: RouterOptions): Promise<RouterResult> {
   const key = apiKey('ANTHROPIC_API_KEY');
   if (!key) throw new Error('ANTHROPIC_API_KEY is not set');
 
-  const model = (process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest').trim();
   const { system, turns } = splitSystem(messages);
-  const res = await fetch(`${providerBaseUrl('ANTHROPIC_API_BASE', 'https://api.anthropic.com')}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: opts.maxTokens ?? 4096,
-      ...(system ? { system } : {}),
-      messages: turns.map((m) => ({ role: m.role, content: m.content })),
-      ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-    }),
-    signal: AbortSignal.timeout(120000),
-  });
-  if (!res.ok) throw new Error(`Claude HTTP ${res.status}${await readErrorBody(res)}`);
-  const data = (await res.json()) as any;
-  const text = String(data?.content?.[0]?.text ?? '').trim();
-  if (!text) throw new Error('Claude returned an empty response');
-  return { text, provider: 'claude', model };
+  const body = {
+    max_tokens: opts.maxTokens ?? 4096,
+    ...(system ? { system } : {}),
+    messages: turns.map((m) => ({ role: m.role, content: m.content })),
+    ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+  };
+
+  let lastError: Error | null = null;
+  for (const model of claudeModels()) {
+    try {
+      const res = await fetch(`${providerBaseUrl('ANTHROPIC_API_BASE', 'https://api.anthropic.com')}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': key,
+          'anthropic-version': anthropicVersion(),
+        },
+        body: JSON.stringify({ model, ...body }),
+        signal: AbortSignal.timeout(120000),
+      });
+      if (!res.ok) throw new Error(`Claude HTTP ${res.status}${await readErrorBody(res)}`);
+      const data = (await res.json()) as any;
+      const text = String(data?.content?.[0]?.text ?? '').trim();
+      if (!text) throw new Error('Claude returned an empty response');
+      return { text, provider: 'claude', model };
+    } catch (error: any) {
+      lastError = error;
+      if (!isRetryableModelError(error?.message || '')) break;
+    }
+  }
+  throw lastError ?? new Error('No Claude text model answered');
 }
 
 async function callOllama(messages: ChatMessage[], opts: RouterOptions): Promise<RouterResult> {
