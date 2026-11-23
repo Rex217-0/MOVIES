@@ -83,9 +83,15 @@ export default function App() {
       </header>
       <main className="mx-auto flex min-h-0 w-full max-w-[1700px] flex-1 flex-col p-3 sm:p-4">
         <div className="flex-1 flex flex-col h-full min-h-[680px]">
-          {activeTab === 'movie' ? (ENABLE_FIREBASE ? <MovieMakerWithFirebase /> : <MovieMaker />)
+          {/* Kept mounted. Unmounting on a tab switch destroyed the thread, and a
+              send that raced the history load reached the router with no prior
+              turns, so Movie Robo lost the conversation. */}
+          <div className={activeTab === 'direk' ? 'flex h-full min-h-0 flex-col' : 'hidden'}>
+            <DirectorsChair />
+          </div>
+          {activeTab === 'direk' ? null
+            : activeTab === 'movie' ? (ENABLE_FIREBASE ? <MovieMakerWithFirebase /> : <MovieMaker />)
             : activeTab === 'feature' ? <FeatureFilmFactory />
-            : activeTab === 'direk' ? <DirectorsChair />
             : activeTab === 'lora' ? <LoraStudio />
             : activeTab === 'cockpit' ? <VipBattleRoom onInspectThinking={() => setIsCognitiveModalOpen(true)} onOpenVideoRecon={() => setActiveTab('video')} onOpenImageMatrix={() => setActiveTab('image')} />
             : activeTab === 'radar' ? <TacticalRadarMap />

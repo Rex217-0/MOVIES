@@ -11,6 +11,7 @@ import {
   Download,
 } from 'lucide-react';
 import { SwarmPanel } from './SwarmPanel';
+import { mergeTranscript, toPayload } from '../lib/chatTurns.ts';
 
 interface Turn {
   role: 'user' | 'assistant';
@@ -57,6 +58,20 @@ export const DirectorsChair: React.FC = () => {
   const [isSending, setIsSending] = useState(false);
   const [threadId] = useState<string>(() => readThreadId());
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Two lists, so a slow history read cannot swallow a message the user just
+  // typed: `restoredRef` holds the thread from the backend, `localRef` holds the
+  // turns added in this session, and the view is their concatenation. `send`
+  // reads both refs because hydration may land after the render that started it.
+  const restoredRef = useRef<Turn[]>([]);
+  const localRef = useRef<Turn[]>([]);
+  // A send must not race the history load: the router would receive only the
+  // new directive and the model would lose the conversation. `send` awaits this.
+  const hydrationRef = useRef<Promise<void>>(Promise.resolve());
+  const sendingRef = useRef(false);
+
+  const publish = () => {
+    setTurns(mergeTranscript(restoredRef.current, localRef.current));
+  };
 
   useEffect(() => {
     direkStatus()
@@ -66,21 +81,20 @@ export const DirectorsChair: React.FC = () => {
   }, []);
 
   // Bring back the last turns so a refresh does not wipe the conversation.
+  // The promise is stored so a send that starts before the load finishes waits
+  // for it instead of calling the router with an empty history.
   useEffect(() => {
     let cancelled = false;
-    direkChatHistory(threadId)
+    const load = direkChatHistory(threadId)
       .then(saved => {
         if (cancelled || saved.length === 0) return;
-        setTurns(
-          saved.map(t => ({
-            role: t.role,
-            content: t.content,
-          })),
-        );
+        restoredRef.current = saved.map(t => ({ role: t.role, content: t.content }));
+        publish();
       })
       .catch(() => {
         // A cold or offline backend simply starts an empty thread.
       });
+    hydrationRef.current = load;
     return () => {
       cancelled = true;
     };
@@ -92,22 +106,28 @@ export const DirectorsChair: React.FC = () => {
 
   const send = async (text: string) => {
     const directive = text.trim();
-    if (!directive || isSending) return;
-
-    const history: DirekChatMessage[] = [
-      ...turns
-        .filter(t => !t.error)
-        .map(t => ({ role: t.role, content: t.content })),
-      { role: 'user', content: directive },
-    ];
-    setTurns(prev => [...prev, { role: 'user', content: directive }]);
-    setInput('');
+    // A ref, not the state flag: the guard must hold across the await below,
+    // where a second Enter would otherwise start a duplicate send.
+    if (!directive || sendingRef.current) return;
+    sendingRef.current = true;
     setIsSending(true);
+    setInput('');
+    // Show the message at once; waiting for the history read would leave the
+    // composer looking unresponsive on a cold backend.
+    localRef.current = [...localRef.current, { role: 'user', content: directive }];
+    publish();
 
     try {
+      // The router needs the restored thread, so the request waits for it. The
+      // payload is read from the refs afterwards, not from this render.
+      await hydrationRef.current;
+      const history: DirekChatMessage[] = toPayload(
+        mergeTranscript(restoredRef.current, localRef.current),
+      );
+
       const result = await direkChat(history, threadId);
-      setTurns(prev => [
-        ...prev,
+      localRef.current = [
+        ...localRef.current,
         {
           role: 'assistant',
           content: result.reply,
@@ -118,14 +138,17 @@ export const DirectorsChair: React.FC = () => {
           actionError: result.action_error,
           connector: result.connector,
         },
-      ]);
+      ];
+      publish();
     } catch (e: any) {
       const message =
         e instanceof AiUnavailableError
           ? `${e.message} (${e.code})`
           : e?.message || 'Hindi maabot ang Movie Robo service.';
-      setTurns(prev => [...prev, { role: 'assistant', content: message, error: message }]);
+      localRef.current = [...localRef.current, { role: 'assistant', content: message, error: message }];
+      publish();
     } finally {
+      sendingRef.current = false;
       setIsSending(false);
     }
   };
