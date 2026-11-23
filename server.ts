@@ -49,7 +49,8 @@ import {
 } from './src/direk/comfyui.ts';
 import { pollinationsUrl, resetComfyCache } from './src/direk/imagine.ts';
 import { extensionRegistry } from './src/extensions/registry.ts';
-import { createSeasonOneHarvester, runsRoot as loraRunsRoot, SCIFI_NEON_PRESET } from './src/extensions/season01/index.ts';
+import { createSeasonOneHarvester, runsRoot as loraRunsRoot, SCIFI_NEON_PRESET, startSeasonalScheduler } from './src/extensions/season01/index.ts';
+import { createWan22Connector } from './src/extensions/season01/wan22Extension.ts';
 import { listDatasets } from './src/extensions/season01/datasets.ts';
 import { seedDataset, TRIGGER as STARTER_TRIGGER } from './src/extensions/season01/starterDataset.ts';
 import { trainingConfig } from './src/direk/trainer.ts';
@@ -2499,7 +2500,15 @@ app.get('/dashboard', (_req: Request, res: Response) => {
 // reachable. A broken extension disables only itself; the app still boots.
 // ---------------------------------------------------------------------------
 extensionRegistry.register(createSeasonOneHarvester());
+extensionRegistry.register(createWan22Connector());
 const extensionStatus = extensionRegistry.mountExtensions(app);
+
+// The seasonal schedule is a saved file, so the ticker has to start on every
+// boot; a schedule saved yesterday must still fire today. No SIGTERM handler
+// here on purpose: the ticker's interval is unref'd, so it never keeps the
+// process alive, and leaving the default SIGTERM behaviour intact means a
+// deploy still shuts the server down promptly instead of hanging.
+startSeasonalScheduler();
 // The action parser must know these ids before the first chat request.
 setExtensionSkills(extensionRegistry.skillCatalog().map(s => s.id));
 

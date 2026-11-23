@@ -11,6 +11,9 @@ coverage/
 # dataset or a trained LoRA. The starter captions under lora_runs/ are
 # recreated by scripts/seed-lora-dataset.mjs, so they need no exception here.
 lora_runs/
+lora_staging/
+lora_rejected/
+harvest_schedule.json
 direk.config.json
 comfy_loras/
 .openhands/
@@ -20,6 +23,17 @@ factory.db
 factory.db-shm
 factory.db-wal
 gdrive.token.json
+
+# Model weights are gigabytes and belong on Server-2, never in git. A stray
+# `git add .` must not try to push a 6.7 GB text encoder, so the extension is
+# blocked everywhere, not just under models/.
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.bin
+models/
 
 # Android build artifacts (legacy no-Gradle shell, kept for the /android page)
 android-legacy/build/
