@@ -44,6 +44,21 @@ export interface CorsDecision {
 }
 
 /**
+ * The origins that serve this very app. A browser sends an `Origin` header for
+ * `type="module"` scripts and for `fetch`, so the app's own host is a
+ * cross-origin caller of itself as far as the guard can tell. Without these a
+ * strict allow-list 403s `/assets/*` and the page renders blank.
+ *
+ * Only the request's own Host is echoed, so a foreign origin cannot smuggle
+ * itself in by sending a crafted `Origin`.
+ */
+export function selfOrigins(host: string | undefined): string[] {
+  if (!host) return [];
+  const bare = host.replace(/:\d+$/, '');
+  return [`https://${host}`, `http://${host}`, `https://${bare}`, `http://${bare}`];
+}
+
+/**
  * Decide whether a browser origin may call the API. A same-origin call (no
  * Origin header) is always fine. A cross-origin call must be in the allow-list.
  * `*` in the list allows any origin (only sane for a local/LAN deployment).

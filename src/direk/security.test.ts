@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  securityHeaders, corsDecision, RateLimiter,
+  securityHeaders, corsDecision, selfOrigins, RateLimiter,
   issueTicket, verifyTicket, ticketToParam, paramToTicket,
 } from './security.ts';
 
@@ -64,4 +64,31 @@ test('a ticket survives a round-trip through a URL parameter', () => {
   assert.equal(parsed!.expiresAt, ticket.expiresAt);
   assert.equal(paramToTicket('nonsense'), null);
   assert.equal(paramToTicket(''), null);
+});
+
+test('selfOrigins echoes the request host so the app can load its own assets', () => {
+  // A module script sends an Origin, so the app is a cross-origin caller of
+  // itself. Without these the strict allow-list 403s /assets/* and the page is
+  // blank, which is what production did.
+  const origins = selfOrigins('movies-627p.onrender.com');
+  assert.ok(origins.includes('https://movies-627p.onrender.com'));
+  assert.equal(corsDecision('https://movies-627p.onrender.com', origins).allowed, true);
+});
+
+test('selfOrigins keeps a dev port, and accepts either scheme', () => {
+  const origins = selfOrigins('localhost:12000');
+  assert.equal(corsDecision('http://localhost:12000', origins).allowed, true);
+  assert.equal(corsDecision('https://localhost:12000', origins).allowed, true);
+});
+
+test('selfOrigins does not open the app to a foreign origin', () => {
+  const origins = selfOrigins('movies-627p.onrender.com');
+  assert.equal(corsDecision('https://evil.example', origins).allowed, false);
+  // A host suffix is not the host: the allow-list is exact-match.
+  assert.equal(corsDecision('https://movies-627p.onrender.com.evil.example', origins).allowed, false);
+});
+
+test('selfOrigins with no Host header contributes nothing', () => {
+  assert.deepEqual(selfOrigins(undefined), []);
+  assert.equal(corsDecision('https://evil.example', selfOrigins(undefined)).allowed, false);
 });
