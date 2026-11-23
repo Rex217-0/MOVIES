@@ -60,6 +60,8 @@ async function startServer(env: Record<string, string>) {
       ...process.env,
       PORT: String(port),
       GEMINI_API_KEY: '',
+      DEEPSEEK_API_KEY: '',
+      ANTHROPIC_API_KEY: '',
       OLLAMA_DISABLE: '1',
       COMFYUI_DISABLE: '1',
       DIREK_ASSETS_DIR: assetsDir,
@@ -782,7 +784,7 @@ test('the system map reports the live radar truthfully, with no faked node', asy
     APP_AUTH_TOKEN: '',
     // Force every local service off so their honest state is "dead".
     COMFYUI_DISABLE: '1', OLLAMA_DISABLE: '1',
-    GEMINI_API_KEY: '', FAL_KEY: '',
+    GEMINI_API_KEY: '', DEEPSEEK_API_KEY: '', ANTHROPIC_API_KEY: '', FAL_KEY: '',
   });
   t.after(() => child.kill());
   await waitForServer(port);

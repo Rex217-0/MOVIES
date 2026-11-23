@@ -34,6 +34,7 @@ import { ffmpegAvailable, ffmpegPath, isPng, toPng } from './src/direk/render.ts
 import { assetsDir, assetPath, reviewAsset, type ReviewStatus } from './src/direk/assets.ts';
 import { driveStatus, authUrl, redirectUri, exchangeCode } from './src/direk/gdrive.ts';
 import { DirekService, type ChatMessage } from './src/direk/service.ts';
+import { configuredTextProviders, generateTextWithFallback } from './src/services/aiRouter.ts';
 import { PIPELINE, STAGE_SKILL } from './src/direk/pipeline.ts';
 import { GENRE_MAP } from './src/direk/genres.ts';
 import { SKILLS } from './src/direk/skills.ts';
@@ -439,13 +440,19 @@ app.get('/api/pilot/status', (_req: Request, res: Response) => {
 app.get('/api/health', async (_req: Request, res: Response) => {
   const keyConfigured = Boolean(process.env.GEMINI_API_KEY);
   const ollama = await ollamaStatus();
-  const textAvailable = keyConfigured || (ollama.reachable && ollama.model_present);
-  const backend = keyConfigured ? 'gemini' : (ollama.reachable && ollama.model_present ? 'ollama' : 'none');
+  const providers = configuredTextProviders();
+  const ollamaUsable = providers.includes('ollama') && ollama.reachable && ollama.model_present;
+  const keyedProvider = providers.find(p => p !== 'ollama');
+  const textAvailable = Boolean(keyedProvider) || ollamaUsable;
+  const backend: TextBackendName = keyedProvider ?? (ollamaUsable ? 'ollama' : 'none');
+  const backendModel = backend === 'ollama' ? ollama.model : modelLabelFor(backend);
   res.json({
     ok: textAvailable,
     gemini_key_configured: keyConfigured,
+    // Every text provider the router would try, in the order it tries them.
+    text_providers: providers,
     text: {
-      model: backend === 'ollama' ? ollama.model : TEXT_MODEL,
+      model: backendModel,
       backend,
       available: textAvailable,
       free_tier: true,
@@ -461,7 +468,7 @@ app.get('/api/health', async (_req: Request, res: Response) => {
     direk: {
       available: textAvailable,
       free_tier: true,
-      model: backend === 'ollama' ? ollama.model : TEXT_MODEL,
+      model: backendModel,
       backend,
       reference_available: referenceCatalog.available,
       reference_rows: referenceCatalog.loadedSize,
@@ -608,7 +615,7 @@ Respond in strict JSON with:
     currentVitals = { ...currentVitals, status: 'DEGRADED' };
     broadcastThought(`[SYS ERROR] Directive execution failed: ${reason}`);
     res.status(503).json(
-      aiUnavailable(TEXT_MODEL, 'Check the server logs and the Gemini API key.', reason)
+      aiUnavailable(TEXT_MODEL, 'Check the server logs and the AI provider keys (GEMINI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY), or run Ollama.', reason)
     );
   }
 });
@@ -1013,13 +1020,36 @@ const marketIntel = new MarketIntel(path.join(__dirname, 'data'));
 // Text backends: Gemini when a key is set, otherwise a local Ollama model.
 // Both are free; Ollama needs no account at all.
 // ---------------------------------------------------------------------------
-let textBackendCache: { backend: 'gemini' | 'ollama' | 'none'; at: number } | null = null;
+type TextBackendName = 'gemini' | 'deepseek' | 'claude' | 'ollama' | 'none';
 
-async function resolveTextBackend(): Promise<'gemini' | 'ollama' | 'none'> {
-  const preferred = preferredTextBackend();
-  if (preferred === 'gemini') return 'gemini';
-  if (preferred === 'none') return 'none';
-  // Cache the Ollama probe briefly so a server started later is picked up.
+let textBackendCache: { backend: TextBackendName; at: number } | null = null;
+
+/** The model name a provider would use, for status output. */
+function modelLabelFor(backend: TextBackendName): string {
+  switch (backend) {
+    case 'gemini':
+      return TEXT_MODEL;
+    case 'deepseek':
+      return (process.env.DEEPSEEK_MODEL || 'deepseek-chat').trim();
+    case 'claude':
+      return (process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest').trim();
+    case 'ollama':
+      return ollamaModel();
+    default:
+      return TEXT_MODEL;
+  }
+}
+
+/**
+ * Which provider would answer right now, in the router's own order. Ollama is
+ * the only one that needs a live probe, so it is cached briefly and a server
+ * started later is picked up without a restart.
+ */
+async function resolveTextBackend(): Promise<TextBackendName> {
+  const configured = configuredTextProviders();
+  if (configured.length === 0) return 'none';
+  const first = configured[0];
+  if (first !== 'ollama') return first;
   if (!textBackendCache || Date.now() - textBackendCache.at > 15000) {
     const status = await ollamaStatus();
     const usable = status.reachable && status.model_present;
@@ -1028,75 +1058,54 @@ async function resolveTextBackend(): Promise<'gemini' | 'ollama' | 'none'> {
   return textBackendCache.backend;
 }
 
-let textBackend: 'gemini' | 'ollama' | 'none' = preferredTextBackend();
+/** First provider in router order; a helper call keeps the type wide. */
+function initialTextBackend(): TextBackendName {
+  return configuredTextProviders()[0] ?? 'none';
+}
+
+let textBackend: TextBackendName = initialTextBackend();
 let textBackendAvailable = textBackend !== 'none';
-// Which Gemini model last answered; the list is tried in order.
-let geminiModelInUse: string = TEXT_MODEL;
-let textModelName = textBackend === 'gemini' ? TEXT_MODEL : ollamaModel();
+let textModelName = modelLabelFor(textBackend);
 
 async function refreshTextBackend(): Promise<void> {
   textBackend = await resolveTextBackend();
   textBackendAvailable = textBackend !== 'none';
-  textModelName = textBackend === 'gemini' ? geminiModelInUse : ollamaModel();
+  if (textBackendAvailable) textModelName = modelLabelFor(textBackend);
 }
 
 /**
- * One text completion, from whichever backend is available. `messages` are the
- * plain conversation turns; the system prompt is passed separately.
+ * One text completion, from whichever provider answers first. `messages` are
+ * the plain conversation turns; the system prompt is passed separately. Every
+ * provider lives in src/services/aiRouter.ts, so no key is ever read here.
  */
 async function generateText(
   system: string,
   messages: ChatMessage[] | string,
   opts: { json?: boolean; temperature?: number; maxTokens?: number } = {},
 ): Promise<string> {
-  await refreshTextBackend();
-  if (!textBackendAvailable) {
-    throw new Error('No text model is configured (set GEMINI_API_KEY, or run Ollama)');
-  }
-  if (textBackend === 'ollama') {
-    const turns: { role: 'user' | 'assistant'; content: string }[] =
-      typeof messages === 'string'
-        ? [{ role: 'user', content: messages }]
-        : messages
-            .filter(m => m.role !== 'system')
-            .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
-    return ollamaChat({
-      system,
-      messages: turns,
+  const turns: ChatMessage[] = typeof messages === 'string'
+    ? [{ role: 'user', content: messages }]
+    : messages.filter(m => m.role !== 'system');
+  const payload: ChatMessage[] = system && system.trim()
+    ? [{ role: 'system', content: system }, ...turns]
+    : turns;
+
+  try {
+    const result = await generateTextWithFallback(payload, {
       json: opts.json,
       temperature: opts.temperature ?? 0.7,
+      maxTokens: opts.maxTokens,
     });
+    textBackend = result.provider;
+    textBackendAvailable = true;
+    textModelName = result.model;
+    return result.text;
+  } catch (error) {
+    // The router already names every provider that failed, without a key.
+    textBackend = 'none';
+    textBackendAvailable = false;
+    throw error;
   }
-  // Gemini
-  const contents = typeof messages === 'string'
-    ? messages
-    : messages.map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-      }));
-  let lastError: any = null;
-  for (const model of TEXT_MODELS) {
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config: {
-          systemInstruction: system,
-          temperature: opts.temperature ?? 0.7,
-          topP: 0.9,
-          maxOutputTokens: opts.maxTokens ?? 1024,
-          ...(opts.json ? { responseMimeType: 'application/json' } : {}),
-        },
-      });
-      geminiModelInUse = model;
-      return response.text || '';
-    } catch (error: any) {
-      lastError = error;
-      // Retire/rate-limit errors: try the next model. Anything else is real.
-      if (!isRetryableModelError(error?.message || '')) throw error;
-    }
-  }
-  throw lastError || new Error('No Gemini text model was usable');
 }
 
 const direkService = new DirekService(
@@ -1114,6 +1123,7 @@ app.get('/api/direk/status', async (_req: Request, res: Response) => {
     ok: textBackendAvailable,
     model: textModelName,
     text_backend: textBackend,
+    text_providers: configuredTextProviders(),
     gemini_key_configured: Boolean(process.env.GEMINI_API_KEY),
     pipeline: PIPELINE,
     genres: Object.keys(GENRE_MAP),
@@ -1274,7 +1284,7 @@ app.post('/api/direk/chat', async (req: Request, res: Response) => {
     console.error(`[DIREK ERROR] ${TEXT_MODEL} chat failed:`, reason);
     broadcastThought(`[DIREK ERROR] ${reason}`);
     res.status(503).json(
-      aiUnavailable(TEXT_MODEL, 'Check the server logs and the Gemini API key.', reason)
+      aiUnavailable(TEXT_MODEL, 'Check the server logs and the AI provider keys (GEMINI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY), or run Ollama.', reason)
     );
   }
 });

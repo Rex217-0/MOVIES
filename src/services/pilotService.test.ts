@@ -59,6 +59,10 @@ async function withPilot<T>(env: Record<string, string | undefined>, fn: () => P
     'KAGGLE_PILOT_URL', 'KAGGLE_PILOT_TOKEN', 'KAGGLE_PILOT_TIMEOUT_MS',
     'KAGGLE_PILOT_SCRIPT_PATH', 'KAGGLE_PILOT_BIBLE_PATH', 'KAGGLE_PILOT_SCENES_PATH',
     'LOCAL_OLLAMA_URL', 'OLLAMA_URL', 'OLLAMA_MODEL', 'OLLAMA_DISABLE',
+    // Blank the paid providers so a developer's key cannot make these tests
+    // depend on the network, or silently change which worker answers.
+    'GEMINI_API_KEY', 'DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY',
+    'GEMINI_API_BASE', 'DEEPSEEK_API_BASE', 'ANTHROPIC_API_BASE', 'GEMINI_TEXT_MODELS',
   ];
   const saved: Record<string, string | undefined> = {};
   for (const k of keys) {
@@ -336,6 +340,51 @@ test('a live Kaggle worker wins over the local Ollama', async () => {
   } finally {
     await pilot.close();
     await ollama.close();
+  }
+});
+
+/** A stand-in Gemini endpoint, so the router path is exercised for real. */
+function startGemini(opts: { text?: string } = {}) {
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: opts.text ?? 'GEMINI SCRIPT: ang bagong tala.' }] } }],
+      }));
+    });
+  });
+  return new Promise<{ url: string; close: () => Promise<void> }>(resolve => {
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as any).port;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise<void>(r => server.close(() => r())),
+      });
+    });
+  });
+}
+
+test('a configured Gemini key writes the screenplay through the router', async () => {
+  const gemini = await startGemini();
+  try {
+    await withPilot(
+      {
+        KAGGLE_PILOT_URL: '',
+        GEMINI_API_KEY: 'test-gemini-key',
+        GEMINI_API_BASE: gemini.url,
+        OLLAMA_DISABLE: '1',
+      },
+      async () => {
+        const answer = await generateScriptAnswer('Isang mangingisda sa probinsya.');
+        assert.equal(answer.source, 'gemini');
+        assert.equal(answer.value, 'GEMINI SCRIPT: ang bagong tala.');
+        assert.match(String(answer.model), /^gemini-/);
+      },
+    );
+  } finally {
+    await gemini.close();
   }
 });
 
