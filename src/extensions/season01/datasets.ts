@@ -24,9 +24,37 @@ export interface DatasetInfo {
   /** Ready only when there is at least one captioned image. */
   ready: boolean;
   bytes: number;
+  /**
+   * Captioned images per genre, read off the `<slug>_<genre>_<NNN>` filename the
+   * harvester writes. Files that carry no known genre land in `unclassified`
+   * rather than being guessed into a bucket.
+   */
+  genres: Record<string, number>;
 }
 
 const IMAGE_RE = /\.(png|jpe?g|webp)$/i;
+
+/**
+ * The genre tokens the harvester can write into a filename. Kept as a list here
+ * rather than imported from the harvester so a stale dataset still classifies
+ * after a genre is retired; anything unrecognised counts as unclassified.
+ */
+const GENRE_TOKENS = [
+  'horror', 'comedy', 'action', 'scifi', 'love_story', 'thriller', 'anime', 'cartoons',
+] as const;
+
+/**
+ * Read the genre out of a `<slug>_<genre>_<NNN>` stem. The slug itself may
+ * contain underscores, and some genres (`love_story`) contain one too, so the
+ * genre is matched as a delimited run anywhere in the stem — longest first, so
+ * `love_story` is never mistaken for a bare token.
+ */
+export function genreOfStem(stem: string): string | null {
+  const haystack = `_${stem.toLowerCase()}_`;
+  const byLength = [...GENRE_TOKENS].sort((a, b) => b.length - a.length);
+  for (const genre of byLength) if (haystack.includes(`_${genre}_`)) return genre;
+  return null;
+}
 
 /** The stems of a folder's images and captions, so they can be matched up. */
 function stems(dir: string): { images: Set<string>; captions: Set<string> } {
@@ -52,6 +80,12 @@ export function readDataset(triggerToken: string, dir: string): DatasetInfo {
   }
   let paired = 0;
   for (const stem of images) if (captions.has(stem)) paired += 1;
+  const genres: Record<string, number> = {};
+  for (const stem of images) {
+    if (!captions.has(stem)) continue;
+    const genre = genreOfStem(stem) ?? 'unclassified';
+    genres[genre] = (genres[genre] ?? 0) + 1;
+  }
   return {
     triggerToken,
     dir,
@@ -61,6 +95,7 @@ export function readDataset(triggerToken: string, dir: string): DatasetInfo {
     uncaptioned: [...images].filter(s => !captions.has(s)).length,
     ready: paired > 0,
     bytes,
+    genres,
   };
 }
 

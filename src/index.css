@@ -170,9 +170,16 @@
 .radar-sweep { animation: radar-sweep 4s linear infinite; transform-origin: center; }
 .radar-wire-live { stroke-dasharray: 6 5; animation: radar-dash 0.9s linear infinite; }
 
+/* A node that answered its probe gets one slow ring pulse, so the eye is drawn
+   to the services that are actually up rather than to the dead ones. */
+.radar-node-pulse { animation: radar-ring 2.4s ease-out infinite; transform-origin: center; transform-box: fill-box; }
+
+/* Numbers on the console must not jitter between the 20 s polls. */
+.hud-tabular, .tabular-nums { font-variant-numeric: tabular-nums; }
+
 @media (prefers-reduced-motion: reduce) {
   .radar-dot-active, .radar-dot-error, .radar-dot-standby,
-  .radar-ring, .radar-sweep, .radar-wire-live { animation: none; }
+  .radar-ring, .radar-sweep, .radar-wire-live, .radar-node-pulse { animation: none; }
 }
 
 /*

@@ -165,8 +165,8 @@ export const TacticalRadarMap: React.FC = () => {
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-[10px] text-muted">
-          <span className="font-mono text-growth">{clock}</span>
-          <span className="font-mono text-dim">{stamp}</span>
+          <span className="font-mono tabular-nums text-growth">{clock}</span>
+          <span className="font-mono tabular-nums text-dim">{stamp}</span>
           <span className="flex items-center gap-1.5">
             <span className={`h-1.5 w-1.5 rounded-full ${auto ? 'radar-dot radar-dot-active bg-growth' : 'bg-dim'}`} />
             {auto ? 'LIVE' : 'PAUSED'}
@@ -192,7 +192,7 @@ export const TacticalRadarMap: React.FC = () => {
               <span className="radar-dot" style={{ width: 8, height: 8, background: STATUS_COLOR[s] }} />
               {s}
             </span>
-            <span className="font-mono text-sm font-bold" style={{ color: STATUS_COLOR[s] }}>{counts[s]}</span>
+            <span className="font-mono text-sm font-bold tabular-nums" style={{ color: STATUS_COLOR[s] }}>{counts[s]}</span>
           </div>
         ))}
       </div>
@@ -210,6 +210,25 @@ export const TacticalRadarMap: React.FC = () => {
                 <feGaussianBlur stdDeviation="4" result="b" />
                 <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
               </filter>
+              {/* The beam fades from cyan at the leading edge to nothing behind
+                  it, so the sweep reads as light falling off, not a spinning
+                  line. */}
+              <linearGradient id="radar-beam" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#22d3ee" stopOpacity="0" />
+                <stop offset="55%" stopColor="#22d3ee" stopOpacity="0.16" />
+                <stop offset="88%" stopColor="#54f893" stopOpacity="0.34" />
+                <stop offset="100%" stopColor="#a7ffd4" stopOpacity="0.55" />
+              </linearGradient>
+              <radialGradient id="lens-halo" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor="#54f893" stopOpacity="0.42" />
+                <stop offset="55%" stopColor="#22d3ee" stopOpacity="0.16" />
+                <stop offset="100%" stopColor="#22d3ee" stopOpacity="0" />
+              </radialGradient>
+              <radialGradient id="lens-glass" cx="38%" cy="32%" r="72%">
+                <stop offset="0%" stopColor="#123c2c" />
+                <stop offset="45%" stopColor="#0a1c14" />
+                <stop offset="100%" stopColor="#050a07" />
+              </radialGradient>
             </defs>
 
             <rect x="0" y="0" width={VIEW} height={VIEW} fill="url(#radar-bg)" />
@@ -218,20 +237,38 @@ export const TacticalRadarMap: React.FC = () => {
             <line x1={C} y1={20} x2={C} y2={VIEW - 20} stroke="#16241c" strokeWidth="1" />
             <line x1={20} y1={C} x2={VIEW - 20} y2={C} stroke="#16241c" strokeWidth="1" />
 
-            {/* range rings with labels */}
+            {/* range rings with labels and calibration ticks */}
             {[RING.behind, RING.left, RING.front].map((r, i) => (
               <g key={i}>
                 <circle cx={C} cy={C} r={r} fill="none"
                   stroke="#1f3a2a" strokeWidth="1" strokeDasharray="3 6" />
                 <text x={C + 4} y={C - r - 3} fontSize="8" fill="#2f5741" className="font-mono">{r}</text>
+                {/* Tick marks around each ring, every 15°, longer on the axes. */}
+                {Array.from({ length: 24 }, (_, t) => {
+                  const a = (t * 15 * Math.PI) / 180;
+                  const major = t % 6 === 0;
+                  const inner = r - (major ? 9 : 4);
+                  return (
+                    <line key={t}
+                      x1={C + Math.cos(a) * inner} y1={C + Math.sin(a) * inner}
+                      x2={C + Math.cos(a) * r} y2={C + Math.sin(a) * r}
+                      stroke={major ? '#2f5741' : '#1c3326'}
+                      strokeWidth={major ? 1 : 0.6}
+                    />
+                  );
+                })}
               </g>
             ))}
             <circle cx={C} cy={C} r={RING.front + 22} fill="none" stroke="#16241c" strokeWidth="1" />
 
-            {/* sweeping beam */}
-            <g className="radar-sweep" opacity="0.5">
+            {/* sweeping beam: a wedge that trails behind the leading edge */}
+            <g className="radar-sweep">
+              <path
+                d={`M ${C} ${C} L ${C} ${C - RING.front - 22} A ${RING.front + 22} ${RING.front + 22} 0 0 1 ${C + Math.sin((38 * Math.PI) / 180) * (RING.front + 22)} ${C - Math.cos((38 * Math.PI) / 180) * (RING.front + 22)} Z`}
+                fill="url(#radar-beam)"
+              />
               <line x1={C} y1={C} x2={C} y2={C - RING.front - 22}
-                stroke="#54f893" strokeWidth="1.5" opacity="0.5" />
+                stroke="#a7ffd4" strokeWidth="1.6" opacity="0.8" />
             </g>
 
             {/* wires */}
@@ -261,8 +298,12 @@ export const TacticalRadarMap: React.FC = () => {
               return (
                 <g key={n.id} onClick={() => setSelected(n.id)} style={{ cursor: 'pointer' }}>
                   {n.status === 'active' && (
-                    <circle cx={n.x} cy={n.y} r={14} fill="none" stroke={color}
-                      strokeWidth="1.5" className="radar-ring" opacity="0.6" />
+                    <>
+                      <circle cx={n.x} cy={n.y} r={14} fill="none" stroke={color}
+                        strokeWidth="1.5" className="radar-ring" opacity="0.6" />
+                      <circle cx={n.x} cy={n.y} r={20} fill="none" stroke={color}
+                        strokeWidth="1" className="radar-node-pulse" opacity="0.35" />
+                    </>
                   )}
                   {n.status === 'error' && (
                     <circle cx={n.x} cy={n.y} r={14} fill="none" stroke={color}
@@ -296,18 +337,62 @@ export const TacticalRadarMap: React.FC = () => {
               );
             })}
 
-            {/* centre: Movie Creator */}
+            {/* centre: Movie Creator — a camera lens seen head-on. The barrel is
+                machined rings, the aperture is a real 7-blade iris, and the
+                halo is the same green the node's status uses, so a dead centre
+                never glows. */}
             {centerNode && (
-              <g onClick={() => setSelected('movie-creator')} style={{ cursor: 'pointer' }}>
+              <g onClick={() => setSelected('movie-creator')} style={{ cursor: 'pointer' }}
+                shapeRendering="geometricPrecision">
+                <circle cx={C} cy={C} r={82} fill="url(#lens-halo)" />
                 <circle cx={C} cy={C} r={54} fill="none" stroke="#54f893" strokeWidth="1" className="radar-ring" />
-                <circle cx={C} cy={C} r={46} fill="#0a0f0c" stroke="#54f893" strokeWidth="2.5" filter="url(#radar-glow)" />
-                <foreignObject x={C - 20} y={C - 26} width={40} height={40}>
-                  <div className="flex h-full w-full items-center justify-center text-growth"><Film size={26} /></div>
-                </foreignObject>
-                <text x={C} y={C + 26} textAnchor="middle" fontSize="11" fontWeight="700" fill="#54f893">
+
+                {/* lens barrel: knurled outer ring, then the glass */}
+                <circle cx={C} cy={C} r={50} fill="none" stroke="#1f3a2a" strokeWidth="1.5" />
+                {Array.from({ length: 48 }, (_, t) => {
+                  const a = (t * 7.5 * Math.PI) / 180;
+                  const major = t % 4 === 0;
+                  return (
+                    <line key={t}
+                      x1={C + Math.cos(a) * (major ? 41 : 44)} y1={C + Math.sin(a) * (major ? 41 : 44)}
+                      x2={C + Math.cos(a) * 49} y2={C + Math.sin(a) * 49}
+                      stroke={major ? '#3d7a58' : '#25452f'} strokeWidth={major ? 1.1 : 0.7}
+                    />
+                  );
+                })}
+                <circle cx={C} cy={C} r={40} fill="#0a0f0c" stroke="#2f5741" strokeWidth="1" />
+                <circle cx={C} cy={C} r={34} fill="url(#lens-glass)" stroke="#54f893" strokeWidth="2"
+                  filter="url(#radar-glow)" />
+
+                {/* seven-blade iris, held open at f/2.8 */}
+                {Array.from({ length: 7 }, (_, b) => {
+                  const a0 = (b * 360) / 7 - 90;
+                  const a1 = ((b + 1) * 360) / 7 - 90;
+                  const r = 26;
+                  const p = (deg: number) => {
+                    const rad = (deg * Math.PI) / 180;
+                    return `${C + Math.cos(rad) * r} ${C + Math.sin(rad) * r}`;
+                  };
+                  const inner = 9;
+                  const ai = ((b * 360) / 7 + 180 / 7 - 90) * (Math.PI / 180);
+                  return (
+                    <polygon key={b}
+                      points={`${p(a0)} ${p(a1)} ${C + Math.cos(ai) * inner} ${C + Math.sin(ai) * inner}`}
+                      fill="#0b2a1d" stroke="#54f893" strokeWidth="0.7" opacity="0.55"
+                    />
+                  );
+                })}
+
+                {/* lens coating flare + focus ring highlight */}
+                <ellipse cx={C - 12} cy={C - 14} rx={11} ry={7} fill="#a7ffd4" opacity="0.16"
+                  transform={`rotate(-32 ${C - 12} ${C - 14})`} />
+                <circle cx={C} cy={C} r={26} fill="none" stroke="#a7ffd4" strokeWidth="0.6" opacity="0.35" />
+
+                <text x={C} y={C + 66} textAnchor="middle" fontSize="11" fontWeight="700"
+                  fill="#54f893" letterSpacing="1.5">
                   MOVIE CREATOR
                 </text>
-                <text x={C} y={C + 38} textAnchor="middle" fontSize="8" fill="#777">gitna ng lahat</text>
+                <text x={C} y={C + 78} textAnchor="middle" fontSize="8" fill="#777">gitna ng lahat</text>
               </g>
             )}
           </svg>
@@ -325,18 +410,18 @@ export const TacticalRadarMap: React.FC = () => {
             <div className="space-y-2">
               <div className="flex items-end justify-between">
                 <span className="text-[10px] uppercase tracking-wider text-dim">Integridad</span>
-                <span className="font-mono text-lg font-bold text-growth">{health}%</span>
+                <span className="font-mono text-lg font-bold tabular-nums text-growth">{health}%</span>
               </div>
               <div className="h-1.5 w-full overflow-hidden rounded-pill bg-[#12241a]">
                 <div className="h-full rounded-pill bg-growth" style={{ width: `${health}%` }} />
               </div>
               <dl className="grid grid-cols-2 gap-x-3 gap-y-1 pt-1 text-[11px]">
                 <dt className="text-dim">Nodes</dt>
-                <dd className="text-right font-mono text-ink">{total}</dd>
+                <dd className="text-right font-mono tabular-nums text-ink">{total}</dd>
                 <dt className="text-dim">Live wires</dt>
-                <dd className="text-right font-mono text-ink">{liveWires}</dd>
+                <dd className="text-right font-mono tabular-nums text-ink">{liveWires}</dd>
                 <dt className="text-dim">Huling tsek</dt>
-                <dd className="text-right font-mono text-ink">
+                <dd className="text-right font-mono tabular-nums text-ink">
                   {map ? new Date(map.checked_at).toLocaleTimeString() : '—'}
                 </dd>
               </dl>
@@ -414,7 +499,7 @@ export const TacticalRadarMap: React.FC = () => {
                       <span className="radar-dot" style={{ width: 7, height: 7, background: STATUS_COLOR[n.status] }} />
                       <span className="truncate text-ink">{n.name}</span>
                     </span>
-                    <span className="font-mono text-[10px] text-dim">
+                    <span className="font-mono text-[10px] tabular-nums text-dim">
                       {n.latency_ms !== undefined ? `${n.latency_ms}ms` : n.status}
                     </span>
                   </button>
