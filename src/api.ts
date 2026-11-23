@@ -647,6 +647,8 @@ export interface LoraDatasetInfo {
   uncaptioned: number;
   ready: boolean;
   bytes: number;
+  /** Captioned images per genre, derived from the harvester's filenames. */
+  genres?: Record<string, number>;
 }
 
 export async function direkLoraDatasets(): Promise<{

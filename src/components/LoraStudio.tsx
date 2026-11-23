@@ -327,14 +327,38 @@ export const LoraStudio: React.FC = () => {
  {datasets.length > 0 && (
  <div className="border-t border-subtle pt-2 space-y-1">
  <div className="text-[10px] text-muted uppercase tracking-wider">Mga dataset sa disk</div>
- {datasets.map(d => (
- <div key={d.triggerToken} className="flex justify-between text-[10px]">
+ {datasets.map(d => {
+ const genres = Object.entries(d.genres ?? {}).sort((a, b) => b[1] - a[1]);
+ const biggest = genres.length ? genres[0][1] : 0;
+ return (
+ <div key={d.triggerToken} className="space-y-1 border-b border-subtle/40 pb-1 last:border-0">
+ <div className="flex justify-between text-[10px]">
  <span className="text-primary">{d.triggerToken}</span>
- <span className={d.ready ? 'text-green-400' : 'text-dim'}>
+ <span className={`font-mono tabular-nums ${d.ready ? 'text-green-400' : 'text-dim'}`}>
  {d.images} img · {d.captions} cap{d.ready ? '' : ' · hindi pa ready'}
  </span>
  </div>
+ {genres.length > 0 && (
+ <div className="flex flex-wrap gap-1">
+ {genres.map(([genre, count]) => (
+ <span
+ key={genre}
+ className="rounded-sm border border-subtle px-1 py-0.5 font-mono text-[9px] text-dim"
+ title={`${count} ng ${d.images} larawan`}
+ >
+ {genre} <span className="tabular-nums text-primary">{count}</span>
+ <span className="ml-1 inline-block h-1 align-middle bg-primary/60"
+ style={{ width: `${biggest ? Math.max(3, Math.round((count / biggest) * 22)) : 0}px` }} />
+ </span>
  ))}
+ </div>
+ )}
+ {genres.length === 0 && d.images > 0 && (
+ <div className="text-[9px] text-dim">Walang genre token sa filename — unclassified.</div>
+ )}
+ </div>
+ );
+ })}
  </div>
  )}
  </div>
