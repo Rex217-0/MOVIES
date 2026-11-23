@@ -51,24 +51,40 @@ jobs:
           npm run build
           npx cap sync android
 
-      # A new signing key every run means every build is a different app: Android
-      # rejects the update and users must uninstall, losing their data. The key is
-      # a secret and is never committed, so restore it from the repo secret.
-      - name: Restore the signing key
+      # Android will not install an unsigned APK, and it refuses to update an app
+      # whose signing key changed. So the key is restored from the repo secret when
+      # it exists; otherwise one is generated and cached, so every run after the
+      # first signs with the same key. The key is never committed.
+      - name: Cache a fallback signing key
+        uses: actions/cache@v4
+        with:
+          path: android/moviecreator.keystore
+          key: moviecreator-fallback-keystore-v1
+
+      - name: Provide the signing key
         env:
           MOVIECREATOR_KEYSTORE_B64: ${{ secrets.MOVIECREATOR_KEYSTORE_B64 }}
           MOVIECREATOR_KS_PASS: ${{ secrets.MOVIECREATOR_KS_PASS }}
         run: |
-          if [ -z "${MOVIECREATOR_KEYSTORE_B64:-}" ]; then
-            echo "::warning::MOVIECREATOR_KEYSTORE_B64 is not set; the release APK will be unsigned."
-            exit 0
+          KS_PASS="${MOVIECREATOR_KS_PASS:-moviecreator}"
+          if [ -n "${MOVIECREATOR_KEYSTORE_B64:-}" ]; then
+            printf '%s' "$MOVIECREATOR_KEYSTORE_B64" | base64 -d > android/moviecreator.keystore
+            echo "Using the key from repo secrets."
+          elif [ ! -f android/moviecreator.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore android/moviecreator.keystore -alias moviecreator \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$KS_PASS" -keypass "$KS_PASS" \
+              -dname "CN=Movie Creator, O=LJR Group, C=PH"
+            echo "::warning::MOVIECREATOR_KEYSTORE_B64 is not set; generated a fallback key and cached it. Set the secret to use your own."
+          else
+            echo "Reusing the cached fallback key."
           fi
-          printf '%s' "$MOVIECREATOR_KEYSTORE_B64" | base64 -d > android/moviecreator.keystore
           {
             echo "storeFile=moviecreator.keystore"
-            echo "storePassword=${MOVIECREATOR_KS_PASS:-moviecreator}"
+            echo "storePassword=$KS_PASS"
             echo "keyAlias=moviecreator"
-            echo "keyPassword=${MOVIECREATOR_KS_PASS:-moviecreator}"
+            echo "keyPassword=$KS_PASS"
           } > android/keystore.properties
 
       - name: Assemble the release APK
