@@ -31,6 +31,20 @@ test('genreOfStem finds the genre when the slug itself has underscores', () => {
   assert.equal(genreOfStem('my_slug_batch1_anime_007'), 'anime');
 });
 
+test('genreOfStem anchors on the token before the index, not the first match', () => {
+  // The batch slug is user text and may contain a genre word. The genre the
+  // harvester wrote is the one sitting right before the index.
+  assert.equal(genreOfStem('horror_special_comedy_001'), 'comedy');
+  assert.equal(genreOfStem('my_anime_project_thriller_007'), 'thriller');
+});
+
+test('genreOfStem returns null when the genre is not right before the index', () => {
+  // `direk_scifi_neon_001` is the shipped preset: "scifi" is part of the trigger
+  // name, not a genre slot, so it must not be counted as scifi samples.
+  assert.equal(genreOfStem('direk_scifi_neon_001'), null);
+  assert.equal(genreOfStem('demo_horror_001_extra'), null);
+});
+
 test('readDataset counts only captioned images per genre', () => {
   const root = makeRunsRoot([
     'b_horror_001.png', 'b_horror_001.txt',

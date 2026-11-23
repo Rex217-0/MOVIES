@@ -44,15 +44,20 @@ const GENRE_TOKENS = [
 ] as const;
 
 /**
- * Read the genre out of a `<slug>_<genre>_<NNN>` stem. The slug itself may
- * contain underscores, and some genres (`love_story`) contain one too, so the
- * genre is matched as a delimited run anywhere in the stem — longest first, so
- * `love_story` is never mistaken for a bare token.
+ * Read the genre out of a `<slug>_<genre>_<NNN>` stem.
+ *
+ * The harvester always writes the genre immediately before the zero-padded
+ * index, so the genre is anchored there rather than searched anywhere in the
+ * stem: a batch slug may itself contain a genre word (`horror_special_comedy_001`
+ * is a comedy batch), and `love_story` contains an underscore, so the token
+ * before the index is matched longest-first.
  */
 export function genreOfStem(stem: string): string | null {
-  const haystack = `_${stem.toLowerCase()}_`;
+  const lower = stem.toLowerCase();
   const byLength = [...GENRE_TOKENS].sort((a, b) => b.length - a.length);
-  for (const genre of byLength) if (haystack.includes(`_${genre}_`)) return genre;
+  for (const genre of byLength) {
+    if (new RegExp(`_${genre}_\\d+$`).test(lower)) return genre;
+  }
   return null;
 }
 
