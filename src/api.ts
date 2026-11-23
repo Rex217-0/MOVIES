@@ -210,6 +210,11 @@ export interface DirekChatResult {
   action: SkillAction | null;
   action_error: string | null;
   connector: ConnectorRunResult | null;
+  /** Stable per-browser thread id; the server echoes the one it stored under. */
+  threadId?: string;
+  turnId?: string;
+  /** True only when the turn really reached a store. */
+  persisted?: boolean;
 }
 
 export interface DirekStatus {
@@ -245,15 +250,37 @@ export async function direkStatus(): Promise<DirekStatus> {
   return res.json();
 }
 
-export async function direkChat(messages: DirekChatMessage[]): Promise<DirekChatResult> {
+export async function direkChat(
+  messages: DirekChatMessage[],
+  threadId?: string,
+): Promise<DirekChatResult> {
   const res = await apiFetch('/api/direk/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, threadId }),
   });
   if (res.status === 503) throw new AiUnavailableError(await res.json());
   if (!res.ok) throw new Error(`Direk request failed (${res.status})`);
   return res.json();
+}
+
+export interface StoredChatTurn {
+  turnId: string;
+  threadId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}
+
+/**
+ * The last turns of a thread, oldest first. Returns an empty list when the
+ * request fails, so a cold backend never blocks the page from rendering.
+ */
+export async function direkChatHistory(threadId: string): Promise<StoredChatTurn[]> {
+  const res = await apiFetch(`/api/direk/chat/history?threadId=${encodeURIComponent(threadId)}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data.turns) ? data.turns : [];
 }
 
 export async function direkReference(genre: string, n = 5): Promise<CatalogTitle[]> {

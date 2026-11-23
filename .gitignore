@@ -63,3 +63,8 @@ android/keystore.properties
 
 # Cloudflare tunnel binary (downloaded by scripts/tunnel.ps1 / tunnel.sh)
 tools/cloudflared*
+
+# Firebase Admin service-account key files must never be committed.
+*firebase*adminsdk*.json
+*-firebase-adminsdk-*.json
+serviceAccount*.json

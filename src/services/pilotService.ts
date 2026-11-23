@@ -47,7 +47,7 @@ export const PILOT_MODEL = 'kaggle-pilot';
  * the router can reach. `local-ollama` keeps its old name because the UI and the
  * status badge already speak it.
  */
-export type PilotSource = 'kaggle' | 'local-ollama' | 'gemini' | 'deepseek' | 'claude';
+export type PilotSource = 'kaggle' | 'local-ollama' | 'cloudflare' | 'gemini' | 'deepseek' | 'claude';
 
 /** Map a router provider onto the name the Pilot reports. */
 function sourceFor(provider: TextProvider): PilotSource {

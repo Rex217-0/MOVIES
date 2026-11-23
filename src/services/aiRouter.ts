@@ -4,10 +4,23 @@
  *
  * Keys are read from `process.env` at call time, never stored in source, and
  * every error message is scrubbed before it can reach a log or an HTTP body.
- * Provider order is Gemini, DeepSeek, Claude, then local Ollama; the first one
- * that answers wins. When none can, the caller gets `AiUnavailableError`, which
+ * Provider order is Cloudflare AI Gateway (only when CF_ACCOUNT_ID and
+ * CF_API_TOKEN are both set), then Gemini, DeepSeek, Claude, and finally local
+ * Ollama; the first one that answers wins. When none can, the caller gets `AiUnavailableError`, which
  * the HTTP layer turns into an honest 503 — nothing is ever fabricated.
  */
+
+import {
+  cloudflareChat,
+  cloudflareConfigured,
+  defaultCloudflareModel,
+  isDynamicRouteUnavailable,
+} from '../lib/ai.ts';
+import { sanitizeError } from '../lib/secrets.ts';
+
+// Re-exported so existing importers keep working after the implementation moved
+// to `lib/secrets.ts`, which both this router and the Cloudflare transport use.
+export { sanitizeError };
 
 export type ChatRole = 'system' | 'user' | 'assistant';
 
@@ -16,7 +29,7 @@ export interface ChatMessage {
   content: string;
 }
 
-export type TextProvider = 'gemini' | 'deepseek' | 'claude' | 'ollama';
+export type TextProvider = 'cloudflare' | 'gemini' | 'deepseek' | 'claude' | 'ollama';
 
 export interface RouterResult {
   text: string;
@@ -45,35 +58,6 @@ export class AiUnavailableError extends Error {
     this.name = 'AiUnavailableError';
     this.attempts = attempts;
   }
-}
-
-/** Keys that must never appear in a message we log or return. */
-function secretValues(): string[] {
-  return [
-    process.env.GEMINI_API_KEY,
-    process.env.DEEPSEEK_API_KEY,
-    process.env.ANTHROPIC_API_KEY,
-    process.env.APP_AUTH_TOKEN,
-    process.env.KAGGLE_PILOT_TOKEN,
-  ].filter((s): s is string => typeof s === 'string' && s.trim().length > 4);
-}
-
-/**
- * Strip secrets from an error message. Env values are removed by exact match,
- * and known key shapes are removed by pattern, because a provider can echo a
- * key back in an error body that was never in our environment.
- */
-export function sanitizeError(err: unknown): string {
-  let msg = err instanceof Error ? err.message : String(err);
-  for (const secret of secretValues()) {
-    msg = msg.split(secret).join('[REDACTED]');
-  }
-  return msg
-    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[REDACTED]')
-    .replace(/sk-ant-[0-9A-Za-z_-]{10,}/g, '[REDACTED]')
-    .replace(/\bsk-[0-9A-Za-z]{20,}/g, '[REDACTED]')
-    .replace(/([?&](?:key|api_key|access_token)=)[^&\s"']+/gi, '$1[REDACTED]')
-    .replace(/(Bearer\s+)[0-9A-Za-z._-]{10,}/gi, '$1[REDACTED]');
 }
 
 function apiKey(name: 'GEMINI_API_KEY' | 'DEEPSEEK_API_KEY' | 'ANTHROPIC_API_KEY'): string {
@@ -107,6 +91,9 @@ function ollamaModelName(): string {
 /** Providers that have everything they need to be tried right now. */
 export function configuredTextProviders(): TextProvider[] {
   const providers: TextProvider[] = [];
+  // Front of the chain, but only when the gateway is really set up. An
+  // unconfigured gateway must not add a failed hop to every reply.
+  if (cloudflareConfigured()) providers.push('cloudflare');
   if (apiKey('GEMINI_API_KEY')) providers.push('gemini');
   if (apiKey('DEEPSEEK_API_KEY')) providers.push('deepseek');
   if (apiKey('ANTHROPIC_API_KEY')) providers.push('claude');
@@ -282,7 +269,13 @@ async function callOllama(messages: ChatMessage[], opts: RouterOptions): Promise
   return { text, provider: 'ollama', model };
 }
 
+async function callCloudflare(messages: ChatMessage[], opts: RouterOptions): Promise<RouterResult> {
+  const { text, model } = await cloudflareChat(messages, opts);
+  return { text, provider: 'cloudflare', model };
+}
+
 const CALLERS: Record<TextProvider, (m: ChatMessage[], o: RouterOptions) => Promise<RouterResult>> = {
+  cloudflare: callCloudflare,
   gemini: callGemini,
   deepseek: callDeepSeek,
   claude: callClaude,
@@ -290,6 +283,7 @@ const CALLERS: Record<TextProvider, (m: ChatMessage[], o: RouterOptions) => Prom
 };
 
 const LABELS: Record<TextProvider, string> = {
+  cloudflare: 'Cloudflare AI Gateway',
   gemini: 'Gemini',
   deepseek: 'DeepSeek',
   claude: 'Claude',
