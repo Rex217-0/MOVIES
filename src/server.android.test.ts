@@ -22,6 +22,8 @@ function startServer(env: Record<string, string>) {
       ...process.env,
       PORT: String(port),
       GEMINI_API_KEY: '',
+      DEEPSEEK_API_KEY: '',
+      ANTHROPIC_API_KEY: '',
       DIREK_CONFIG: path.join(repoRoot, '.no-such-config.json'),
       OLLAMA_DISABLE: '1',
       FAL_KEY: '',

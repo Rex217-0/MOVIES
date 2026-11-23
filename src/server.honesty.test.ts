@@ -17,6 +17,8 @@ function startServer(env: Record<string, string>) {
       PORT: String(port),
       // Blank beats a developer's .env, which dotenv would otherwise load.
       GEMINI_API_KEY: '',
+      DEEPSEEK_API_KEY: '',
+      ANTHROPIC_API_KEY: '',
       DIREK_CONFIG: path.join(repoRoot, '.no-such-config.json'),
       // Force the no-backend path: this test is about what happens when no text
       // model is configured, not about a developer's local Ollama.

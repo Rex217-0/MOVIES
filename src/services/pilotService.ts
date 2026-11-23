@@ -33,7 +33,8 @@
  * fail, and then honestly — it never invents a script.
  */
 
-import { ollamaChat, ollamaStatus, ollamaUrl, ollamaModel } from '../direk/llm.ts';
+import { ollamaStatus, ollamaUrl, ollamaModel } from '../direk/llm.ts';
+import { generateTextWithFallback, type TextProvider } from './aiRouter.ts';
 
 /** The honest error code every Pilot failure carries. */
 export const PILOT_UNAVAILABLE = 'PILOT_UNAVAILABLE';
@@ -41,13 +42,24 @@ export const PILOT_UNAVAILABLE = 'PILOT_UNAVAILABLE';
 /** The model name reported in error bodies, for the UI and the logs. */
 export const PILOT_MODEL = 'kaggle-pilot';
 
-/** Which worker answered: the Kaggle cloud worker or the local Ollama. */
-export type PilotSource = 'kaggle' | 'local-ollama';
+/**
+ * Which worker answered: the Kaggle cloud worker, or one of the text providers
+ * the router can reach. `local-ollama` keeps its old name because the UI and the
+ * status badge already speak it.
+ */
+export type PilotSource = 'kaggle' | 'local-ollama' | 'gemini' | 'deepseek' | 'claude';
+
+/** Map a router provider onto the name the Pilot reports. */
+function sourceFor(provider: TextProvider): PilotSource {
+  return provider === 'ollama' ? 'local-ollama' : provider;
+}
 
 /** A value plus the worker that produced it. */
 export interface PilotAnswer<T> {
   value: T;
   source: PilotSource;
+  /** The concrete model name, for the UI and the job record. */
+  model?: string;
 }
 
 /** One scene from the Pilot's breakdown, before it is merged onto the plan. */
@@ -321,62 +333,77 @@ const DIREK_SYSTEM = [
   'Huwag mag-imbento ng quote o diyalogo para sa totoong tao.',
 ].join(' ');
 
-/** A screenplay from the local Ollama instance (T1, real time). */
-async function localScript(brief: string): Promise<string> {
-  const text = await ollamaChat({
-    system: DIREK_SYSTEM,
-    messages: [{ role: 'user', content: `Brief: ${brief}\n\nIsulat ang buong screenplay.` }],
-    temperature: 0.7,
-    numCtx: 8192,
-  });
-  const script = text.trim();
-  if (!script) throw new Error('Walang nilabas ang local na Ollama.');
-  return script;
+/**
+ * A screenplay from whichever text provider the router can reach. Ollama is the
+ * free default, but a configured Gemini, DeepSeek, or Claude key is used first.
+ */
+async function localScript(brief: string): Promise<PilotAnswer<string>> {
+  const result = await generateTextWithFallback(
+    [
+      { role: 'system', content: DIREK_SYSTEM },
+      { role: 'user', content: `Brief: ${brief}\n\nIsulat ang buong screenplay.` },
+    ],
+    { temperature: 0.7 },
+  );
+  const script = result.text.trim();
+  if (!script) throw new Error('Walang nilabas ang text provider.');
+  return { value: script, source: sourceFor(result.provider), model: result.model };
 }
 
-/** A character bible from the local Ollama instance. */
-async function localBible(script: string): Promise<string> {
-  const text = await ollamaChat({
-    system: DIREK_SYSTEM,
-    messages: [{ role: 'user', content: `Ito ang screenplay:\n\n${script}\n\nIsulat ang character bible: pangalan, itsura, ugali, boses ng bawat karakter.` }],
-    temperature: 0.6,
-    numCtx: 8192,
-  });
-  const bible = text.trim();
-  if (!bible) throw new Error('Walang nilabas ang local na Ollama.');
-  return bible;
+/** A character bible from whichever text provider the router can reach. */
+async function localBible(script: string): Promise<PilotAnswer<string>> {
+  const result = await generateTextWithFallback(
+    [
+      { role: 'system', content: DIREK_SYSTEM },
+      {
+        role: 'user',
+        content: `Ito ang screenplay:\n\n${script}\n\nIsulat ang character bible: pangalan, itsura, ugali, boses ng bawat karakter.`,
+      },
+    ],
+    { temperature: 0.6 },
+  );
+  const bible = result.text.trim();
+  if (!bible) throw new Error('Walang nilabas ang text provider.');
+  return { value: bible, source: sourceFor(result.provider), model: result.model };
 }
 
-/** A scene breakdown from the local Ollama instance, as JSON. */
-async function localScenes(script: string): Promise<PilotScene[]> {
-  const text = await ollamaChat({
-    system: 'Magbalik lamang ng JSON: {"scenes":[{"heading":"","narration":"","visual":"","mood":""}]}. Walang ibang teksto.',
-    messages: [{ role: 'user', content: `Hatiin sa 18 eksena ang screenplay na ito:\n\n${script}` }],
-    temperature: 0.3,
-    numCtx: 8192,
-    json: true,
-  });
+/** A scene breakdown from whichever text provider the router can reach, as JSON. */
+async function localScenes(script: string): Promise<PilotAnswer<PilotScene[]>> {
+  const result = await generateTextWithFallback(
+    [
+      {
+        role: 'system',
+        content: 'Magbalik lamang ng JSON: {"scenes":[{"heading":"","narration":"","visual":"","mood":""}]}. Walang ibang teksto.',
+      },
+      { role: 'user', content: `Hatiin sa 18 eksena ang screenplay na ito:\n\n${script}` },
+    ],
+    { temperature: 0.3, json: true },
+  );
   let payload: unknown = {};
   try {
-    payload = JSON.parse(text);
+    payload = JSON.parse(result.text);
   } catch {
-    throw new Error('Hindi JSON ang sagot ng local na Ollama.');
+    throw new Error('Hindi JSON ang sagot ng text provider.');
   }
   const scenes = pickScenes(payload);
-  if (scenes.length === 0) throw new Error('Walang eksena sa breakdown ng local na Ollama.');
-  return scenes;
+  if (scenes.length === 0) throw new Error('Walang eksena sa breakdown ng text provider.');
+  return { value: scenes, source: sourceFor(result.provider), model: result.model };
 }
 
 /**
- * Try the Kaggle cloud worker first (T3 heavy batch), then the local Ollama
- * instance (T1 real time). Only when both fail does this throw, and the error
- * names both reasons — nothing is ever fabricated.
+ * Try the Kaggle cloud worker first (T3 heavy batch), then whatever text
+ * provider the router can reach (Gemini, DeepSeek, Claude, or local Ollama).
+ * Only when all of them fail does this throw, and the error names every reason
+ * — nothing is ever fabricated.
  */
-async function dualPilot<T>(kaggle: () => Promise<T>, local: () => Promise<T>): Promise<PilotAnswer<T>> {
+async function dualPilot<T>(
+  kaggle: () => Promise<T>,
+  local: () => Promise<PilotAnswer<T>>,
+): Promise<PilotAnswer<T>> {
   let kaggleDetail: string;
   if (pilotConfigured()) {
     try {
-      return { value: await kaggle(), source: 'kaggle' };
+      return { value: await kaggle(), source: 'kaggle', model: PILOT_MODEL };
     } catch (error: any) {
       kaggleDetail = error instanceof PilotUnavailable ? error.detail : error?.message || 'error';
     }
@@ -384,18 +411,14 @@ async function dualPilot<T>(kaggle: () => Promise<T>, local: () => Promise<T>): 
     kaggleDetail = 'Hindi naka-set ang KAGGLE_PILOT_URL.';
   }
 
-  const status = await ollamaStatus();
-  if (!status.reachable) {
-    throw new PilotUnavailable(
-      `${kaggleDetail} Wala ring local na Ollama sa ${status.url} (${status.error || 'hindi maabot'}).`,
-    );
-  }
   try {
-    return { value: await local(), source: 'local-ollama' };
+    return await local();
   } catch (error: any) {
-    throw new PilotUnavailable(
-      `${kaggleDetail} Nabigo rin ang local na Ollama (${error?.message || 'error'}).`,
-    );
+    const status = await ollamaStatus();
+    const localDetail = status.reachable
+      ? `Nabigo ang text provider (${error?.message || 'error'}).`
+      : `Wala ring local na Ollama sa ${status.url} (${status.error || 'hindi maabot'}).`;
+    throw new PilotUnavailable(`${kaggleDetail} ${localDetail}`);
   }
 }
 
@@ -447,6 +470,6 @@ export async function writeScreenplay(brief: string): Promise<ScreenplayResult> 
     bible,
     scenes,
     source: scriptAnswer.source,
-    model: scriptAnswer.source === 'kaggle' ? PILOT_MODEL : ollamaModel(),
+    model: scriptAnswer.model ?? (scriptAnswer.source === 'kaggle' ? PILOT_MODEL : ollamaModel()),
   };
 }
