@@ -138,6 +138,16 @@ jobs:
           npm ci
           npm run build
 
+      # android-legacy/build.sh generates a brand new key whenever the keystore is
+      # absent. Without this cache every run would sign with a different key, and
+      # Android refuses to update an app whose signer changed, so users would have
+      # to uninstall and lose their data. The key is never committed.
+      - name: Cache the signing key
+        uses: actions/cache@v4
+        with:
+          path: android-legacy/moviecreator.keystore
+          key: moviecreator-legacy-keystore-v1
+
       - name: Build the legacy APK
         env:
           MOVIECREATOR_KEYSTORE_B64: ${{ secrets.MOVIECREATOR_KEYSTORE_B64 }}
@@ -145,6 +155,14 @@ jobs:
         run: |
           export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
           export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          if [ -n "${MOVIECREATOR_KEYSTORE_B64:-}" ]; then
+            printf '%s' "$MOVIECREATOR_KEYSTORE_B64" | base64 -d > android-legacy/moviecreator.keystore
+            echo "Using the key from repo secrets."
+          elif [ -f android-legacy/moviecreator.keystore ]; then
+            echo "Reusing the cached key."
+          else
+            echo "::warning::No keystore yet; build.sh will generate one and it will be cached from now on."
+          fi
           bash android-legacy/build.sh android-legacy/movie-creator.apk
 
       - name: Upload the APK
