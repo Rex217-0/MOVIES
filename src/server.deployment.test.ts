@@ -255,6 +255,8 @@ test('video is never offloaded to the cloud, even when T3 is forbidden locally',
   const { child, port } = await startServer({
     APP_AUTH_TOKEN: '', T3_ALLOW_LOCAL: '0', CLOUD_T3_URL: '',
     POLLINATIONS_DISABLE: '1', MOTION_DISABLE: '1',
+    // This test is about routing, not the strict guard, so it opts out.
+    STRICT_REAL_VIDEO_ONLY: 'false',
   });
   t.after(() => child.kill());
   await waitForServer(port);
@@ -292,7 +294,12 @@ test('an unreachable ComfyUI answers 503 with the exact URL and error, never a f
   });
   assert.equal(res.status, 503);
   const body: any = await res.json();
-  assert.equal(body.code, 'AI_UNAVAILABLE');
+  // Strict mode is the default for PREFERRED_RENDER_ENGINE=comfyui, so a dead
+  // ComfyUI is reported as the specific missing-Wan dependency, not a generic
+  // outage, and the reply is flagged strict.
+  assert.equal(body.code, 'COMFYUI_WAN22_UNAVAILABLE');
+  assert.equal(body.strict, true);
+  assert.ok(Array.isArray(body.missing), 'the missing weight list is present');
   // The detail must name the exact configured URL and say COMFYUI_URL, so the
   // operator knows precisely what to fix.
   assert.match(String(body.detail), new RegExp(deadUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));

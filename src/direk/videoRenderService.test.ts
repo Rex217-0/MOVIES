@@ -17,6 +17,7 @@ const ENV_KEYS = [
   'COMFYUI_URL', 'COMFYUI_VIDEO_WORKFLOW', 'COMFYUI_DISABLE',
   'PREFERRED_RENDER_ENGINE', 'ALLOW_PAID_CLOUD',
   'POLLINATIONS_URL', 'POLLINATIONS_DISABLE', 'MOTION_DISABLE',
+  'STRICT_REAL_VIDEO_ONLY',
 ];
 
 /** Run `fn` with a clean slate for the video-related environment. */
@@ -186,8 +187,13 @@ test('Wan 2.2 on fal.ai is the fallback when ComfyUI cannot render', async (t) =
 test('no backend at all fails with AI_UNAVAILABLE, never a placeholder', async () => {
   setFalClientForTests(null);
   // Free-first: with the default chain the free motion engine would catch the
-  // job, so disable every backend to prove the no-backend path is honest.
-  await withEnv({ COMFYUI_DISABLE: '1', POLLINATIONS_DISABLE: '1', MOTION_DISABLE: '1' }, async () => {
+  // job, so disable every backend to prove the no-backend path is honest. The
+  // strict guard is opted out here so this covers the plain AI_UNAVAILABLE code;
+  // the strict code is asserted in its own test below.
+  await withEnv({
+    COMFYUI_DISABLE: '1', POLLINATIONS_DISABLE: '1', MOTION_DISABLE: '1',
+    STRICT_REAL_VIDEO_ONLY: 'false',
+  }, async () => {
     assert.equal(await videoRenderReady(), false);
     await assert.rejects(
       () => renderVideo({ prompt: 'wala' }),
@@ -364,6 +370,8 @@ test('with ComfyUI OFF, the free motion engine catches the job (real failover)',
     PREFERRED_RENDER_ENGINE: 'comfyui',
     COMFYUI_DISABLE: '1',
     POLLINATIONS_URL: poll.url,
+    // This test is about the free failover, so it opts out of the strict guard.
+    STRICT_REAL_VIDEO_ONLY: 'false',
   }, async () => {
     assert.equal(await videoRenderReady(), true, 'a free engine is still ready');
     const out = await renderVideo({ prompt: 'isang eksena sa gubat', seconds: 2 });
@@ -396,5 +404,58 @@ test('an unset engine defaults to the free chain, never paid cloud', async () =>
   await withEnv({ COMFYUI_DISABLE: '1', POLLINATIONS_DISABLE: '1' }, async () => {
     assert.equal(preferredRenderEngine(), 'comfyui',
       'with nothing set the pipeline is free-first; only an explicit fal pays');
+  });
+});
+
+test('strict mode refuses with COMFYUI_WAN22_UNAVAILABLE and never a fallback clip', async (t) => {
+  setFalClientForTests(null);
+  // A ComfyUI that answers /system_stats but has none of the Wan 2.2 weights is
+  // the exact scenario the guard was built for: offline-looking, yet reachable.
+  const comfy = await startMockComfyUI({ models: [] });
+  t.after(() => comfy.close());
+  const poll = await startFakePollinations();
+  t.after(() => poll.close());
+
+  await withEnv({
+    PREFERRED_RENDER_ENGINE: 'comfyui',
+    COMFYUI_URL: comfy.url,
+    COMFYUI_VIDEO_WORKFLOW: writeVideoWorkflow(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-'))),
+    POLLINATIONS_URL: poll.url,
+    STRICT_REAL_VIDEO_ONLY: 'true',
+  }, async () => {
+    await assert.rejects(
+      () => renderVideo({ prompt: 'isang eksena' }),
+      (err: any) => {
+        assert.equal(err.code, 'COMFYUI_WAN22_UNAVAILABLE');
+        assert.equal(err.name, 'ComfyWan22Unavailable');
+        assert.ok(Array.isArray(err.missing), 'the missing files are listed');
+        // The message must name the exact dependency, not just "unavailable".
+        assert.match(err.message, /wan2\.2_ti2v_5B_fp16\.safetensors/);
+        return true;
+      },
+    );
+  });
+});
+
+test('strict mode is the default for the comfyui engine, and off elsewhere', async () => {
+  await withEnv({ PREFERRED_RENDER_ENGINE: 'comfyui' }, async () => {
+    const { strictRealVideoOnly } = await import('./strictVideo.ts');
+    assert.equal(strictRealVideoOnly('comfyui'), true, 'comfyui promises a local GPU render');
+    assert.equal(strictRealVideoOnly('motion'), false, 'motion is the free engine itself');
+    assert.equal(strictRealVideoOnly('fal'), false, 'the paid cloud path is a real render');
+  });
+});
+
+test('STRICT_REAL_VIDEO_ONLY=false still allows the free motion engine', async (t) => {
+  const poll = await startFakePollinations();
+  t.after(() => poll.close());
+  await withEnv({
+    PREFERRED_RENDER_ENGINE: 'comfyui',
+    COMFYUI_DISABLE: '1',
+    POLLINATIONS_URL: poll.url,
+    STRICT_REAL_VIDEO_ONLY: 'false',
+  }, async () => {
+    const out = await renderVideo({ prompt: 'isang eksena sa gubat', seconds: 2 });
+    assert.equal(out.engine, 'motion', 'the operator opted out, so the fallback runs');
   });
 });

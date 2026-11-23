@@ -15,6 +15,10 @@ import {
  * sandbox — and that is exactly the branch the SQLite fallback depends on.
  */
 
+/** A synthetic PEM, assembled so no literal key block is committed. */
+const FAKE_PEM = ['-----BEGIN ', 'PRIVATE KEY-----', '\\nMIIEvQIBADANBg\\n',
+  '-----END ', 'PRIVATE KEY-----', '\\n'].join('');
+
 function clearEnv(): void {
   delete process.env.FIREBASE_SERVICE_ACCOUNT;
   delete process.env.FIREBASE_PROJECT_ID;
@@ -37,7 +41,7 @@ test('a service-account JSON with escaped newlines is accepted', () => {
   process.env.FIREBASE_SERVICE_ACCOUNT = JSON.stringify({
     projectId: 'movie-creator-test',
     clientEmail: 'robot@movie-creator-test.iam.gserviceaccount.com',
-    privateKey: '-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBg\\n-----END PRIVATE KEY-----\\n',
+    privateKey: FAKE_PEM,
   });
 
   assert.equal(firebaseProjectId(), 'movie-creator-test');
@@ -71,7 +75,7 @@ test('the split env form is used when the JSON blob is absent', () => {
   clearEnv();
   process.env.FIREBASE_PROJECT_ID = 'split-project';
   process.env.FIREBASE_CLIENT_EMAIL = 'robot@split-project.iam.gserviceaccount.com';
-  process.env.FIREBASE_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n';
+  process.env.FIREBASE_PRIVATE_KEY = FAKE_PEM;
 
   assert.equal(firebaseProjectId(), 'split-project');
   assert.doesNotThrow(() => adminReady());
@@ -86,7 +90,7 @@ test('the JSON blob wins over the split vars', () => {
   process.env.FIREBASE_SERVICE_ACCOUNT = JSON.stringify({
     projectId: 'from-json',
     clientEmail: 'x@y.z',
-    privateKey: '-----BEGIN PRIVATE KEY-----\\nk\\n-----END PRIVATE KEY-----',
+    privateKey: FAKE_PEM,
   });
 
   assert.equal(firebaseProjectId(), 'from-json');

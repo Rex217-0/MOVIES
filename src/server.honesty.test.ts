@@ -52,6 +52,9 @@ test('without a Gemini key, AI endpoints return 503 AI_UNAVAILABLE instead of fa
   // 503 when no backend at all can answer.
   const { child, port } = startServer({
     APP_AUTH_TOKEN: '', POLLINATIONS_DISABLE: '1', MOTION_DISABLE: '1',
+    // This test is about the plain no-backend 503. The stricter
+    // COMFYUI_WAN22_UNAVAILABLE code is asserted in its own tests.
+    STRICT_REAL_VIDEO_ONLY: 'false',
   });
   t.after(() => child.kill());
   await waitForServer(port);

@@ -710,7 +710,9 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
     res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
   } catch (error: any) {
     const reason = error?.message || 'Unknown error';
-    let detail = error?.name === 'VideoBackendUnavailable' ? 'Walang video backend.' : 'Check the server logs.';
+    let detail = error?.code === 'COMFYUI_WAN22_UNAVAILABLE'
+      ? 'Kulang ang Wan 2.2 weights sa local ComfyUI, at naka-on ang STRICT_REAL_VIDEO_ONLY.'
+      : error?.name === 'VideoBackendUnavailable' ? 'Walang video backend.' : 'Check the server logs.';
     // When ComfyUI is the chosen engine but its URL cannot be reached, name the
     // exact URL and the underlying cause (timeout, HTTP status, connection
     // error) so the operator can fix .env instead of guessing. No fake clip.
@@ -723,6 +725,18 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
     }
     console.error('[VIDEO ERROR] render failed:', reason);
     broadcastThought(`[VIDEO ERROR] ${reason}`);
+    // A missing Wan 2.2 weight is a different failure from "no backend at all":
+    // it names the exact file, and the caller must not treat the reply as a
+    // generic AI outage. STRICT_REAL_VIDEO_ONLY produced it, never a fallback.
+    if (error?.code === 'COMFYUI_WAN22_UNAVAILABLE') {
+      res.status(503).json({
+        ...aiUnavailable('video', detail, reason),
+        code: 'COMFYUI_WAN22_UNAVAILABLE',
+        missing: Array.isArray(error.missing) ? error.missing : [],
+        strict: true,
+      });
+      return;
+    }
     res.status(503).json(aiUnavailable('video', detail, reason));
   }
 });
