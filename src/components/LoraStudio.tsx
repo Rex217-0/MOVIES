@@ -2,12 +2,13 @@ import React, { useState } from 'react';
 import {
   direkLoraPlan, direkLoraDataset, direkTrainStatus, direkTrainStart, direkTrainCancel,
   direkLoraList, trainStreamUrl, direkHarvestLoraImages, direkLoraDatasets,
+  direkSeasonalHarvest, direkGetHarvestSchedule, direkSaveHarvestSchedule,
   type LoraBriefInput, type LoraPlanResult, type TrainJob, type TrainStatus, type LoraFile,
-  type HarvestResult, type LoraDatasetInfo,
+  type HarvestResult, type LoraDatasetInfo, type SeasonalHarvestResult, type HarvestSchedule,
 } from '../api';
 import {
   Layers, Download, Loader2, AlertTriangle, Wand2, Film, CheckCircle2, Boxes,
-  Play, Square, Terminal, Cpu, Pickaxe,
+  Play, Square, Terminal, Cpu, Pickaxe, CalendarClock, Save,
 } from 'lucide-react';
 
 const GENRE_OPTIONS = [
@@ -50,8 +51,68 @@ export const LoraStudio: React.FC = () => {
   const [harvestError, setHarvestError] = useState<string | null>(null);
   const [datasets, setDatasets] = useState<LoraDatasetInfo[]>([]);
 
+  const [seasonalTheme, setSeasonalTheme] = useState('');
+  const [perGenreCount, setPerGenreCount] = useState(10);
+  const [batchSlug, setBatchSlug] = useState('');
+  const [seasonalRunning, setSeasonalRunning] = useState(false);
+  const [seasonal, setSeasonal] = useState<SeasonalHarvestResult | null>(null);
+  const [seasonalError, setSeasonalError] = useState<string | null>(null);
+
+  const [schedule, setSchedule] = useState<HarvestSchedule>({
+    enabled: false, hour: 2, minute: 0, dayOfWeek: null, dayOfMonth: null, month: null,
+    theme: '', genres: [], perGenreCount: 10,
+  });
+  const [savingSchedule, setSavingSchedule] = useState(false);
+  const [scheduleNote, setScheduleNote] = useState<string | null>(null);
+
   const refreshDatasets = () => {
     direkLoraDatasets().then(r => setDatasets(r.datasets)).catch(() => {});
+  };
+
+  // The schedule is saved on the server, so it is loaded once on mount rather
+  // than kept only in this tab.
+  React.useEffect(() => {
+    direkGetHarvestSchedule()
+      .then(saved => setSchedule(saved))
+      .catch(() => {});
+  }, []);
+
+  const runSeasonal = async () => {
+    setSeasonalRunning(true);
+    setSeasonalError(null);
+    setSeasonal(null);
+    try {
+      const result = await direkSeasonalHarvest({
+        batchSlug: batchSlug || undefined,
+        theme: seasonalTheme,
+        perGenreCount,
+      });
+      setSeasonal(result);
+      refreshDatasets();
+    } catch (error: any) {
+      setSeasonalError(error?.message || String(error));
+    } finally {
+      setSeasonalRunning(false);
+    }
+  };
+
+  const saveScheduleNow = async () => {
+    setSavingSchedule(true);
+    setScheduleNote(null);
+    try {
+      const saved = await direkSaveHarvestSchedule(schedule);
+      setSchedule(saved);
+      setScheduleNote(
+        saved.enabled
+          ? `Naka-save: araw-araw ${String(saved.hour).padStart(2, '0')}:${String(saved.minute).padStart(2, '0')}.`
+          : 'Naka-save, pero naka-off (enabled = false).',
+      );
+    } catch (error: any) {
+      setScheduleNote(null);
+      setSeasonalError(error?.message || String(error));
+    } finally {
+      setSavingSchedule(false);
+    }
   };
 
   const harvestScifiNeon = async () => {
@@ -276,6 +337,150 @@ export const LoraStudio: React.FC = () => {
  ))}
  </div>
  )}
+ </div>
+
+ {/* Season 1 Episode 2: the 8-genre seasonal sweep and its schedule. */}
+ <div className="border-t border-subtle pt-3 space-y-2">
+ <div className="flex items-center gap-2">
+ <CalendarClock className="w-3.5 h-3.5 text-primary" />
+ <div className="text-[11px] font-bold text-white">Seasonal 8-Genre Harvest</div>
+ </div>
+ <div className="text-[10px] text-dim">
+ 8 genre × {perGenreCount} aprubadong PNG = {8 * perGenreCount} larawan. Bawat isa dumadaan sa Bodegero QC;
+ ang palpak ay napupunta sa lora_rejected kasama ang dahilan.
+ </div>
+
+ <Field label="Tema (hal. Christmas Eve concept)">
+ <input
+ value={seasonalTheme}
+ onChange={e => setSeasonalTheme(e.target.value)}
+ placeholder="Araw ng Puso / Valentine's Day"
+ className={inputCls}
+ />
+ </Field>
+
+ <div className="grid grid-cols-2 gap-3">
+ <Field label="Bawat genre">
+ <input
+ type="number"
+ min={1}
+ max={40}
+ value={perGenreCount}
+ onChange={e => setPerGenreCount(Math.max(1, Math.min(40, Number(e.target.value) || 1)))}
+ className={inputCls}
+ />
+ </Field>
+ <Field label="Batch slug">
+ <input
+ value={batchSlug}
+ onChange={e => setBatchSlug(e.target.value)}
+ placeholder="xmas-2026"
+ className={inputCls}
+ />
+ </Field>
+ </div>
+
+ <button
+ onClick={runSeasonal}
+ disabled={seasonalRunning}
+ className="w-full flex items-center justify-center gap-2 bg-primary text-black font-bold text-[11px] py-2 rounded-card disabled:opacity-50"
+ >
+ {seasonalRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Layers className="w-3.5 h-3.5" />}
+ {seasonalRunning ? 'Nag-haharvest ng 8 genre… (ilang minuto)' : `Seasonal 8-Genre Harvest (${8 * perGenreCount}x + Bodegero QC)`}
+ </button>
+
+ {seasonalError && (
+ <div className="flex gap-2 text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-card p-2">
+ <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-[1px]" />
+ <span>{seasonalError}</span>
+ </div>
+ )}
+
+ {seasonal && (
+ <div className="text-[10px] space-y-1">
+ <div className={seasonal.approved > 0 ? 'text-green-400 flex items-center gap-1' : 'text-amber-400 flex items-center gap-1'}>
+ <CheckCircle2 className="w-3 h-3" />
+ Aprubado: {seasonal.approved} / {seasonal.requested} · na-reject: {seasonal.rejected}
+ </div>
+ <div className="text-dim">{seasonal.note}</div>
+ <div className="grid grid-cols-2 gap-x-3 gap-y-[2px] pt-1">
+ {seasonal.perGenre.map(g => (
+ <div key={g.genre} className="flex justify-between">
+ <span className="text-muted">{g.genre}</span>
+ <span className={g.complete ? 'text-green-400' : 'text-amber-400'}>{g.approved}/{g.target}</span>
+ </div>
+ ))}
+ </div>
+ </div>
+ )}
+
+ {/* The saved schedule the background ticker reads. */}
+ <div className="border-t border-subtle pt-2 space-y-2">
+ <div className="flex items-center justify-between">
+ <div className="text-[10px] text-muted uppercase tracking-wider">Schedule Editor</div>
+ <label className="flex items-center gap-1 text-[10px] text-dim">
+ <input
+ type="checkbox"
+ checked={schedule.enabled}
+ onChange={e => setSchedule({ ...schedule, enabled: e.target.checked })}
+ />
+ enabled
+ </label>
+ </div>
+
+ <div className="grid grid-cols-3 gap-2">
+ <Field label="Oras">
+ <input
+ type="number"
+ min={0}
+ max={23}
+ value={schedule.hour}
+ onChange={e => setSchedule({ ...schedule, hour: Number(e.target.value) || 0 })}
+ className={inputCls}
+ />
+ </Field>
+ <Field label="Minuto">
+ <input
+ type="number"
+ min={0}
+ max={59}
+ value={schedule.minute}
+ onChange={e => setSchedule({ ...schedule, minute: Number(e.target.value) || 0 })}
+ className={inputCls}
+ />
+ </Field>
+ <Field label="Bawat genre">
+ <input
+ type="number"
+ min={1}
+ max={40}
+ value={schedule.perGenreCount}
+ onChange={e => setSchedule({ ...schedule, perGenreCount: Number(e.target.value) || 1 })}
+ className={inputCls}
+ />
+ </Field>
+ </div>
+
+ <Field label="Tema ng schedule">
+ <input
+ value={schedule.theme}
+ onChange={e => setSchedule({ ...schedule, theme: e.target.value })}
+ placeholder="Christmas Eve concept"
+ className={inputCls}
+ />
+ </Field>
+
+ <button
+ onClick={saveScheduleNow}
+ disabled={savingSchedule}
+ className="w-full flex items-center justify-center gap-2 border border-subtle text-white text-[11px] py-2 rounded-card disabled:opacity-50"
+ >
+ {savingSchedule ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+ {savingSchedule ? 'Sine-save…' : 'I-save ang schedule'}
+ </button>
+
+ {scheduleNote && <div className="text-[10px] text-green-400">{scheduleNote}</div>}
+ </div>
  </div>
 
  <Field label="Pamagat">

@@ -58,6 +58,8 @@ export const ACTION_SKILLS: { skill: string; does: string; args: string }[] = [
   // Season 1 extension skills; see SEASON_ONE_SKILLS in extensions/season01.
   { skill: 'lora_harvest', does: 'Humakot ng libreng larawan (Wallhaven/Openverse/Wikimedia) papuntang LoRA dataset. Season 1 extension.', args: '{query, triggerToken, count?}' },
   { skill: 'lora_datasets', does: 'Listahan ng LoRA dataset sa lora_runs kasama ang bilang ng sample. Season 1 extension.', args: '{}' },
+  { skill: 'lora_harvest_batch', does: 'Seasonal 8-genre sweep: 10 aprubadong PNG bawat genre sa Bodegero QC. Season 1 extension.', args: '{theme?, genres?, perGenreCount?, batchSlug?}' },
+  { skill: 'wan22_status', does: 'Suriin kung abot ang ComfyUI at nakalista ang Wan 2.2 models. Season 1 extension.', args: '{}' },
 ];
 
 const ACTION_LIST = ACTION_SKILLS.map(s => `- ${s.skill}: ${s.does} args: ${s.args}`).join('\n');

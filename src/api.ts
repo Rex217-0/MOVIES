@@ -522,6 +522,95 @@ export async function direkHarvestLoraImages(input: {
   return body;
 }
 
+export interface SeasonalGenreResult {
+  genre: string;
+  target: number;
+  approved: number;
+  rejected: number;
+  complete: boolean;
+}
+
+export interface SeasonalHarvestResult {
+  ok: boolean;
+  batchSlug: string;
+  theme: string;
+  requested: number;
+  approved: number;
+  rejected: number;
+  perGenre: SeasonalGenreResult[];
+  note: string;
+}
+
+/** One seasonal sweep: every genre, Bodegero QC, rejects quarantined. */
+export async function direkSeasonalHarvest(input: {
+  batchSlug?: string;
+  theme?: string;
+  genres?: string[];
+  perGenreCount?: number;
+}): Promise<SeasonalHarvestResult> {
+  const res = await apiFetch('/api/extensions/season-01-harvester/harvest-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(body.error || body.note || `Seasonal harvest failed (${res.status})`);
+  }
+  return body;
+}
+
+export interface HarvestSchedule {
+  enabled: boolean;
+  hour: number;
+  minute: number;
+  dayOfWeek: number | null;
+  dayOfMonth: number | null;
+  month: number | null;
+  theme: string;
+  genres: string[];
+  perGenreCount: number;
+  defaults?: { genres: string[]; perGenreCount: number };
+}
+
+export async function direkGetHarvestSchedule(): Promise<HarvestSchedule> {
+  const res = await apiFetch('/api/extensions/season-01-harvester/schedule');
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Could not load schedule (${res.status})`);
+  return body;
+}
+
+export async function direkSaveHarvestSchedule(schedule: HarvestSchedule): Promise<HarvestSchedule> {
+  const res = await apiFetch('/api/extensions/season-01-harvester/schedule', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(schedule),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Could not save schedule (${res.status})`);
+  return body;
+}
+
+export interface Wan22Status {
+  ok: boolean;
+  comfyUrl: string;
+  reachable: boolean;
+  workflowPresent: boolean;
+  missingModels: string[];
+  note: string;
+  models: { unet: string; clip: string; vae: string };
+}
+
+export async function direkWan22Status(): Promise<Wan22Status> {
+  // 503 still carries a useful body (what is missing), so it is not thrown away.
+  const res = await apiFetch('/api/extensions/season-01-wan22/status');
+  const body = await res.json().catch(() => ({}));
+  if (!body || typeof body.ok !== 'boolean') {
+    throw new Error(body?.error || `Could not check Wan 2.2 (${res.status})`);
+  }
+  return body;
+}
+
 export interface LoraDatasetInfo {
   triggerToken: string;
   dir: string;
