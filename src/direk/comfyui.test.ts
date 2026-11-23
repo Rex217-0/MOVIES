@@ -326,3 +326,49 @@ test('checkComfyReachability names the exact URL when unreachable', async () => 
     if (saved === undefined) delete process.env.COMFYUI_URL; else process.env.COMFYUI_URL = saved;
   }
 });
+
+test('the shipped workflows/comfyui_video_api.json fills cleanly and is a real Wan 2.1 graph', () => {
+  const saved = process.env.COMFYUI_VIDEO_WORKFLOW;
+  const savedCkpt = process.env.COMFYUI_CHECKPOINT;
+  const tpl = path.join(process.cwd(), 'workflows', 'comfyui_video_api.json');
+  assert.ok(fs.existsSync(tpl), 'the workflow ships with the repo');
+  process.env.COMFYUI_VIDEO_WORKFLOW = tpl;
+  process.env.COMFYUI_CHECKPOINT = 'wan2.1_t2v_1.3B_fp16.safetensors';
+  try {
+    // No unfilled placeholder may survive the real builder.
+    assert.deepEqual(unfilledPlaceholders(fs.readFileSync(tpl, 'utf8')), []);
+
+    const wf: any = buildVideoWorkflow('isang babaeng naka-barong sa ulan', {
+      negative: 'blurry', seed: 42, width: 480, height: 832, frames: 33,
+    });
+    const nodes = Object.values(wf) as any[];
+    const byType = (t: string) => nodes.filter(n => n.class_type === t);
+
+    for (const required of [
+      'UNETLoader', 'CLIPLoader', 'VAELoader', 'CLIPTextEncode',
+      'EmptyHunyuanLatentVideo', 'KSampler', 'VAEDecode', 'VHS_VideoCombine',
+    ]) {
+      assert.ok(byType(required).length > 0, `has a ${required} node`);
+    }
+
+    // The 1.3B UNET name comes from __CHECKPOINT__, not a hardcoded string.
+    assert.equal(byType('UNETLoader')[0].inputs.unet_name, 'wan2.1_t2v_1.3B_fp16.safetensors');
+    // Both encoders are filled: positive and negative are separate nodes.
+    const texts = byType('CLIPTextEncode').map(n => n.inputs.text).sort();
+    assert.deepEqual(texts, ['blurry', 'isang babaeng naka-barong sa ulan']);
+    // The values the builder received reached the graph.
+    assert.equal(byType('KSampler')[0].inputs.seed, 42);
+    const latent = byType('EmptyHunyuanLatentVideo')[0].inputs;
+    assert.equal(latent.width, 480);
+    assert.equal(latent.height, 832);
+    assert.equal(latent.length, 33);
+    // Output is an mp4 the VHS node writes, and it is the graph's terminal node.
+    assert.equal(byType('VHS_VideoCombine')[0].inputs.format, 'video/h264-mp4');
+    assert.ok(!JSON.stringify(wf).includes('__'), 'no placeholder text survives');
+  } finally {
+    if (saved === undefined) delete process.env.COMFYUI_VIDEO_WORKFLOW;
+    else process.env.COMFYUI_VIDEO_WORKFLOW = saved;
+    if (savedCkpt === undefined) delete process.env.COMFYUI_CHECKPOINT;
+    else process.env.COMFYUI_CHECKPOINT = savedCkpt;
+  }
+});

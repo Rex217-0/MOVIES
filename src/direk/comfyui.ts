@@ -23,8 +23,20 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { checkVideoBuffer, FfmpegUnavailableError } from './videoQuality.ts';
 
 export const DEFAULT_NEGATIVE = 'blurry, low quality, watermark, text, deformed';
+
+/**
+ * Wan 2.1 has its own negative prompt in the official template. The generic SD
+ * list above does not describe the failure modes Wan actually has, and a weak
+ * negative is one reason a Wan render collapses into colour noise.
+ */
+export const WAN_NEGATIVE =
+  '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，' +
+  '最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，' +
+  '画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，' +
+  '杂乱的背景，三条腿，背景人很多，倒着走';
 
 export interface LoraChoice {
   /** LoRA file name as ComfyUI knows it, e.g. `direk_x.safetensors`. */
@@ -309,11 +321,23 @@ export function buildVideoWorkflow(
   if (!fs.existsSync(templatePath)) {
     throw new Error(`Walang workflow file sa COMFYUI_VIDEO_WORKFLOW='${templatePath}'.`);
   }
-  const negative = opts.negative ?? DEFAULT_NEGATIVE;
+  // Wan templates need the Wan negative list; the generic SD one leaves the
+  // model free to produce the colour-noise collapse the quality gate rejects.
+  const negative = opts.negative ?? WAN_NEGATIVE;
   const seed = opts.seed ?? Math.floor(Math.random() * 1_000_000_000);
   const width = opts.width ?? 832;
   const height = opts.height ?? 480;
   const frames = opts.frames ?? 49;
+
+  // The image path defaults to an SDXL checkpoint, which is the wrong model for
+  // a Wan graph: loading it into UNETLoader is what turns a video into colour
+  // noise. Video prefers its own variable, still honours the shared one so
+  // existing setups keep working, and otherwise falls back to the Wan 2.2 5B
+  // UNET that Server-2 actually has installed.
+  const checkpoint =
+    process.env?.COMFYUI_VIDEO_CHECKPOINT ||
+    process.env?.COMFYUI_CHECKPOINT ||
+    'wan2.2_ti2v_5B_fp16.safetensors';
 
   const template = fs.readFileSync(templatePath, 'utf8');
   const unfilled = unfilledPlaceholders(template);
@@ -331,7 +355,7 @@ export function buildVideoWorkflow(
     .replaceAll('__WIDTH__', String(width))
     .replaceAll('__HEIGHT__', String(height))
     .replaceAll('__FRAMES__', String(frames))
-    .replaceAll('__CHECKPOINT__', escapeJson(process.env.COMFYUI_CHECKPOINT || 'sd_xl_base_1.0.safetensors'));
+    .replaceAll('__CHECKPOINT__', escapeJson(checkpoint));
   try {
     return JSON.parse(raw) as Record<string, unknown>;
   } catch (error: any) {
@@ -459,7 +483,28 @@ export async function generateVideoWithComfy(
   });
   const view = await fetch(`${base}/view?${params}`);
   if (!view.ok) throw new Error(`ComfyUI /view returned ${view.status}`);
-  return { data: Buffer.from(await view.arrayBuffer()), filename: image.filename };
+  const data = Buffer.from(await view.arrayBuffer());
+
+  // A broken render is still a playable mp4, so it is measured before it is
+  // handed back. Refusing garbage here is what stops a rainbow-noise clip from
+  // reaching the user as if it were a finished shot.
+  //
+  // A missing ffmpeg is a tooling problem, not a bad video: warn and keep going
+  // rather than failing every render on a machine without the binary.
+  if (process.env.COMFYUI_SKIP_QUALITY !== '1') {
+    try {
+      const verdict = await checkVideoBuffer(data);
+      if (!verdict.ok) throw new Error(verdict.reason);
+    } catch (error) {
+      if (error instanceof FfmpegUnavailableError) {
+        console.warn(`[QC] Linalaktawan ang quality gate: ${error.message}`);
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  return { data, filename: image.filename };
 }
 
 /** Poll `/history/<id>` until the prompt finishes, then return its first image. */

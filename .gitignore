@@ -36,8 +36,12 @@ android/app/src/main/assets/capacitor.config.json
 
 # Firebase config: contains an API key, so keep it out of the repo.
 google-services.json
+android/*.keystore
+android/*.idsig
+# Local machine state and signing secrets: never commit these.
+android/keystore.properties
+# The APK is committed on purpose: the /android download page must work on any
+# deploy (Server-2) without an Android SDK. Rebuild with android/build.sh.
 
 # Cloudflare tunnel binary (downloaded by scripts/tunnel.ps1 / tunnel.sh)
 tools/cloudflared*
-android/keystore.properties
-android/*.keystore

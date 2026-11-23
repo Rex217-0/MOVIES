@@ -30,7 +30,7 @@ import {
 import { ReferenceCatalog } from './src/direk/reference.ts';
 import { MarketIntel } from './src/direk/market.ts';
 import { runConnector, connectorCatalog, allAssets } from './src/direk/connectors.ts';
-import { ffmpegAvailable, ffmpegPath, toPng } from './src/direk/render.ts';
+import { ffmpegAvailable, ffmpegPath, isPng, toPng } from './src/direk/render.ts';
 import { assetsDir, assetPath, reviewAsset, type ReviewStatus } from './src/direk/assets.ts';
 import { driveStatus, authUrl, redirectUri, exchangeCode } from './src/direk/gdrive.ts';
 import { DirekService, type ChatMessage } from './src/direk/service.ts';
@@ -122,10 +122,18 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // allow-list so a random site cannot call the billable API, and a per-client
 // rate limit so one client cannot exhaust the shared free tier.
 // ---------------------------------------------------------------------------
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+// https://app.local is the Android shell's own origin: the APK serves its UI
+// from that fixed host so its calls are a normal CORS request instead of the
+// unallowable "Origin: null" a file:// page would send. No website can claim
+// it, so allowing it by default costs nothing.
+const ANDROID_SHELL_ORIGIN = 'https://app.local';
+const ALLOWED_ORIGINS = [
+  ...(process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean),
+  ANDROID_SHELL_ORIGIN,
+];
 const RATE_LIMIT = Math.max(1, parseInt(process.env.RATE_LIMIT_PER_MIN || '120', 10));
 const rateLimiter = new RateLimiter(RATE_LIMIT, 60_000);
 
@@ -229,6 +237,13 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
       '(or ?ticket= for the thought stream).',
   });
 }
+
+// Public liveness probe for the hosting platform. It reports only that the
+// process is up: every /api route needs the token, so a platform health check
+// against those would read 401 and restart a healthy container.
+app.get('/healthz', (_req: Request, res: Response) => {
+  res.json({ ok: true, uptime_s: Math.round(process.uptime()) });
+});
 
 app.use('/api', requireAuth);
 
@@ -449,7 +464,7 @@ app.get('/api/health', async (_req: Request, res: Response) => {
       model: backend === 'ollama' ? ollama.model : TEXT_MODEL,
       backend,
       reference_available: referenceCatalog.available,
-      reference_rows: referenceCatalog.size,
+      reference_rows: referenceCatalog.loadedSize,
     },
     image: {
       model: IMAGE_MODEL,
@@ -631,7 +646,7 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
   try {
-    const { data, engine, editor, editNote } = await renderVideo({
+    const { data, engine, editor, editNote, credit, sourceUrl } = await renderVideo({
       prompt: formattedPrompt,
       negative: buildVeoStyleNegative(),
       aspectRatio: validAspect,
@@ -642,6 +657,9 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
     const elapsedMs = Date.now() - startTime;
     const dataUrl = `data:video/mp4;base64,${data.toString('base64')}`;
     broadcastThought(`[VIDEO COMPLETE] ${engine} video rendered (${elapsedMs}ms).`);
+    // A stock clip is real footage of a real subject, so it carries the shooter
+    // and the source page. Generated clips have no one to credit.
+    if (credit) broadcastThought(`[VIDEO SOURCE] Tunay na footage ni ${credit} — ${sourceUrl}`);
     const mediaRecord: MediaItem = {
       id: `VID-${Date.now()}`,
       type: 'video',
@@ -650,7 +668,9 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
       aspect_ratio: validAspect,
       timestamp: new Date().toLocaleTimeString(),
       model: engine,
-      details: editor ? `${engine} render, edited with ${editor}` : `${engine} render`,
+      details: credit
+        ? `${engine} render ng tunay na footage — ${credit}`
+        : editor ? `${engine} render, edited with ${editor}` : `${engine} render`,
     };
     mediaGallery.unshift(mediaRecord);
     if (mediaGallery.length > 40) mediaGallery.pop();
@@ -787,6 +807,37 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
       aiUnavailable(IMAGE_MODEL, NO_FREE_IMAGE_MODEL, 'Image generation is unavailable')
     );
     return;
+  }
+
+  // Pollinations is the free, key-less, GPU-less default. It is tried before
+  // the paid model; a failure here falls through to Gemini rather than 503.
+  if (backend === 'pollinations') {
+    try {
+      // Pollinations answers with a JPEG. Convert when ffmpeg is around; if it
+      // is not, serve the JPEG as-is and label it honestly rather than 503.
+      const raw = await generatePollinationsImage(enhancedPrompt);
+      const png = isPng(raw) ? raw : await toPng(raw).catch(() => raw);
+      const isRealPng = isPng(png);
+      const elapsedMs = Date.now() - startTime;
+      const mediaRecord: MediaItem = {
+        id: `IMG-${Date.now()}`,
+        type: 'image',
+        url: `data:image/${isRealPng ? 'png' : 'jpeg'};base64,${png.toString('base64')}`,
+        prompt: cleanPrompt(prompt),
+        aspect_ratio: validAspect,
+        timestamp: new Date().toLocaleTimeString(),
+        model: 'pollinations',
+        details: 'Pollinations free tier',
+      };
+      mediaGallery.unshift(mediaRecord);
+      if (mediaGallery.length > 40) mediaGallery.pop();
+      broadcastThought(`[IMAGE COMPLETE] Pollinations image generated (${elapsedMs}ms).`);
+      res.json({ status: 'success', item: mediaRecord, latency_ms: elapsedMs });
+      return;
+    } catch (error: any) {
+      console.error(`[IMAGE ERROR] Pollinations failed:`, error?.message || error);
+      broadcastThought(`[IMAGE ERROR] Pollinations failed, susubukan ang Gemini...`);
+    }
   }
 
   try {
@@ -1067,7 +1118,8 @@ app.get('/api/direk/status', async (_req: Request, res: Response) => {
     pipeline: PIPELINE,
     genres: Object.keys(GENRE_MAP),
     skills: Object.entries(SKILLS).map(([id, spec]) => ({ id, ...spec })),
-    reference_sources: referenceCatalog.sources(),
+    reference_sources: referenceCatalog.loadedSources(),
+    reference_kaggle_loaded: referenceCatalog.kaggleReady,
     market_available: marketIntel.available,
     image_backend: backend,
     comfyui_url: comfyUrl(),
@@ -1373,6 +1425,10 @@ app.post('/api/direk/movie', async (req: Request, res: Response) => {
       broadcastThought(`[MOVIE] Walang text model (${error?.message || 'error'}) — gagamitin ang built-in na beats.`);
     }
     if (!script) script = fallbackScript(brief, opts);
+
+    // ffmpeg needs the container's memory more than a finished search does.
+    // Hand the catalog rows back first; the next genre lookup re-reads them.
+    referenceCatalog.release();
 
     const result = await renderMovie(script, opts, tick);
     job.status = 'done';
@@ -1734,11 +1790,13 @@ app.get('/api/direk/reference', (req: Request, res: Response) => {
     res.status(400).json({ error: 'genre query parameter is required.' });
     return;
   }
+  // Search first: it is what loads the Kaggle rows, so `rows` below counts them.
+  const items = referenceCatalog.search(genre, kind, n);
   res.json({
     genre,
     available: referenceCatalog.available,
     rows: referenceCatalog.size,
-    items: referenceCatalog.search(genre, kind, n),
+    items,
   });
 });
 

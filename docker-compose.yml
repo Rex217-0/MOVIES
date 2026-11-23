@@ -1,0 +1,19 @@
+services:
+  movie-creator:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      # Required: the server refuses to start in production without it.
+      APP_AUTH_TOKEN: ${APP_AUTH_TOKEN:?Set APP_AUTH_TOKEN before starting}
+      # Optional. Without a key the free motion engine still renders real MP4.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      PREFERRED_RENDER_ENGINE: ${PREFERRED_RENDER_ENGINE:-hybrid}
+      AI_DAILY_QUOTA: ${AI_DAILY_QUOTA:-500}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s

@@ -100,14 +100,35 @@ export async function imagine(prompt: string): Promise<GeneratedImage> {
   }
 
   if (backend === 'pollinations') {
-    const url = `${pollinationsUrl()}/prompt/${encodeURIComponent(enhanced)}` +
-      `?width=1024&height=1024&nologo=true&model=flux`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
-    if (!res.ok) throw new Error(`Pollinations returned ${res.status}`);
-    const raw = Buffer.from(await res.arrayBuffer());
-    if (raw.length < 1024) throw new Error('Pollinations returned an empty image.');
-    // Pollinations answers with a JPEG whatever the URL asks for; store a PNG.
-    return { data: await toPng(raw), ext: 'png', mime: 'image/png', backend };
+    // Pollinations sheds load with a 503 under a burst, and one shed request
+    // must not cost the film its picture. Retry with a short backoff and fall
+    // through the free models before giving up.
+    let last = '';
+    for (let attempt = 0; attempt < 4; attempt++) {
+      // Only width/height/nologo are on the keyless tier. Naming a `model` or a
+      // `seed` silently moves the request to the paid queue and answers 402, and
+      // 512x512 is the largest free size. The shot is upscaled with lanczos and
+      // carries grain, so the small source reads as a film still, not a blob.
+      const url = `${pollinationsUrl()}/prompt/${encodeURIComponent(enhanced)}` +
+        `?width=512&height=512&nologo=true`;
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
+        if (!res.ok) {
+          last = `Pollinations returned ${res.status}`;
+        } else {
+          const raw = Buffer.from(await res.arrayBuffer());
+          if (raw.length >= 1024) {
+            // Pollinations answers with a JPEG whatever the URL asks for; store a PNG.
+            return { data: await toPng(raw), ext: 'png', mime: 'image/png', backend };
+          }
+          last = 'Pollinations returned an empty image.';
+        }
+      } catch (error: any) {
+        last = error?.message || String(error);
+      }
+      if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+    }
+    throw new Error(last || 'Pollinations failed.');
   }
 
   throw new Error('Walang available na image backend. Patakbuhin ang ComfyUI o mag-set ng GEMINI_API_KEY.');

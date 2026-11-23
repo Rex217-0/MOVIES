@@ -76,8 +76,26 @@ export function bakedApiBaseUrl(): string {
   }
 }
 
+/**
+ * The base URL the native Android shell injects before the app boots.
+ *
+ * The legacy WebView shell loads the UI from inside the APK, where a relative
+ * `/api` would resolve against the APK itself, so it writes the server the user
+ * configured into this global. The Capacitor build does not use it, but keeping
+ * the read here means both shells work and neither needs a rebuild to change
+ * servers.
+ */
+function injectedApiBaseUrl(): string {
+  try {
+    const base = (window as { __MOVIE_CREATOR_API_BASE__?: string }).__MOVIE_CREATOR_API_BASE__;
+    return normalizeApiBaseUrl(base);
+  } catch {
+    return '';
+  }
+}
+
 export function apiBaseUrl(): string {
-  return resolveApiBaseUrl(getServerUrl(), bakedApiBaseUrl());
+  return resolveApiBaseUrl(getServerUrl(), injectedApiBaseUrl()) || bakedApiBaseUrl();
 }
 
 /**
@@ -129,15 +147,16 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
  */
 export async function thoughtStreamUrl(): Promise<string> {
   const token = getAuthToken();
-  if (!token) return apiUrl('/api/pilot/thought-stream');
+  const plain = apiUrl('/api/pilot/thought-stream');
+  if (!token) return plain;
   try {
     const res = await apiFetch('/api/pilot/stream-ticket', { method: 'POST' });
-    if (!res.ok) return apiUrl('/api/pilot/thought-stream');
+    if (!res.ok) return plain;
     const data = (await res.json()) as { ticket?: string };
-    if (!data.ticket) return apiUrl('/api/pilot/thought-stream');
-    return apiUrl(`/api/pilot/thought-stream?ticket=${encodeURIComponent(data.ticket)}`);
+    if (!data.ticket) return plain;
+    return `${plain}?ticket=${encodeURIComponent(data.ticket)}`;
   } catch {
-    return apiUrl('/api/pilot/thought-stream');
+    return plain;
   }
 }
 

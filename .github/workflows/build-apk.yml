@@ -1,0 +1,131 @@
+name: Build APK
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+      - 'release/**'
+    paths:
+      - 'android/**'
+      - 'android-legacy/**'
+      - 'src/**'
+      - 'capacitor.config.ts'
+      - 'scripts/setup-android-sdk.sh'
+      - '.github/workflows/build-apk.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'android-legacy/**'
+      - 'src/**'
+      - 'capacitor.config.ts'
+      - 'scripts/setup-android-sdk.sh'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+jobs:
+  # The Capacitor shell: the Gradle app users install going forward.
+  capacitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install the Android SDK
+        run: bash scripts/setup-android-sdk.sh
+
+      - name: Build the web UI and sync it into the APK
+        run: |
+          npm ci
+          npm run build
+          npx cap sync android
+
+      # A new signing key every run means every build is a different app: Android
+      # rejects the update and users must uninstall, losing their data. The key is
+      # a secret and is never committed, so restore it from the repo secret.
+      - name: Restore the signing key
+        env:
+          MOVIECREATOR_KEYSTORE_B64: ${{ secrets.MOVIECREATOR_KEYSTORE_B64 }}
+          MOVIECREATOR_KS_PASS: ${{ secrets.MOVIECREATOR_KS_PASS }}
+        run: |
+          if [ -z "${MOVIECREATOR_KEYSTORE_B64:-}" ]; then
+            echo "::warning::MOVIECREATOR_KEYSTORE_B64 is not set; the release APK will be unsigned."
+            exit 0
+          fi
+          printf '%s' "$MOVIECREATOR_KEYSTORE_B64" | base64 -d > android/moviecreator.keystore
+          {
+            echo "storeFile=moviecreator.keystore"
+            echo "storePassword=${MOVIECREATOR_KS_PASS:-moviecreator}"
+            echo "keyAlias=moviecreator"
+            echo "keyPassword=${MOVIECREATOR_KS_PASS:-moviecreator}"
+          } > android/keystore.properties
+
+      - name: Assemble the release APK
+        run: cd android && ./gradlew --no-daemon assembleRelease
+
+      - name: Collect the APK
+        run: |
+          find android/app/build/outputs/apk -name '*.apk' -print
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/*.apk out/movie-creator-capacitor.apk
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: movie-creator-capacitor-apk
+          path: out/movie-creator-capacitor.apk
+          if-no-files-found: error
+
+  # The legacy no-Gradle shell. It still serves the /android download page, and
+  # android-legacy/build.sh is the only thing that produces that APK.
+  legacy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install the Android SDK
+        run: bash scripts/setup-android-sdk.sh
+
+      - name: Build the web UI
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build the legacy APK
+        env:
+          MOVIECREATOR_KEYSTORE_B64: ${{ secrets.MOVIECREATOR_KEYSTORE_B64 }}
+          MOVIECREATOR_KS_PASS: ${{ secrets.MOVIECREATOR_KS_PASS }}
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          bash android-legacy/build.sh android-legacy/movie-creator.apk
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: movie-creator-legacy-apk
+          path: android-legacy/movie-creator.apk
+          if-no-files-found: error

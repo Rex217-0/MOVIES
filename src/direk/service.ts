@@ -46,7 +46,9 @@ export class DirekService {
       brand: 'Moviecity',
       operator: 'LJR Group',
       reference_available: this.catalog.available,
-      reference_rows: this.catalog.size,
+      // loadedSize, not size: health() backs /api/direk/status, and a probe
+      // must not trigger the multi-second Kaggle catalog load.
+      reference_rows: this.catalog.loadedSize,
     };
   }
 

@@ -19,7 +19,7 @@
  * lines and would otherwise shift every column.
  */
 
-import { parseCsvFile, pick } from './csv.ts';
+import { forEachCsvRow, pick } from './csv.ts';
 import type { CatalogTitle } from './reference.ts';
 
 export interface KaggleSource {
@@ -94,14 +94,10 @@ function adaptKaggle(name: string, header: string[], row: string[]): CatalogTitl
 export function loadKaggleSources(dataDir: string): CatalogTitle[] {
   const out: CatalogTitle[] = [];
   for (const src of KAGGLE_SOURCES) {
-    const csv = parseCsvFile(`${dataDir}/${src.file}`);
-    if (!csv) continue;
-    const width = csv.header.length;
-    for (const row of csv.rows) {
-      if (row.length !== width) continue;
-      const title = adaptKaggle(src.name, csv.header, row);
+    forEachCsvRow(`${dataDir}/${src.file}`, (header, row) => {
+      const title = adaptKaggle(src.name, header, row);
       if (title) out.push(title);
-    }
+    });
   }
   return out;
 }
