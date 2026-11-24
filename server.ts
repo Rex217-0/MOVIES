@@ -49,6 +49,9 @@ import {
   comfyAvailable, generateWithComfy, comfyUrl, diagnoseComfyVideo, checkComfyReachability,
   publishLora, listLoras, lorasDir, clampStrength, type LoraChoice,
 } from './src/direk/comfyui.ts';
+import {
+  checkSwarmReachability, generateWithSwarm, swarmUrl, swarmConfigured,
+} from './src/direk/swarmui.ts';
 import { pollinationsUrl, resetComfyCache } from './src/direk/imagine.ts';
 import { extensionRegistry } from './src/extensions/registry.ts';
 import { createSeasonOneHarvester, runsRoot as loraRunsRoot, SCIFI_NEON_PRESET, startSeasonalScheduler } from './src/extensions/season01/index.ts';
@@ -781,6 +784,76 @@ app.get('/api/direk/video/backend', async (_req: Request, res: Response) => {
 // faked, and the error always names the exact URL that could not be reached.
 app.get('/api/direk/comfy/check', async (_req: Request, res: Response) => {
   res.json(await checkComfyReachability());
+});
+
+// Can we reach SwarmUI right now? Opens a real session, then asks SwarmUI for
+// its own status, and answers { reachable, url, error, backend_status, queue }.
+// The Radar uses the same probe, so the dot on the map and this route can never
+// disagree. When SWARMUI_URL is unset the node is reported as unconfigured
+// rather than dead, so "not set up" is never mistaken for "broken".
+app.get('/api/direk/swarm/check', async (_req: Request, res: Response) => {
+  if (!swarmConfigured()) {
+    res.json({
+      reachable: false,
+      url: swarmUrl(),
+      error: 'hindi naka-configure ang SwarmUI',
+      detail: 'Itakda ang SWARMUI_URL, hal. http://127.0.0.1:7801',
+      configured: false,
+    });
+    return;
+  }
+  res.json({ ...(await checkSwarmReachability()), configured: true });
+});
+
+// Generate one image on SwarmUI and return it as a data URL, so the app can
+// show it without a second round-trip through the render host.
+app.post('/api/direk/swarm/generate', async (req: Request, res: Response) => {
+  const { prompt, negative, width, height, steps, cfgScale, seed, model } = req.body ?? {};
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+    res.status(400).json({ error: 'Image prompt is required.' });
+    return;
+  }
+  if (!swarmConfigured()) {
+    res.status(503).json(
+      aiUnavailable('swarmui', 'Itakda ang SWARMUI_URL para makagamit ng SwarmUI.', 'SwarmUI is not configured'),
+    );
+    return;
+  }
+  const started = Date.now();
+  try {
+    const png = await generateWithSwarm(prompt.trim(), {
+      negative: typeof negative === 'string' ? negative : undefined,
+      width: Number(width) || undefined,
+      height: Number(height) || undefined,
+      steps: Number(steps) || undefined,
+      cfgScale: Number(cfgScale) || undefined,
+      seed: Number.isFinite(Number(seed)) ? Number(seed) : undefined,
+      model: typeof model === 'string' && model.trim() ? model.trim() : undefined,
+    });
+    const elapsedMs = Date.now() - started;
+    broadcastThought(`[SWARMUI] Image generated (${elapsedMs}ms).`);
+    res.json({
+      status: 'success',
+      model: 'swarmui',
+      latency_ms: elapsedMs,
+      item: {
+        id: `SWARM-${Date.now()}`,
+        type: 'image',
+        url: `data:image/png;base64,${png.toString('base64')}`,
+        prompt: cleanPrompt(prompt),
+        timestamp: new Date().toLocaleTimeString(),
+        model: 'swarmui',
+        details: 'SwarmUI local generation',
+      },
+    });
+  } catch (error: any) {
+    const reason = error?.message || 'Unknown error';
+    console.error('[SWARMUI ERROR]', reason);
+    broadcastThought(`[SWARMUI ERROR] ${reason}`);
+    res.status(503).json(
+      aiUnavailable('swarmui', 'Check that SwarmUI is running and reachable.', reason),
+    );
+  }
 });
 
 // ==========================================

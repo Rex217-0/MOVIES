@@ -56,6 +56,8 @@ export interface ProbeEnv {
   fetchJson: (url: string, timeoutMs: number) => Promise<{ ok: boolean; status: number; body?: any; error?: string }>;
   comfyAvailable: () => Promise<boolean>;
   comfyUrl: string;
+  /** Probes SwarmUI's own status route; returns null when it is not configured. */
+  swarmStatus?: () => Promise<{ reachable: boolean; url: string; error: string; detail?: string; latency_ms?: number; backend_status?: Record<string, unknown>; queue?: Record<string, number> } | null>;
   ollamaUrl: string;
   ollamaModel: string;
   ffmpegAvailable: () => Promise<boolean>;
@@ -72,6 +74,7 @@ const WIRE = {
   googleCloud: '#ea4335',        // Google Cloud red
   openhands: '#d97757',          // OpenHands warm coral
   comfyui: '#4b5563',            // ComfyUI grey
+  swarmui: '#8b5cf6',            // SwarmUI violet
   deepseek: '#4d6bfe',           // DeepSeek blue
   anthropic: '#d97757',          // Anthropic coral
   meta: '#0866ff',               // Meta blue
@@ -140,6 +143,47 @@ export async function buildSystemMap(env: ProbeEnv): Promise<SystemMap> {
     role: 'Lokal na image/video render sa GPU. Libre.',
     meta: { url: env.comfyUrl, disabled: !comfyOn },
   });
+
+  // ---- SwarmUI: the second local render outlet ----------------------------
+  // Only reported when a probe is wired in; an unconfigured server stays
+  // absent rather than claiming a node that cannot answer.
+  if (env.swarmStatus) {
+    const started = Date.now();
+    const swarm = await env.swarmStatus();
+    if (swarm) {
+      const live = swarm.reachable;
+      const backend = swarm.backend_status ?? {};
+      const backendState = typeof backend.status === 'string' ? backend.status : '';
+      const backendMessage = typeof backend.message === 'string' ? backend.message : '';
+      const queue = swarm.queue ?? {};
+      const busy = Number(queue.waiting_gens ?? 0) + Number(queue.live_gens ?? 0);
+      let detail: string;
+      if (!live) {
+        detail = swarm.detail ? `Walang sagot: ${swarm.detail}` : 'Walang sagot sa /API/GetCurrentStatus.';
+      } else if (backendState) {
+        detail = `GetCurrentStatus sumagot — backend "${backendState}"${busy > 0 ? `, ${busy} nasa pila` : ', walang pila'}.`;
+      } else {
+        detail = 'GetCurrentStatus sumagot — buhay.';
+      }
+      add({
+        id: 'swarmui', name: 'SwarmUI', kind: 'local', layer: 'behind', wired: true,
+        wire: WIRE.swarmui,
+        status: live ? 'active' : 'dead',
+        detail,
+        latency_ms: swarm.latency_ms ?? elapsed(started),
+        probe: `POST ${swarm.url}/API/GetCurrentStatus`,
+        role: 'Ikalawang lokal na image render outlet. Libre.',
+        meta: {
+          url: swarm.url,
+          backend_status: backendState || null,
+          backend_message: backendMessage || null,
+          waiting_gens: Number(queue.waiting_gens ?? 0),
+          live_gens: Number(queue.live_gens ?? 0),
+          ...(swarm.error ? { error: swarm.error } : {}),
+        },
+      });
+    }
+  }
 
   const ohUrl = (env.openhandsUrl || env.getEnv('OPENHANDS_URL') || '').replace(/\/$/, '');
   const ohKey = env.getEnv('OPENHANDS_API_KEY') || env.getEnv('OH_GIT_CREDENTIAL_ACCESS_TOKEN_GITHUB');
@@ -385,6 +429,11 @@ export function realProbeEnv(overrides: Partial<ProbeEnv> = {}): ProbeEnv {
       } catch { return false; }
     },
     comfyUrl: comfyUrlFromEnv(),
+    swarmStatus: async () => {
+      const { checkSwarmReachability, swarmConfigured } = await import('./swarmui.ts');
+      if (!swarmConfigured()) return null;
+      return checkSwarmReachability();
+    },
     ollamaUrl: (process.env.OLLAMA_URL || process.env.LOCAL_OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, ''),
     ollamaModel: process.env.OLLAMA_MODEL || 'qwen2.5:3b',
     ffmpegAvailable: async () => {

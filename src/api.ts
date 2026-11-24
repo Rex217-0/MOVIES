@@ -769,6 +769,78 @@ export async function direkSystemMap(): Promise<SystemMap | null> {
 }
 
 // ---------------------------------------------------------------------------
+// SwarmUI outlet. The radar node and these calls share one probe on the server,
+// so what the map shows and what the button does cannot drift apart.
+// ---------------------------------------------------------------------------
+
+export interface SwarmCheck {
+  reachable: boolean;
+  url: string;
+  /** Empty when reachable; names the URL that failed when not. */
+  error: string;
+  detail?: string;
+  latency_ms?: number;
+  /** False when SWARMUI_URL is unset — "not set up", not "broken". */
+  configured: boolean;
+  backend_status?: Record<string, unknown>;
+  queue?: Record<string, number>;
+  supported_features?: string[];
+}
+
+export async function direkSwarmCheck(): Promise<SwarmCheck> {
+  const res = await apiFetch('/api/direk/swarm/check');
+  if (!res.ok) {
+    return {
+      reachable: false,
+      url: '',
+      error: `hindi sumagot ang /api/direk/swarm/check (${res.status})`,
+      configured: true,
+    };
+  }
+  return res.json();
+}
+
+export interface SwarmGenerateInput {
+  prompt: string;
+  negative?: string;
+  width?: number;
+  height?: number;
+  steps?: number;
+  cfgScale?: number;
+  seed?: number;
+  model?: string;
+}
+
+export interface SwarmGenerateResult {
+  status: 'success';
+  model: 'swarmui';
+  latency_ms: number;
+  item: {
+    id: string;
+    type: 'image';
+    /** A data URL, ready to render without a second request. */
+    url: string;
+    prompt: string;
+    timestamp: string;
+    model: string;
+    details: string;
+  };
+}
+
+export async function direkSwarmGenerate(input: SwarmGenerateInput): Promise<SwarmGenerateResult> {
+  const res = await apiFetch('/api/direk/swarm/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || body.detail || `SwarmUI generation failed (${res.status})`);
+  }
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
 // Movie Creator
 // ---------------------------------------------------------------------------
 
