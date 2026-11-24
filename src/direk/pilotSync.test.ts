@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { checkPilotUrl, savePilotUrl } from './pilotSync.ts';
+import { checkPilotUrl, savePilotUrl, restorePilotUrl, pilotUrlDurable } from './pilotSync.ts';
 import { readSettings } from './settings.ts';
 
 test('a public https tunnel URL is accepted', () => {
@@ -73,12 +73,53 @@ test('savePilotUrl persists the value and applies it to the process', async () =
   process.env.DIREK_CONFIG = path.join(dir, 'direk.config.json');
   delete process.env.KAGGLE_PILOT_URL;
   try {
-    savePilotUrl('https://pilot.example.com');
+    await savePilotUrl('https://pilot.example.com');
     assert.equal(process.env.KAGGLE_PILOT_URL, 'https://pilot.example.com');
     assert.equal(readSettings().kaggle_pilot_url, 'https://pilot.example.com');
   } finally {
     if (savedConfig === undefined) delete process.env.DIREK_CONFIG;
     else process.env.DIREK_CONFIG = savedConfig;
+    if (savedEnv === undefined) delete process.env.KAGGLE_PILOT_URL;
+    else process.env.KAGGLE_PILOT_URL = savedEnv;
+  }
+});
+
+test('a saved URL is restored on startup, so a redeploy keeps the worker', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilotrestore-'));
+  const savedConfig = process.env.DIREK_CONFIG;
+  const savedEnv = process.env.KAGGLE_PILOT_URL;
+  process.env.DIREK_CONFIG = path.join(dir, 'direk.config.json');
+  delete process.env.KAGGLE_PILOT_URL;
+  try {
+    // No Firestore credentials in the test environment, so this exercises the
+    // offline path: restore must decline rather than invent a URL.
+    assert.equal(await restorePilotUrl(), null);
+    assert.equal(process.env.KAGGLE_PILOT_URL, undefined);
+  } finally {
+    if (savedConfig === undefined) delete process.env.DIREK_CONFIG;
+    else process.env.DIREK_CONFIG = savedConfig;
+    if (savedEnv === undefined) delete process.env.KAGGLE_PILOT_URL;
+    else process.env.KAGGLE_PILOT_URL = savedEnv;
+  }
+});
+
+test('durability follows whether Firebase is configured', () => {
+  const saved = process.env.FIREBASE_SERVICE_ACCOUNT;
+  try {
+    delete process.env.FIREBASE_SERVICE_ACCOUNT;
+    assert.equal(pilotUrlDurable(), false, 'no credentials means the URL cannot survive a restart');
+  } finally {
+    if (saved !== undefined) process.env.FIREBASE_SERVICE_ACCOUNT = saved;
+  }
+});
+
+test('a pinned KAGGLE_PILOT_URL is never overwritten by a saved value', async () => {
+  const savedEnv = process.env.KAGGLE_PILOT_URL;
+  process.env.KAGGLE_PILOT_URL = 'https://pinned.example.com';
+  try {
+    assert.equal(await restorePilotUrl(), null);
+    assert.equal(process.env.KAGGLE_PILOT_URL, 'https://pinned.example.com');
+  } finally {
     if (savedEnv === undefined) delete process.env.KAGGLE_PILOT_URL;
     else process.env.KAGGLE_PILOT_URL = savedEnv;
   }

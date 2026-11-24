@@ -65,7 +65,7 @@ import {
   readSettings, writeSettings, applySettings, effectiveSettings,
   configPath, comfyModelOptions, type DirekSettings,
 } from './src/direk/settings.ts';
-import { checkPilotUrl, savePilotUrl } from './src/direk/pilotSync.ts';
+import { checkPilotUrl, savePilotUrl, restorePilotUrl, pilotUrlDurable } from './src/direk/pilotSync.ts';
 import {
   ollamaStatus, ollamaChat, preferredTextBackend, ollamaUrl, ollamaModel,
 } from './src/direk/llm.ts';
@@ -268,7 +268,7 @@ app.get('/healthz', (_req: Request, res: Response) => {
 // This route has its own narrow secret instead, and it can do exactly one
 // thing — save a validated tunnel URL. When PILOT_SYNC_TOKEN is unset the route
 // does not exist at all (fail closed).
-app.post('/api/pilot/update-kaggle-url', (req: Request, res: Response) => {
+app.post('/api/pilot/update-kaggle-url', async (req: Request, res: Response) => {
   const expected = (process.env.PILOT_SYNC_TOKEN || '').trim();
   if (!expected) {
     res.status(404).json({ error: 'Hindi naka-enable: walang PILOT_SYNC_TOKEN.' });
@@ -291,8 +291,10 @@ app.post('/api/pilot/update-kaggle-url', (req: Request, res: Response) => {
     return;
   }
 
-  savePilotUrl(check.url);
-  res.json({ saved: true, kaggle_pilot_url: check.url });
+  await savePilotUrl(check.url);
+  // `durable: false` means the URL works now but will not survive a restart,
+  // because this host has no Firestore and no persistent disk.
+  res.json({ saved: true, kaggle_pilot_url: check.url, durable: pilotUrlDurable() });
 });
 
 app.use('/api', requireAuth);
@@ -2794,6 +2796,17 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Battle Room Server running on port ${PORT}`);
   });
+
+  // A tunnel URL saved by the notebook must outlive a redeploy, so it is read
+  // back from Firestore. Not awaited: the server is already accepting requests,
+  // and a slow Firestore read must never delay or block startup.
+  restorePilotUrl()
+    .then(url => {
+      if (url) console.log(`Kaggle Pilot URL restored: ${url}`);
+    })
+    .catch(() => {
+      /* non-fatal: the app simply runs without a Kaggle worker */
+    });
 }
 
 startServer();

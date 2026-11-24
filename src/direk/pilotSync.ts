@@ -13,6 +13,8 @@
  */
 
 import net from 'node:net';
+import type { Firestore } from 'firebase-admin/firestore';
+import { adminReady, initFirebaseAdmin } from '../lib/firebaseAdmin.ts';
 import { readSettings, writeSettings, type DirekSettings } from './settings.ts';
 
 /** The longest URL we will store. A tunnel hostname is far shorter. */
@@ -93,12 +95,87 @@ export function checkPilotUrl(raw: unknown): PilotUrlCheck {
 }
 
 /**
+ * Where the last reported URL is kept when Firestore is available.
+ *
+ * A single document, not a collection: there is one worker, and the notebook
+ * overwrites it on each run. `reported_at` lets the UI say how stale it is.
+ */
+const PILOT_DOC = { collection: 'direk_pilot', document: 'kaggle' } as const;
+
+/** The Firestore handle, or null when credentials are absent. */
+function firestore(): Firestore | null {
+  if (!adminReady()) return null;
+  try {
+    return initFirebaseAdmin();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Save a validated pilot URL and apply it to the running process, so the next
  * screenplay call uses it without a restart.
+ *
+ * The URL is written to both stores on purpose. Firestore is the one that
+ * survives a restart, which is what makes this work on a host without a
+ * persistent disk. The settings file stays as the offline path (and the one
+ * unit tests can drive), so a local Server-2 box behaves exactly as before.
  */
-export function savePilotUrl(url: string): DirekSettings {
+export async function savePilotUrl(url: string): Promise<DirekSettings> {
   const merged: DirekSettings = { ...readSettings(), kaggle_pilot_url: url };
   writeSettings(merged);
   process.env.KAGGLE_PILOT_URL = url;
+
+  const db = firestore();
+  if (db) {
+    // A failed write must not fail the request: the URL is already applied to
+    // the live process, so the worker still works for this session. The caller
+    // learns about it through `durable`.
+    try {
+      await db
+        .collection(PILOT_DOC.collection)
+        .doc(PILOT_DOC.document)
+        .set({ url, reported_at: new Date().toISOString() });
+    } catch {
+      /* reported through durablePilotUrl() */
+    }
+  }
   return merged;
+}
+
+/** Whether the pilot URL survives a restart on this host. */
+export function pilotUrlDurable(): boolean {
+  return adminReady();
+}
+
+/**
+ * Read the saved URL back on startup.
+ *
+ * The container filesystem is wiped on every deploy and spin-down, so a URL
+ * that only ever lived in `direk.config.json` is gone by the time the app comes
+ * back. Reading it from Firestore here is what lets the notebook sync once and
+ * keep working across restarts.
+ *
+ * A real environment variable always wins: an operator who pinned
+ * `KAGGLE_PILOT_URL` must not be overridden by an older saved value.
+ */
+export async function restorePilotUrl(): Promise<string | null> {
+  if ((process.env.KAGGLE_PILOT_URL || '').trim()) return null;
+  const db = firestore();
+  if (!db) return null;
+
+  try {
+    const snap = await db.collection(PILOT_DOC.collection).doc(PILOT_DOC.document).get();
+    const raw = snap.exists ? (snap.data()?.url as unknown) : null;
+    // Re-validate on the way out: a stored value is not automatically trusted,
+    // and an old entry may predate a tightened check.
+    const check = checkPilotUrl(raw);
+    if (!check.ok) return null;
+    process.env.KAGGLE_PILOT_URL = check.url;
+    const merged: DirekSettings = { ...readSettings(), kaggle_pilot_url: check.url };
+    writeSettings(merged);
+    return check.url;
+  } catch {
+    return null;
+  }
 }

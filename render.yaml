@@ -36,3 +36,10 @@ services:
         sync: false
       - key: KAGGLE_PILOT_URL
         sync: false
+      # Ang free plan ay walang disk, kaya binura ang container filesystem sa
+      # bawat restart. Kung naka-set ito, naka-save ang tunnel URL sa Firestore
+      # at bumabalik pagkatapos ng restart — kaya isang sync lang kada bagong
+      # tunnel, hindi kada restart. Kung wala ito, gumagana pa rin ang URL pero
+      # pansamantala lang (sinasabi ito ng notebook sa cell 9).
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
