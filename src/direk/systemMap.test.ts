@@ -120,6 +120,51 @@ test('ComfyUI that answers is active, with a real round-trip', async () => {
   assert.equal(typeof comfy?.latency_ms, 'number');
 });
 
+test('SwarmUI is absent from the map when no probe is wired in', async () => {
+  const map = await buildSystemMap(fakeEnv());
+  assert.equal(map.nodes.find(n => n.id === 'swarmui'), undefined,
+    'an unconfigured SwarmUI must not appear as a node');
+});
+
+test('SwarmUI that answers its own status route is active', async () => {
+  const map = await buildSystemMap(fakeEnv({
+    swarmStatus: async () => ({
+      reachable: true,
+      url: 'http://127.0.0.1:7801',
+      error: '',
+      latency_ms: 12,
+      backend_status: { status: 'running', class: '', message: '', any_loading: false },
+      queue: { waiting_gens: 2, loading_models: 0, waiting_backends: 1, live_gens: 1 },
+    }),
+  }));
+  const swarm = map.nodes.find(n => n.id === 'swarmui');
+  assert.equal(swarm?.status, 'active');
+  assert.equal(swarm?.latency_ms, 12);
+  assert.equal(swarm?.probe, 'POST http://127.0.0.1:7801/API/GetCurrentStatus');
+  // The radar must show SwarmUI's own numbers, not an invented summary.
+  assert.equal(swarm?.meta?.backend_status, 'running');
+  assert.equal(swarm?.meta?.waiting_gens, 2);
+  assert.equal(swarm?.meta?.live_gens, 1);
+  assert.match(swarm?.detail || '', /running/);
+  assert.match(swarm?.detail || '', /3 nasa pila/);
+});
+
+test('SwarmUI that does not answer is dead and names the cause', async () => {
+  const map = await buildSystemMap(fakeEnv({
+    swarmStatus: async () => ({
+      reachable: false,
+      url: 'http://127.0.0.1:7801',
+      error: 'hindi maabot ang SwarmUI sa http://127.0.0.1:7801',
+      detail: 'connect ECONNREFUSED',
+      latency_ms: 3,
+    }),
+  }));
+  const swarm = map.nodes.find(n => n.id === 'swarmui');
+  assert.equal(swarm?.status, 'dead');
+  assert.match(swarm?.detail || '', /ECONNREFUSED/);
+  assert.match(String(swarm?.meta?.error), /hindi maabot/);
+});
+
 test('a key that is configured but unverified is standby, never active', async () => {
   const map = await buildSystemMap(fakeEnv({
     getEnv: name => (name === 'GEMINI_API_KEY' ? 'fake-key' : undefined),
