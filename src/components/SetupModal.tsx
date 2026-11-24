@@ -182,6 +182,14 @@ export const SetupModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
  placeholder="qwen2.5:7b" className={inputCls} />
  </Field>
  </div>
+ <Field label="Kaggle Pilot URL (galing sa cell 8 ng notebook)">
+ <input value={settings.kaggle_pilot_url || ''} onChange={set('kaggle_pilot_url')}
+ placeholder="https://xxx-yyy.trycloudflare.com" className={inputCls} />
+ </Field>
+ <div className="text-[9px] text-dim">
+ Ito ang T3 heavy worker (Qwen 2.5 3B). Bagong URL kada Kaggle run —
+ i-paste dito at i-save, hindi na kailangan ng redeploy.
+ </div>
  {report?.text.ollama.reachable && report.text.ollama.models.length > 0 && (
  <div className="text-[9px] text-dim">
  Naka-install: {report.text.ollama.models.slice(0, 8).join(', ')}

@@ -28,3 +28,11 @@ services:
         sync: false
       - key: COMFYUI_VIDEO_WORKFLOW
         value: /app/workflows/wan22_video_api.json
+      # Ang Kaggle worker (T3) ay may bagong tunnel URL kada run. I-set ito sa
+      # Render dashboard para awtomatikong mag-ulat ang notebook (cell 9) ng
+      # bagong URL — walang redeploy. Kung walang value, 404 ang sync route at
+      # manu-manong i-paste ang URL sa Setup dialog.
+      - key: PILOT_SYNC_TOKEN
+        sync: false
+      - key: KAGGLE_PILOT_URL
+        sync: false

@@ -40,17 +40,33 @@ reason. Nothing is fabricated.
 3. Run all. Cell 6 prints `KAGGLE_PILOT_URL = https://<...>.trycloudflare.com`.
 4. Cell 7 smoke-tests every endpoint the app calls.
 
-Then set the URL in the app and restart:
+Then set the URL in the app. Two ways, and neither needs a code change:
+
+**From the UI (no redeploy).** Open the Setup dialog and paste the URL into
+`Kaggle Pilot URL`, then Save. It is written to `direk.config.json` and applied
+to the running process immediately.
+
+**From the notebook (automatic).** If the app has `PILOT_SYNC_TOKEN` set, the
+notebook's cell 9 posts the new URL to `POST /api/pilot/update-kaggle-url`
+itself. The route has its own token because `APP_AUTH_TOKEN` unlocks every
+billable endpoint and must never be pasted into a notebook. It accepts one
+thing only: a public https URL. Loopback, private, link-local and CGNAT
+(Tailscale) hosts are refused, so the app cannot be turned into a proxy for
+the internal network. With `PILOT_SYNC_TOKEN` unset the route answers 404.
+
+**From the environment.** A deploy-time variable still wins over both:
 
 ```
 KAGGLE_PILOT_URL="https://<...>.trycloudflare.com"
+PILOT_SYNC_TOKEN=""             # optional: enables the notebook's auto-sync
 # KAGGLE_PILOT_TOKEN=""          # only if you put a token in front of the tunnel
 # KAGGLE_PILOT_TIMEOUT_MS="120000"
 ```
 
 Check `GET /api/direk/feature/pilot` — it should answer `reachable: true` and
-`preferred: "kaggle"`. The tunnel URL changes each Kaggle session, so update
-`KAGGLE_PILOT_URL` every time you restart the notebook.
+`preferred: "kaggle"`. A quick tunnel changes URL on every Kaggle session, so
+a named tunnel (`CF_TUNNEL_TOKEN` plus `CF_PUBLIC_URL`) is the way to set it
+once and forget it.
 
 ## Verify the contract without a GPU
 
