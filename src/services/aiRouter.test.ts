@@ -21,7 +21,12 @@ interface Fake {
   requests: { path: string; headers: http.IncomingHttpHeaders; body: any }[];
 }
 
-function startFake(opts: { status?: number; body?: unknown } = {}): Promise<Fake> {
+function startFake(opts: {
+  status?: number;
+  body?: unknown;
+  /** Per-request reply, for a provider that must be retried or must fail once. */
+  handler?: (req: { body: any; index: number }) => { status: number; body: unknown };
+} = {}): Promise<Fake> {
   const requests: Fake['requests'] = [];
   const server = http.createServer((req, res) => {
     let raw = '';
@@ -29,10 +34,12 @@ function startFake(opts: { status?: number; body?: unknown } = {}): Promise<Fake
     req.on('end', () => {
       let body: any = raw;
       try { body = JSON.parse(raw); } catch { /* keep the raw string */ }
+      const index = requests.length;
       requests.push({ path: req.url || '', headers: req.headers, body });
-      res.statusCode = opts.status ?? 200;
+      const reply = opts.handler ? opts.handler({ body, index }) : undefined;
+      res.statusCode = reply?.status ?? opts.status ?? 200;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify(opts.body ?? {}));
+      res.end(JSON.stringify(reply ? reply.body : opts.body ?? {}));
     });
   });
   return new Promise((resolve) => {
@@ -270,7 +277,60 @@ test('Claude receives the system prompt as `system`, not as a message', async ()
         assert.equal(sent.body.system, 'Ikaw si Direk.');
         assert.deepEqual(sent.body.messages, [{ role: 'user', content: 'hi' }]);
         assert.equal(sent.headers['x-api-key'], 'k3');
-        assert.equal(sent.headers['anthropic-version'], '2023-06-01');
+        assert.equal(sent.headers['anthropic-version'], '2026-10-21');
+      },
+    );
+  } finally {
+    await claude.close();
+  }
+});
+
+test('Claude falls through to the next model when one is retired', async () => {
+  // The API answers 404 for a retired model; the chain must move on rather than
+  // failing the whole provider, which is what the old pinned default did.
+  let call = 0;
+  const claude = await startFake({
+    handler: (req) => {
+      call += 1;
+      if (call === 1) {
+        return { status: 404, body: { error: { message: 'model: not found' } } };
+      }
+      return { status: 200, body: CLAUDE_BODY };
+    },
+  });
+  try {
+    await withEnv(
+      {
+        ANTHROPIC_API_KEY: 'k3',
+        ANTHROPIC_API_BASE: claude.url,
+        ANTHROPIC_MODEL: 'retired-model,claude-sonnet-5-5',
+        OLLAMA_DISABLE: '1',
+      },
+      async () => {
+        const result = await generateTextWithFallback([{ role: 'user', content: 'hi' }]);
+        assert.equal(result.provider, 'claude');
+        assert.equal(result.model, 'claude-sonnet-5-5');
+        assert.equal(claude.requests.length, 2);
+      },
+    );
+  } finally {
+    await claude.close();
+  }
+});
+
+test('the Claude version header can be overridden without a code change', async () => {
+  const claude = await startFake({ body: CLAUDE_BODY });
+  try {
+    await withEnv(
+      {
+        ANTHROPIC_API_KEY: 'k3',
+        ANTHROPIC_API_BASE: claude.url,
+        ANTHROPIC_VERSION: '2025-01-01',
+        OLLAMA_DISABLE: '1',
+      },
+      async () => {
+        await generateTextWithFallback([{ role: 'user', content: 'hi' }]);
+        assert.equal(claude.requests.at(-1)!.headers['anthropic-version'], '2025-01-01');
       },
     );
   } finally {
