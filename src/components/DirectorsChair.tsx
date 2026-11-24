@@ -10,6 +10,7 @@ import {
   ShieldAlert, Link2, Film, TrendingUp, Building2,
   Download,
 } from 'lucide-react';
+import { SwarmPanel } from './SwarmPanel';
 
 interface Turn {
   role: 'user' | 'assistant';
@@ -253,6 +254,7 @@ export const DirectorsChair: React.FC = () => {
  </button>
  </div>
  </div>
+ <SwarmPanel />
  </div>
  {market && market.available && <MarketSidebar market={market} />}
  </div>
