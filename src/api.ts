@@ -273,14 +273,51 @@ export interface StoredChatTurn {
 }
 
 /**
- * The last turns of a thread, oldest first. Returns an empty list when the
- * request fails, so a cold backend never blocks the page from rendering.
+ * The stored turns for a thread.
+ *
+ * A failed read throws instead of returning `[]`: an empty array is
+ * indistinguishable from "the conversation is gone", and that made a 401, a
+ * 429 or a cold start look like the history had been deleted.
+ *
+ * Transient failures are retried a few times, because a single 429 on a busy
+ * minute is not a reason to tell the user their conversation is unreadable.
  */
 export async function direkChatHistory(threadId: string): Promise<StoredChatTurn[]> {
-  const res = await apiFetch(`/api/direk/chat/history?threadId=${encodeURIComponent(threadId)}`);
-  if (!res.ok) return [];
-  const data = await res.json();
-  return Array.isArray(data.turns) ? data.turns : [];
+  const url = `/api/direk/chat/history?threadId=${encodeURIComponent(threadId)}`;
+  let lastError = 'Hindi mabasa ang chat history.';
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise(resolve => setTimeout(resolve, 600 * attempt));
+    }
+    const res = await apiFetch(url);
+    if (res.ok) {
+      const data = await res.json();
+      return Array.isArray(data.turns) ? data.turns : [];
+    }
+    lastError = `Hindi mabasa ang chat history (HTTP ${res.status}).`;
+    // Only rate limiting and server faults are worth another try; a 401/403
+    // will not fix itself without the user doing something.
+    if (res.status !== 429 && res.status < 500) break;
+  }
+
+  throw new Error(lastError);
+}
+
+/**
+ * Erase one thread. Requires the explicit `confirm` token, so a stray call
+ * cannot wipe a conversation; only the user's own delete action sends it.
+ */
+export async function direkClearHistory(threadId: string): Promise<{ deleted: number }> {
+  const res = await apiFetch(
+    `/api/direk/chat/history?threadId=${encodeURIComponent(threadId)}&confirm=delete`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({} as any));
+    throw new Error(body?.error || `Hindi mabura ang chat history (HTTP ${res.status}).`);
+  }
+  return res.json();
 }
 
 export async function direkReference(genre: string, n = 5): Promise<CatalogTitle[]> {

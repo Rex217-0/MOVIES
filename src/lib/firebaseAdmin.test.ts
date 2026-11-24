@@ -96,3 +96,39 @@ test('the JSON blob wins over the split vars', () => {
   assert.equal(firebaseProjectId(), 'from-json');
   clearEnv();
 });
+
+test('a downloaded Google service-account file (snake_case) is accepted', () => {
+  clearEnv();
+  // The literal shape of the file Google hands you. Reading only camelCase
+  // rejected this, which silently fell back to the ephemeral SQLite store and
+  // erased the conversation on every restart.
+  process.env.FIREBASE_SERVICE_ACCOUNT = JSON.stringify({
+    type: 'service_account',
+    project_id: 'movie-creator-real',
+    private_key_id: 'abc123',
+    private_key: FAKE_PEM,
+    client_email: 'firebase-adminsdk-xyz@movie-creator-real.iam.gserviceaccount.com',
+    client_id: '123456789',
+    auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+    token_uri: 'https://oauth2.googleapis.com/token',
+  });
+
+  assert.equal(firebaseProjectId(), 'movie-creator-real');
+  assert.doesNotThrow(() => adminReady());
+  clearEnv();
+});
+
+test('a field present in both spellings is read once, not duplicated', () => {
+  clearEnv();
+  process.env.FIREBASE_SERVICE_ACCOUNT = JSON.stringify({
+    project_id: 'snake-wins',
+    projectId: 'camel-loses',
+    private_key: FAKE_PEM,
+    client_email: 'snake@x.y',
+    clientEmail: 'camel@x.y',
+  });
+
+  assert.equal(firebaseProjectId(), 'snake-wins');
+  assert.doesNotThrow(() => adminReady());
+  clearEnv();
+});

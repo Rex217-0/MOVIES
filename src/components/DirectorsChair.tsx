@@ -1,13 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  direkChat, direkStatus, direkMarket, direkChatHistory, AiUnavailableError,
+  direkChat, direkStatus, direkMarket, direkChatHistory, direkClearHistory, AiUnavailableError,
   type DirekChatMessage, type DirekStatus, type CatalogTitle, type SkillAction,
   type ConnectorRunResult, assetDownloadUrl,
   type MarketIntel, type ShareStat,
 } from '../api';
 import {
   Clapperboard, Send, Loader2, AlertTriangle, BookOpen, Sparkles,
-  ShieldAlert, Link2, Film, TrendingUp, Building2,
+  ShieldAlert, Link2, Film, TrendingUp, Building2, Trash2,
   Download,
 } from 'lucide-react';
 import { SwarmPanel } from './SwarmPanel';
@@ -56,6 +56,8 @@ export const DirectorsChair: React.FC = () => {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [threadId] = useState<string>(() => readThreadId());
   const scrollRef = useRef<HTMLDivElement>(null);
   // Two lists, so a slow history read cannot swallow a message the user just
@@ -91,8 +93,10 @@ export const DirectorsChair: React.FC = () => {
         restoredRef.current = saved.map(t => ({ role: t.role, content: t.content }));
         publish();
       })
-      .catch(() => {
-        // A cold or offline backend simply starts an empty thread.
+      .catch((e: any) => {
+        // A failed read is not an empty thread. Saying so keeps a cold start or
+        // a 401 from looking like the conversation was deleted.
+        if (!cancelled) setHistoryError(e?.message || 'Hindi mabasa ang dating usapan.');
       });
     hydrationRef.current = load;
     return () => {
@@ -155,6 +159,29 @@ export const DirectorsChair: React.FC = () => {
 
   const available = status?.ok ?? false;
 
+  /**
+   * Erase the thread, but only after the user has confirmed twice: the button
+   * asks, and this only runs on the second click. Deleting a conversation is
+   * the user's decision alone — nothing here does it automatically.
+   */
+  const clearConversation = async () => {
+    if (!confirmClear) {
+      setConfirmClear(true);
+      return;
+    }
+    setConfirmClear(false);
+    try {
+      await direkClearHistory(threadId);
+      restoredRef.current = [];
+      localRef.current = [];
+      setHistoryError(null);
+      setConfirmClear(false);
+      publish();
+    } catch (e: any) {
+      setHistoryError(e?.message || 'Hindi mabura ang usapan.');
+    }
+  };
+
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-panel border border-subtle bg-surface">
  {/* HEADER */}
@@ -188,6 +215,20 @@ export const DirectorsChair: React.FC = () => {
  <span className={`h-1.5 w-1.5 rounded-full ${available ? 'bg-growth' : 'bg-primary'}`} />
  {status ? (available ? status.model.toUpperCase() : 'AI UNAVAILABLE') : 'CHECKING…'}
  </span>
+ {turns.length > 0 && (
+ <button
+ onClick={clearConversation}
+ title="Ikaw lang ang makakabura ng usapan"
+ className={`flex items-center gap-1.5 rounded-pill border px-2 py-0.5 text-[11px] font-semibold transition-colors ${
+ confirmClear
+ ? 'border-red-500/60 bg-red-500/15 text-red-300'
+ : 'border-subtle text-dim hover:border-red-500/40 hover:text-red-300'
+ }`}
+ >
+ <Trash2 size={11} />
+ {confirmClear ? 'Sigurado? Pindutin ulit' : 'Burahin'}
+ </button>
+ )}
  </div>
  </div>
 
@@ -217,6 +258,13 @@ export const DirectorsChair: React.FC = () => {
  <div className="flex items-start gap-2 text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded-card p-3">
  <AlertTriangle size={14} className="mt-0.5 shrink-0" />
  <span>Hindi makuha ang status: {statusError}</span>
+ </div>
+ )}
+
+ {historyError && (
+ <div className="flex items-start gap-2 text-xs text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-card p-3">
+ <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+ <span>Hindi mabasa ang dating usapan (hindi ito nangangahulugang nabura): {historyError}</span>
  </div>
  )}
 

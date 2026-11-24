@@ -19,7 +19,7 @@
 
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { adminReady, initFirebaseAdmin, firebaseState } from '../lib/firebaseAdmin.ts';
+import { adminReady, initFirebaseAdmin, firebaseState, firebaseLastError } from '../lib/firebaseAdmin.ts';
 import { sanitizeError } from '../lib/secrets.ts';
 
 export interface HistoryTurn {
@@ -94,12 +94,22 @@ export function historyStore(): 'firestore' | 'sqlite' {
 export function historyStatus(): {
   store: 'firestore' | 'sqlite';
   firebase: 'active' | 'standby';
+  /**
+   * True only for a store that survives a redeploy. The free Render plan has no
+   * persistent disk, so SQLite lives in the container layer and is discarded on
+   * every restart — a conversation kept there is lost without any error.
+   */
+  durable: boolean;
+  firebase_error: string | null;
   limit: number;
   db_file: string;
 } {
+  const store = historyStore();
   return {
-    store: historyStore(),
+    store,
     firebase: firebaseState(),
+    durable: store === 'firestore',
+    firebase_error: firebaseLastError(),
     limit: HISTORY_LIMIT,
     db_file: dbFile(),
   };
@@ -192,6 +202,39 @@ export async function appendTurn(
     throw error;
   }
   return { threadId: thread, turnId, persisted: true, store: 'sqlite' };
+}
+
+/**
+ * Delete every turn in one thread. Only ever called from an explicit user
+ * action — nothing in the server loop clears a conversation on its own.
+ */
+export async function clearThread(threadId: string): Promise<{ deleted: number; store: 'firestore' | 'sqlite' }> {
+  const thread = (threadId || '').trim() || 'default';
+
+  if (adminReady()) {
+    try {
+      const ref = threadRef(thread);
+      let deleted = 0;
+      // Batched: Firestore caps a single commit at 500 writes.
+      for (;;) {
+        const snap = await ref.collection('turns').limit(400).get();
+        if (snap.empty) break;
+        const batch = ref.firestore.batch();
+        for (const doc of snap.docs) batch.delete(doc.ref);
+        await batch.commit();
+        deleted += snap.size;
+      }
+      await ref.delete().catch(() => {});
+      return { deleted, store: 'firestore' };
+    } catch (error: any) {
+      console.error(`[CHAT HISTORY] Firestore clear failed, using SQLite: ${sanitizeError(error)}`);
+    }
+  }
+
+  const result = localDb()
+    .prepare('DELETE FROM direk_chat_turns WHERE thread_id = ?')
+    .run(thread);
+  return { deleted: Number(result.changes ?? 0), store: 'sqlite' };
 }
 
 /**
