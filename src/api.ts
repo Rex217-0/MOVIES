@@ -438,6 +438,8 @@ export interface DirekSettings {
   kohya_output_dir?: string;
   ollama_url?: string;
   ollama_model?: string;
+  /** Cloudflare tunnel to the Kaggle heavy worker; changes on every run. */
+  kaggle_pilot_url?: string;
 }
 
 export interface SetupReport {

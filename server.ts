@@ -3,6 +3,7 @@ import type { NextFunction, Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import { 
@@ -61,6 +62,7 @@ import {
   readSettings, writeSettings, applySettings, effectiveSettings,
   configPath, comfyModelOptions, type DirekSettings,
 } from './src/direk/settings.ts';
+import { checkPilotUrl, savePilotUrl } from './src/direk/pilotSync.ts';
 import {
   ollamaStatus, ollamaChat, preferredTextBackend, ollamaUrl, ollamaModel,
 } from './src/direk/llm.ts';
@@ -255,6 +257,39 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
 // against those would read 401 and restart a healthy container.
 app.get('/healthz', (_req: Request, res: Response) => {
   res.json({ ok: true, uptime_s: Math.round(process.uptime()) });
+});
+
+// The Kaggle worker reports its tunnel URL here when a run starts. It sits
+// before `requireAuth` because the notebook holds no APP_AUTH_TOKEN: that token
+// unlocks every billable endpoint, so it must never be pasted into a notebook.
+// This route has its own narrow secret instead, and it can do exactly one
+// thing — save a validated tunnel URL. When PILOT_SYNC_TOKEN is unset the route
+// does not exist at all (fail closed).
+app.post('/api/pilot/update-kaggle-url', (req: Request, res: Response) => {
+  const expected = (process.env.PILOT_SYNC_TOKEN || '').trim();
+  if (!expected) {
+    res.status(404).json({ error: 'Hindi naka-enable: walang PILOT_SYNC_TOKEN.' });
+    return;
+  }
+
+  const header = req.get('authorization') || '';
+  const given = (header.startsWith('Bearer ') ? header.slice(7) : '').trim();
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  const tokenOk = a.length === b.length && crypto.timingSafeEqual(a, b);
+  if (!tokenOk) {
+    res.status(401).json({ error: 'Maling PILOT_SYNC_TOKEN.' });
+    return;
+  }
+
+  const check = checkPilotUrl((req.body || {}).kaggle_url);
+  if (!check.ok) {
+    res.status(400).json({ error: check.reason });
+    return;
+  }
+
+  savePilotUrl(check.url);
+  res.json({ saved: true, kaggle_pilot_url: check.url });
 });
 
 app.use('/api', requireAuth);
@@ -2329,13 +2364,30 @@ app.put('/api/direk/settings', (req: Request, res: Response) => {
   const allowed: (keyof DirekSettings)[] = [
     'comfyui_url', 'comfyui_enabled', 'comfyui_checkpoint', 'comfyui_workflow', 'comfyui_video_workflow', 'comfyui_loras_dir',
     'kohya_dir', 'kohya_base_model', 'kohya_python', 'kohya_accelerate', 'kohya_output_dir',
-    'ollama_url', 'ollama_model',
+    'ollama_url', 'ollama_model', 'kaggle_pilot_url',
   ];
   const clean: DirekSettings = {};
   for (const key of allowed) {
     if (body[key] !== undefined) (clean as any)[key] = body[key];
   }
-  writeSettings(clean);
+  // The pilot URL is the one setting the app later POSTs screenplays to, so it
+  // is validated here too, not only on the notebook sync route.
+  if (clean.kaggle_pilot_url !== undefined) {
+    if (clean.kaggle_pilot_url === '') {
+      delete clean.kaggle_pilot_url;
+    } else {
+      const check = checkPilotUrl(clean.kaggle_pilot_url);
+      if (!check.ok) {
+        res.status(400).json({ error: check.reason });
+        return;
+      }
+      clean.kaggle_pilot_url = check.url;
+    }
+  }
+  // Merge onto what is already saved: the UI sends only the fields it changed,
+  // so a plain overwrite would drop every other setting.
+  const merged = { ...readSettings(), ...clean };
+  writeSettings(merged);
   // Apply live so the next request already uses the new paths.
   applySettings(clean, true);
   comfyOk = null;

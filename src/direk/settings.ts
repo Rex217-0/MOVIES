@@ -41,6 +41,12 @@ export interface DirekSettings {
   ollama_url?: string;
   /** Ollama model name, e.g. qwen2.5:7b. */
   ollama_model?: string;
+  /**
+   * Cloudflare tunnel to the Kaggle heavy worker. The quick tunnel changes URL
+   * on every Kaggle run, so this is settable at runtime instead of only through
+   * a redeploy.
+   */
+  kaggle_pilot_url?: string;
   /** Piper executable for the offline backup voice (defaults to `piper`). */
   tts_piper_bin?: string;
   /** Piper voice model file (.onnx) used by the offline backup voice. */
@@ -71,6 +77,7 @@ const ENV_MAP: Record<keyof DirekSettings, string> = {
   kohya_output_dir: 'KOHYA_OUTPUT_DIR',
   ollama_url: 'OLLAMA_URL',
   ollama_model: 'OLLAMA_MODEL',
+  kaggle_pilot_url: 'KAGGLE_PILOT_URL',
   tts_piper_bin: 'TTS_PIPER_BIN',
   tts_piper_voice: 'TTS_PIPER_VOICE',
   fish_audio_api_key: 'FISH_AUDIO_API_KEY',
