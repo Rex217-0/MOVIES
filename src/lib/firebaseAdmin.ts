@@ -33,12 +33,26 @@ function normalizePrivateKey(key: string): string {
   return key.replace(/\\n/g, '\n').replace(/\r\n/g, '\n').trim();
 }
 
+/**
+ * A downloaded service-account file uses snake_case (`project_id`,
+ * `client_email`, `private_key`). Reading only camelCase rejected every real
+ * key Google issues, which silently dropped the app onto the ephemeral SQLite
+ * store and erased the conversation on each restart. Both spellings are
+ * accepted so either a pasted file or a hand-built object works.
+ */
 function fromServiceAccountJson(raw: string): Credentials | null {
   try {
-    const parsed = JSON.parse(raw) as Partial<Credentials>;
-    const projectId = String(parsed.projectId || '').trim();
-    const clientEmail = String(parsed.clientEmail || '').trim();
-    const privateKey = String(parsed.privateKey || '').trim();
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const pick = (...names: string[]): string => {
+      for (const name of names) {
+        const value = parsed[name];
+        if (typeof value === 'string' && value.trim()) return value.trim();
+      }
+      return '';
+    };
+    const projectId = pick('project_id', 'projectId');
+    const clientEmail = pick('client_email', 'clientEmail');
+    const privateKey = pick('private_key', 'privateKey');
     if (!projectId || !clientEmail || !privateKey) return null;
     return { projectId, clientEmail, privateKey: normalizePrivateKey(privateKey) };
   } catch {

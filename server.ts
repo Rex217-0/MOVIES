@@ -37,7 +37,7 @@ import { driveStatus, authUrl, redirectUri, exchangeCode } from './src/direk/gdr
 import { DirekService, type ChatMessage } from './src/direk/service.ts';
 import { configuredTextProviders, generateTextWithFallback, sanitizeError } from './src/services/aiRouter.ts';
 import { cloudflareConfigured, defaultCloudflareModel, isDynamicRouteUnavailable } from './src/lib/ai.ts';
-import { appendTurn, loadHistory, historyStatus } from './src/services/chatHistory.ts';
+import { appendTurn, loadHistory, historyStatus, clearThread } from './src/services/chatHistory.ts';
 import { PIPELINE, STAGE_SKILL } from './src/direk/pipeline.ts';
 import { GENRE_MAP } from './src/direk/genres.ts';
 import { SKILLS, setExtensionSkills } from './src/direk/skills.ts';
@@ -1482,6 +1482,32 @@ app.get('/api/direk/chat/history', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error(`[DIREK HISTORY] Hindi mabasa ang history: ${sanitizeError(error)}`);
     res.status(500).json({ error: 'Hindi mabasa ang chat history.', detail: sanitizeError(error) });
+  }
+});
+
+/**
+ * Delete a thread, but only when the caller says so explicitly with
+ * `confirm: "delete"`. A conversation is the user's work; the server never
+ * removes one on its own, and an accidental DELETE without the confirmation
+ * returns 400 instead of erasing the transcript.
+ */
+app.delete('/api/direk/chat/history', async (req: Request, res: Response) => {
+  const threadId = String((req.query.threadId ?? req.body?.threadId) || '').trim();
+  const confirm = String((req.query.confirm ?? req.body?.confirm) || '').trim();
+  if (!threadId) {
+    res.status(400).json({ error: 'threadId is required.' });
+    return;
+  }
+  if (confirm !== 'delete') {
+    res.status(400).json({ error: 'Send confirm=delete to erase this conversation.' });
+    return;
+  }
+  try {
+    const result = await clearThread(threadId);
+    res.json({ threadId, ok: true, ...result });
+  } catch (error: any) {
+    console.error(`[DIREK HISTORY] Hindi mabura ang history: ${sanitizeError(error)}`);
+    res.status(500).json({ error: 'Hindi mabura ang chat history.', detail: sanitizeError(error) });
   }
 });
 
