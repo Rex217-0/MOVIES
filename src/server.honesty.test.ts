@@ -19,6 +19,10 @@ function startServer(env: Record<string, string>) {
       GEMINI_API_KEY: '',
       DEEPSEEK_API_KEY: '',
       ANTHROPIC_API_KEY: '',
+      // Blank the Fish keys too. dotenv loads .env into the child, and a real
+      // key here makes a test call the live TTS API once per scene.
+      FISH_AUDIO_API_KEY: '',
+      LANSA_FISH_TOKEN: '',
       DIREK_CONFIG: path.join(repoRoot, '.no-such-config.json'),
       // Force the no-backend path: this test is about what happens when no text
       // model is configured, not about a developer's local Ollama.
