@@ -31,6 +31,7 @@ import {
 import { concatCopy } from './render.ts';
 import { saveRender, type StoredRender } from './renderStore.ts';
 import { ORG_ID, type FactoryDb } from './factoryDb.ts';
+import { sceneAccounting, sumAccounting, type JobAccounting } from './accounting.ts';
 import { buildConcept, buildScenes, mergeScenes, type ConceptOptions } from './featureFilm.ts';
 import type { Mood } from '../movieMeta.ts';
 import {
@@ -77,6 +78,11 @@ export interface SceneState {
   route: TaskRoute;
   startedAt?: number;
   endedAt?: number;
+  /**
+   * What this scene cost to make. Measured, not labelled: the old UI called a
+   * local GPU render "FREE", which was never true.
+   */
+  accounting?: JobAccounting;
 }
 
 export type FeatureStatus = 'idle' | 'running' | 'paused' | 'done' | 'error';
@@ -120,6 +126,8 @@ export interface FeatureJobView {
   error?: string;
   startedAt: number;
   endedAt?: number;
+  /** The film-level rollup of every scene's accounting. */
+  accounting?: JobAccounting;
 }
 
 export interface SceneRenderInput {
@@ -153,6 +161,11 @@ export type SceneRenderer = (input: SceneRenderInput) => Promise<{
   modelOrWorkflowVersion?: string;
   /** The seed of every shot that was cut into this scene, in shot order. */
   seeds?: number[];
+  /**
+   * The renderer's own measurement of the work, when it has one. The factory
+   * adds the retry count itself, so the renderer never has to know about it.
+   */
+  accounting?: Partial<Pick<JobAccounting, 'renderDurationMs' | 'externalApiCalls' | 'storageBytes'>>;
 }>;
 
 export interface FactoryDeps {
@@ -510,6 +523,26 @@ export class FeatureFactory {
     return job;
   }
 
+  /**
+   * How many times this scene has already been attempted, from the ledger.
+   * A first attempt is 0, so the number means "retries", not "tries".
+   */
+  private attemptsOf(job: FeatureJobView, index: number): number {
+    const attempts = this.deps.db?.sceneAttempts(job.id, index);
+    return Math.max(0, (attempts ?? 1) - 1);
+  }
+
+  /**
+   * Fold every scene's accounting into the film-level total.
+   *
+   * A film with nothing rendered yet has no accounting at all, rather than a
+   * zeroed one: "0 vendor calls" is a measurement, and nothing has run yet.
+   */
+  private rollupAccounting(job: FeatureJobView): void {
+    const parts = job.scenes.map(s => s.accounting).filter((a): a is JobAccounting => Boolean(a));
+    job.accounting = parts.length ? sumAccounting(parts) : undefined;
+  }
+
   private recompute(job: FeatureJobView): void {
     job.rendered = job.scenes.filter(s => s.status === 'rendered' || s.status === 'approved').length;
     job.failed = job.scenes.filter(s => s.status === 'failed').length;
@@ -521,6 +554,7 @@ export class FeatureFactory {
       s => s.status === 'rendered' || s.status === 'approved' || s.status === 'failed' || s.status === 'blocked',
     ).length;
     job.percent = Math.round((done / job.total) * 100);
+    this.rollupAccounting(job);
   }
 
   private async runBatch(job: FeatureJobView): Promise<void> {
@@ -593,6 +627,16 @@ export class FeatureFactory {
         state.shots = out.shots;
         state.voiced = out.voiced;
         const seconds = out.seconds ?? state.seconds;
+        // Measured on the way out: duration and vendor calls come from the
+        // renderer, storage from the bytes we are about to write.
+        state.accounting = sceneAccounting({
+          engine: out.backend || 'comfyui',
+          seconds,
+          durationMs: out.accounting?.renderDurationMs ?? (Date.now() - (state.startedAt ?? Date.now())),
+          externalApiCalls: out.accounting?.externalApiCalls ?? 0,
+          storageBytes: out.data.length,
+          retryCount: this.attemptsOf(job, state.index),
+        });
         state.percent = 90;
         const asset = saveAsset(out.data, {
           title: `Scene ${state.index} — ${job.concept.title}`,

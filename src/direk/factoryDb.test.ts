@@ -316,3 +316,60 @@ test('an older database gains shot_plan without losing its scenes', () => {
   assert.equal(job!.scenes[0].heading, 'SCENE 1');
   assert.equal(job!.scenes[0].shots, undefined, 'a legacy scene has no plan, not an empty one');
 });
+
+test('accounting survives a save and load round-trip through SQLite', async () => {
+  tmpStore();
+  const db = tmpDb();
+  const factory = new FeatureFactory({
+    renderScene: async ({ index }) => ({
+      data: Buffer.from(`s${index}-bytes`),
+      seconds: FEATURE_SCENE_SECONDS,
+      mediaClass: 'SYNTHETIC_MOTION' as const,
+      backend: index === 1 ? 'comfyui' : 'stock',
+      accounting: { renderDurationMs: 1000 * index, externalApiCalls: index },
+    }),
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+    db,
+  });
+
+  const job = factory.create({ brief: 'Isang horror sa gubat.' });
+  factory.start(job.id);
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline && factory.get(job.id)!.status === 'running') {
+    await new Promise(r => setTimeout(r, 5));
+  }
+
+  const loaded = db.load(job.id)!;
+  const first = loaded.scenes[0];
+  assert.ok(first.accounting, 'the scene kept its accounting through SQLite');
+  assert.equal(first.accounting!.renderDurationMs, 1000, 'measured duration, not a default');
+  assert.equal(first.accounting!.externalApiCalls, 1);
+  assert.deepEqual(first.accounting!.engines, ['comfyui']);
+  assert.equal(first.accounting!.costBasis, 'NO_VENDOR_CALL_COST');
+  assert.equal(first.accounting!.storageBytes, Buffer.byteLength('s1-bytes'));
+
+  const second = loaded.scenes[1];
+  assert.equal(second.accounting!.costBasis, 'THIRD_PARTY_FREE_TIER', 'stock is a vendor call, free tier');
+
+  // The film-level rollup is persisted too, and it sums the scenes.
+  assert.ok(loaded.accounting, 'the job kept its rollup');
+  const sceneCalls = loaded.scenes.reduce((n, s) => n + (s.accounting?.externalApiCalls ?? 0), 0);
+  assert.equal(loaded.accounting!.externalApiCalls, sceneCalls);
+  assert.equal(loaded.accounting!.costBasis, 'THIRD_PARTY_FREE_TIER');
+  db.close();
+});
+
+test('an old row without accounting loads with none claimed', () => {
+  tmpStore();
+  const db = tmpDb();
+  const factory = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
+    ffmpegAvailable: async () => true,
+    db,
+  });
+  const job = factory.create({ brief: 'Isang drama sa probinsya.' });
+  const loaded = db.load(job.id)!;
+  assert.equal(loaded.scenes[0].accounting, undefined, 'a pending scene has not spent anything yet');
+  db.close();
+});

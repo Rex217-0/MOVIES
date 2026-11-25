@@ -1038,6 +1038,20 @@ export async function movieWait(
 // Feature Film Factory (18 scenes -> one 90-minute feature)
 // ---------------------------------------------------------------------------
 
+/**
+ * What a render cost. Mirrors `src/direk/accounting.ts` on the server: the UI
+ * shows a measured basis, never a bare "FREE".
+ */
+export interface JobAccountingView {
+  renderDurationMs: number;
+  retryCount: number;
+  storageBytes: number;
+  externalApiCalls: number;
+  cloudCost: { amount: number | null; currency: 'USD'; confidence: 'measured' | 'estimated' | 'none' | 'unknown' };
+  costBasis: 'NO_VENDOR_CALL_COST' | 'THIRD_PARTY_FREE_TIER' | 'VENDOR_METERED' | 'UNKNOWN';
+  engines: string[];
+}
+
 export interface FeatureSceneView {
   index: number;
   act: number;
@@ -1059,6 +1073,8 @@ export interface FeatureSceneView {
   /** The shots this scene was cut into, in film order; absent when not yet cut. */
   shots?: { index: number; framing: string; seconds: number }[];
   route: { task: string; tier: string; placement: string; reason: string };
+  /** What this scene cost; absent until it has been rendered once. */
+  accounting?: JobAccountingView;
 }
 
 export interface FeatureJobView {
@@ -1087,6 +1103,11 @@ export interface FeatureJobView {
   error?: string;
   startedAt: number;
   endedAt?: number;
+  /** The film-level rollup of every scene's accounting. */
+  accounting?: JobAccountingView;
+  /** The label to show instead of the old, false "FREE". */
+  costBasisLabel?: string | null;
+  costBasisNote?: string | null;
 }
 
 export interface FeatureStatus {

@@ -38,6 +38,75 @@ const STAGES: { key: FeatureSceneView['stage']; label: string }[] = [
   { key: 'completed', label: 'Completed' },
 ];
 
+/** Milliseconds as something a person can read at a glance. */
+function duration(ms: number): string {
+  if (!ms) return '—';
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${Math.round(s % 60)}s`;
+}
+
+/**
+ * What a film cost, stated honestly.
+ *
+ * The old UI called a local GPU render "FREE", which was never true: it burns
+ * electricity, wears the card and blocks the GPU. What is true is narrower —
+ * no vendor billed us. This panel says exactly that, and says "unknown" rather
+ * than inventing a price when the engine did not report one.
+ */
+function CostPanel({ job }: { job: FeatureJobView }) {
+  const a = job.accounting;
+  if (!a) return null;
+  const money = a.cloudCost.amount === null
+    ? 'hindi alam'
+    : `$${a.cloudCost.amount.toFixed(4)}`;
+  const confidence = a.cloudCost.confidence === 'unknown'
+    ? 'walang rate na naka-set'
+    : a.cloudCost.confidence === 'none'
+      ? 'walang bayad'
+      : a.cloudCost.confidence;
+
+  return (
+    <div className="mt-4 rounded-card border border-subtle bg-raised p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+          Gastos at resources
+        </p>
+        <span className="rounded-pill border border-subtle px-2 py-0.5 text-[10px] font-medium text-ink">
+          {job.costBasisLabel || a.costBasis}
+        </span>
+      </div>
+      {job.costBasisNote && <p className="mt-1 text-[11px] text-dim">{job.costBasisNote}</p>}
+      <div className="mt-3 grid grid-cols-2 gap-3 text-[11px] sm:grid-cols-3 lg:grid-cols-5">
+        <div>
+          <p className="text-dim">Render time</p>
+          <p className="font-medium text-ink">{duration(a.renderDurationMs)}</p>
+        </div>
+        <div>
+          <p className="text-dim">Vendor calls</p>
+          <p className="font-medium text-ink">{a.externalApiCalls}</p>
+        </div>
+        <div>
+          <p className="text-dim">Cloud cost</p>
+          <p className="font-medium text-ink" title={confidence}>{money}</p>
+        </div>
+        <div>
+          <p className="text-dim">Storage</p>
+          <p className="font-medium text-ink">{bytes(a.storageBytes)}</p>
+        </div>
+        <div>
+          <p className="text-dim">Retries</p>
+          <p className="font-medium text-ink">{a.retryCount}</p>
+        </div>
+      </div>
+      {a.engines.length > 0 && (
+        <p className="mt-2 text-[10px] text-dim">Engines: {a.engines.join(', ')}</p>
+      )}
+    </div>
+  );
+}
+
 function stageIndex(stage: FeatureSceneView['stage']): number {
   return Math.max(0, STAGES.findIndex(s => s.key === stage));
 }
@@ -462,6 +531,16 @@ export function FeatureFilmFactory() {
                       {scene.shots.map(s => s.framing[0].toUpperCase()).join('→')}
                     </p>
                   )}
+                  {scene.accounting && (
+                    <p
+                      className="mt-1 text-[10px] text-dim"
+                      title={`${scene.accounting.externalApiCalls} vendor call(s), ${scene.accounting.engines.join(', ') || 'engine hindi tinukoy'}`}
+                    >
+                      {duration(scene.accounting.renderDurationMs)} ·{' '}
+                      {scene.accounting.externalApiCalls} call
+                      {scene.accounting.externalApiCalls === 1 ? '' : 's'}
+                    </p>
+                  )}
                   {scene.renderUrl && (scene.status === 'rendered' || scene.status === 'approved') && (
                     <a
                       href={scene.renderUrl}
@@ -493,6 +572,8 @@ export function FeatureFilmFactory() {
               ))}
             </div>
           </div>
+
+          <CostPanel job={job} />
 
           {job.film && (
             <div className="mt-5 rounded-card border border-growth-soft bg-growth-soft/10 p-4">

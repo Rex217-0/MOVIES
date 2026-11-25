@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { ffmpegPath } from './render.ts';
+import { withExternalCallCounter } from './externalCalls.ts';
 import {
   commonsEnabled,
   fetchStockClip,
@@ -477,5 +478,63 @@ test('Commons: a provider that never answers cannot stall the search forever', a
   } finally {
     for (const s of sockets) s.destroy();
     await new Promise<void>((r) => apiServer.close(() => r()));
+  }
+});
+
+test('the real Pexels path counts its outbound calls: one search plus one download', async () => {
+  const clip = fakeClip();
+  const srv = await serve((base) => ({
+    '/videos/search': {
+      type: 'application/json',
+      body: Buffer.from(JSON.stringify({
+        videos: [{
+          id: 7,
+          url: 'https://www.pexels.com/video/7/',
+          user: { name: 'Shooter' },
+          video_files: [{
+            id: 1, quality: 'hd', file_type: 'video/mp4',
+            width: 1280, height: 720, link: `${base}/clip.mp4`,
+          }],
+        }],
+      })),
+    },
+    '/clip.mp4': { type: 'video/mp4', body: clip },
+  }));
+  try {
+    await withEnv(
+      { PEXELS_API_KEY: 'k', PIXABAY_API_KEY: undefined, COMMONS_DISABLE: '1', PEXELS_API_URL: `${srv.base}/videos/search` },
+      async () => {
+        const { result, externalApiCalls } = await withExternalCallCounter(
+          () => fetchStockClip('fisherman boat sea'),
+        );
+        assert.ok(result, 'expected a clip');
+        // The counter is measured against a real server, so the number the
+        // ledger reports is the number of requests that actually arrived.
+        assert.equal(externalApiCalls, 2, 'one search, one clip download');
+        assert.equal(srv.hits.length, 2, 'the server saw exactly those two requests');
+      },
+    );
+  } finally {
+    await srv.close();
+  }
+});
+
+test('a stock search that finds nothing still counts the calls it made', async () => {
+  const srv = await serve(() => ({
+    '/videos/search': { type: 'application/json', body: Buffer.from(JSON.stringify({ videos: [] })) },
+  }));
+  try {
+    await withEnv(
+      { PEXELS_API_KEY: 'k', PIXABAY_API_KEY: undefined, COMMONS_DISABLE: '1', PEXELS_API_URL: `${srv.base}/videos/search` },
+      async () => {
+        const { externalApiCalls } = await withExternalCallCounter(async () => {
+          await assert.rejects(() => fetchStockClip('walang tugma'));
+        });
+        assert.ok(externalApiCalls >= 1, 'a failed search is still a vendor call');
+        assert.equal(externalApiCalls, srv.hits.length, 'every counted call reached the server');
+      },
+    );
+  } finally {
+    await srv.close();
   }
 });

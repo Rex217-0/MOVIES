@@ -41,6 +41,7 @@ import {
 import { driveStatus, authUrl, redirectUri, exchangeCode } from './src/direk/gdrive.ts';
 import { DirekService, type ChatMessage } from './src/direk/service.ts';
 import { configuredTextProviders, generateTextWithFallback, sanitizeError } from './src/services/aiRouter.ts';
+import { COST_BASIS_LABEL, COST_BASIS_NOTE } from './src/direk/accounting.ts';
 import { cloudflareConfigured, defaultCloudflareModel, isDynamicRouteUnavailable } from './src/lib/ai.ts';
 import { appendTurn, loadHistory, historyStatus, clearThread } from './src/services/chatHistory.ts';
 import { PIPELINE, STAGE_SKILL } from './src/direk/pipeline.ts';
@@ -1782,6 +1783,7 @@ const featureFactory = new FeatureFactory({
         backend: result.backend,
         shots: result.shots,
         seeds: result.seeds,
+        accounting: result.accounting,
       };
     });
   },
@@ -1813,6 +1815,9 @@ function featureView(job: ReturnType<FeatureFactory['create']>) {
     // of showing a bare "failed".
     tierAccepts: TIER_ACCEPTS[job.qualityTier],
     requiresRealBackend: requiresMasterBackend(job.qualityTier),
+    // The label the UI shows instead of the old, false "FREE".
+    costBasisLabel: job.accounting ? COST_BASIS_LABEL[job.accounting.costBasis] : null,
+    costBasisNote: job.accounting ? COST_BASIS_NOTE[job.accounting.costBasis] : null,
   };
 }
 
