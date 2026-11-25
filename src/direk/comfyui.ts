@@ -25,6 +25,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { checkVideoBuffer, FfmpegUnavailableError } from './videoQuality.ts';
 
+/** What ComfyUI actually rendered, read back from the graph that was sent. */
+export interface ComfyRenderFacts {
+  seed?: number;
+  width?: number;
+  height?: number;
+  frames?: number;
+  checkpoint?: string;
+  /** The workflow file name, which is the version of the graph. */
+  workflow?: string;
+}
+
 export const DEFAULT_NEGATIVE = 'blurry, low quality, watermark, text, deformed';
 
 /**
@@ -252,31 +263,18 @@ export async function checkComfyReachability(): Promise<ComfyReachability> {
  */
 export async function generateWithComfy(
   prompt: string,
-  opts: { negative?: string; width?: number; height?: number; lora?: LoraChoice } = {},
-): Promise<Buffer> {
+  opts: { negative?: string; width?: number; height?: number; lora?: LoraChoice; seed?: number } = {},
+): Promise<{ data: Buffer; render: ComfyRenderFacts }> {
   const base = comfyUrl();
   const workflow = buildWorkflow(prompt, opts);
-
-  const queued = await fetch(`${base}/prompt`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt: workflow, client_id: `direk-${Date.now()}` }),
-  });
-  if (!queued.ok) {
-    throw new Error(`ComfyUI /prompt returned ${queued.status}`);
-  }
-  const { prompt_id: promptId } = (await queued.json()) as { prompt_id?: string };
-  if (!promptId) throw new Error('ComfyUI did not return a prompt_id');
+  // Read back from the graph, not from `opts`: the seed and dimensions are
+  // chosen inside buildWorkflow when the caller did not name them.
+  const render = renderFacts(workflow, opts);
+  const promptId = await queueWorkflow(base, workflow, `direk-${Date.now()}`);
 
   const image = await waitForImage(base, promptId, timeoutMs());
-  const params = new URLSearchParams({
-    filename: image.filename,
-    subfolder: image.subfolder,
-    type: image.type,
-  });
-  const view = await fetch(`${base}/view?${params}`);
-  if (!view.ok) throw new Error(`ComfyUI /view returned ${view.status}`);
-  return Buffer.from(await view.arrayBuffer());
+  const data = await fetchImage(base, image);
+  return { data, render };
 }
 
 /**
@@ -453,37 +451,18 @@ export async function diagnoseComfyVideo(): Promise<ComfyVideoDiagnosis> {
  */
 export async function generateVideoWithComfy(
   prompt: string,
-  opts: { negative?: string; width?: number; height?: number; frames?: number } = {},
-): Promise<{ data: Buffer; filename: string }> {
+  opts: { negative?: string; width?: number; height?: number; frames?: number; seed?: number } = {},
+): Promise<{ data: Buffer; filename: string; render: ComfyRenderFacts }> {
   const base = comfyUrl();
   // buildVideoWorkflow throws with a precise reason when the template is
   // missing, unreadable, or has an unfilled placeholder.
   const workflow = buildVideoWorkflow(prompt, opts);
-
-  const queued = await fetch(`${base}/prompt`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt: workflow, client_id: `direk-vid-${Date.now()}` }),
-  });
-  if (!queued.ok) {
-    // ComfyUI puts the node-level reason (a bad checkpoint name, a missing
-    // node) in the body; keep it so the failure is actionable.
-    const detail = (await queued.text().catch(() => '')).slice(0, 300);
-    throw new Error(`ComfyUI /prompt returned ${queued.status}${detail ? `: ${detail}` : ''}`);
-  }
-  const { prompt_id: promptId } = (await queued.json()) as { prompt_id?: string };
-  if (!promptId) throw new Error('ComfyUI did not return a prompt_id');
+  const render = renderFacts(workflow, opts);
+  const promptId = await queueWorkflow(base, workflow, `direk-vid-${Date.now()}`);
 
   // Video takes longer than a still, so allow a generous ceiling.
   const image = await waitForImage(base, promptId, Math.max(timeoutMs(), 600000));
-  const params = new URLSearchParams({
-    filename: image.filename,
-    subfolder: image.subfolder,
-    type: image.type,
-  });
-  const view = await fetch(`${base}/view?${params}`);
-  if (!view.ok) throw new Error(`ComfyUI /view returned ${view.status}`);
-  const data = Buffer.from(await view.arrayBuffer());
+  const data = await fetchImage(base, image);
 
   // A broken render is still a playable mp4, so it is measured before it is
   // handed back. Refusing garbage here is what stops a rainbow-noise clip from
@@ -504,7 +483,82 @@ export async function generateVideoWithComfy(
     }
   }
 
-  return { data, filename: image.filename };
+  return { data, filename: image.filename, render };
+}
+
+/**
+ * The facts needed to reproduce this render, read back out of the graph that was
+ * actually sent. Reading them from the graph rather than from `opts` matters:
+ * `buildVideoWorkflow` chooses defaults (a seed, 832x480, 49 frames, a
+ * checkpoint) that the caller never named, and a record of the caller's inputs
+ * would describe a render that did not happen.
+ */
+function renderFacts(
+  workflow: Record<string, unknown>,
+  opts: { width?: number; height?: number; frames?: number },
+): ComfyRenderFacts {
+  let seed: number | undefined;
+  let width = opts.width;
+  let height = opts.height;
+  let frames = opts.frames;
+  let checkpoint: string | undefined;
+
+  for (const node of Object.values<any>(workflow)) {
+    const inputs = node?.inputs ?? {};
+    if (seed === undefined && typeof inputs.seed === 'number') seed = inputs.seed;
+    if (width === undefined && typeof inputs.width === 'number') width = inputs.width;
+    if (height === undefined && typeof inputs.height === 'number') height = inputs.height;
+    if (frames === undefined && typeof inputs.length === 'number') frames = inputs.length;
+    if (frames === undefined && typeof inputs.num_frames === 'number') frames = inputs.num_frames;
+    if (checkpoint === undefined && typeof inputs.ckpt_name === 'string') checkpoint = inputs.ckpt_name;
+    if (checkpoint === undefined && typeof inputs.unet_name === 'string') checkpoint = inputs.unet_name;
+  }
+
+  const templatePath = process.env.COMFYUI_VIDEO_WORKFLOW;
+  return {
+    seed,
+    width,
+    height,
+    frames,
+    checkpoint,
+    // The workflow file is the version of the graph, so a re-render can use the
+    // same one rather than whatever is configured later.
+    workflow: templatePath ? path.basename(templatePath) : undefined,
+  };
+}
+
+/** Queue a graph and return its prompt id. Shared by the image and video paths. */
+async function queueWorkflow(
+  base: string,
+  workflow: Record<string, unknown>,
+  clientId: string,
+): Promise<string> {
+  const queued = await fetch(`${base}/prompt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: workflow, client_id: clientId }),
+  });
+  if (!queued.ok) {
+    // ComfyUI puts the node-level reason (a bad checkpoint name, a missing
+    // node) in the body; keep it so the failure is actionable.
+    const detail = (await queued.text().catch(() => '')).slice(0, 300);
+    throw new Error(`ComfyUI /prompt returned ${queued.status}${detail ? `: ${detail}` : ''}`);
+  }
+  const { prompt_id: promptId } = (await queued.json()) as { prompt_id?: string };
+  if (!promptId) throw new Error('ComfyUI did not return a prompt_id');
+  return promptId;
+}
+
+/** Download one produced file by its history reference. */
+async function fetchImage(base: string, image: ComfyImageRef): Promise<Buffer> {
+  const params = new URLSearchParams({
+    filename: image.filename,
+    subfolder: image.subfolder ?? '',
+    type: image.type ?? 'output',
+  });
+  const view = await fetch(`${base}/view?${params}`);
+  if (!view.ok) throw new Error(`ComfyUI /view returned ${view.status}`);
+  return Buffer.from(await view.arrayBuffer());
 }
 
 /** Poll `/history/<id>` until the prompt finishes, then return its first image. */

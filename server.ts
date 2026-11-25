@@ -32,7 +32,8 @@ import { ReferenceCatalog } from './src/direk/reference.ts';
 import { MarketIntel } from './src/direk/market.ts';
 import { runConnector, connectorCatalog, allAssets } from './src/direk/connectors.ts';
 import { ffmpegAvailable, ffmpegPath, isPng, toPng } from './src/direk/render.ts';
-import { assetsDir, assetPath, reviewAsset, type ReviewStatus } from './src/direk/assets.ts';
+import { assetsDir, assetPath, reviewAsset } from './src/direk/assets.ts';
+import { VAULT_DISPOSITIONS, normalizeDisposition } from './src/direk/provenance.ts';
 import {
   QUALITY_TIERS, TIER_ACCEPTS, MEDIA_CLASSES, MASTER_BACKEND_UNAVAILABLE_CODE,
   parseQualityTier, requiresMasterBackend, type QualityTier,
@@ -88,6 +89,7 @@ import { renderVideo, preferredRenderEngine } from './src/direk/videoRenderServi
 import { wanEndpoint } from './src/direk/fal.ts';
 import { MIN_MINUTES, MAX_MINUTES, sceneCount } from './src/movieMeta.ts';
 import { groundMovie, groundingBlock } from './src/direk/grounding.ts';
+import { originalityProvenance } from './src/direk/provenance.ts';
 import { FactoryDb, factoryDbPath } from './src/direk/factoryDb.ts';
 import { rendersDir, renderPath } from './src/direk/renderStore.ts';
 import {
@@ -983,7 +985,7 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
   const backend = await resolveImageBackend();
   if (backend === 'comfyui') {
     try {
-      const png = await runOnLocalGpu(`ComfyUI image: "${prompt.slice(0, 40)}"`, () =>
+      const { data: png } = await runOnLocalGpu(`ComfyUI image: "${prompt.slice(0, 40)}"`, () =>
         generateWithComfy(enhancedPrompt, {
           negative: buildVeoStyleNegative(),
           width: 1024, height: 1024, lora: parseLoraChoice({ lora, loraStrength }),
@@ -1779,6 +1781,7 @@ const featureFactory = new FeatureFactory({
         mediaClass: result.mediaClass,
         backend: result.backend,
         shots: result.shots,
+        seeds: result.seeds,
       };
     });
   },
@@ -1913,7 +1916,33 @@ app.post('/api/direk/feature/create', async (req: Request, res: Response) => {
   // CANARY, the tier that accepts anything real, so a typo cannot demand MASTER.
   const qualityTier = parseQualityTier(body.quality_tier ?? body.qualityTier);
   const opts: ConceptOptions = { brief, title: body.title, genre: body.genre, rating, format, mood };
-  const job = featureFactory.create({ ...opts, qualityTier });
+
+  // Section 7: the declaration is built from what grounding actually happened,
+  // and it is fixed on the job so every asset the job produces copies the same
+  // claim. `groundMovie` is a pure catalog lookup, so asking it here costs no
+  // model call and cannot invent references that do not exist.
+  const grounding = groundMovie(
+    brief,
+    { minutes: FEATURE_TOTAL_SECONDS / 60, sceneCount: FEATURE_SCENES },
+    referenceCatalog,
+    marketIntel,
+  );
+  const originality = originalityProvenance({
+    genre: grounding.genre,
+    referenceCount: grounding.references.length,
+    usedFor: [
+      'genre_benchmark',
+      'pacing_benchmark',
+      ...(grounding.market_brief ? (['market_benchmark'] as const) : []),
+    ],
+  });
+  broadcastThought(
+    `[SECTION 7] Grounding: ${originality.groundingUsed ? 'ginamit' : 'wala'}` +
+      `${originality.groundingGenre ? ` (${originality.groundingGenre})` : ''} · ` +
+      `${originality.referenceCount} reference · walang kinopyang script/karakter/dialogue.`,
+  );
+
+  const job = featureFactory.create({ ...opts, qualityTier, originality });
 
   // A richer breakdown from a text model when one is available; the built-in
   // 18-beat structure stands in when there is none.
@@ -2279,7 +2308,8 @@ function generateLoraImage(
   if (backend === 'comfyui') {
     // LoRA previews are batch work on the same GPU as a film; a training run that
     // grabbed it first must not be interleaved with a movie scene.
-    return runOnLocalGpu(`LoRA image: "${prompt.slice(0, 40)}"`, () => generateWithComfy(prompt, { lora }));
+    return runOnLocalGpu(`LoRA image: "${prompt.slice(0, 40)}"`, () =>
+      generateWithComfy(prompt, { lora }).then(r => r.data));
   }
   if (backend === 'pollinations') return generatePollinationsImage(prompt, seed).then(toPng);
   return generateGeminiImage(prompt).then(png => (png ? toPng(png) : null));
@@ -2492,27 +2522,45 @@ app.get('/api/direk/assets', (_req: Request, res: Response) => {
   res.json({ assets: allAssets() });
 });
 
-// Approve or reject a rendered asset in the Staging Vault. The decision is
-// written back to the asset's sidecar, so it survives a restart and the
-// Published view keeps only what was really approved.
+// Review a rendered asset in the Staging Vault.
+//
+// The disposition is the record of truth; `action` still accepts the old short
+// names (approve/reject/pending) so existing clients keep working. The reviewer
+// and the reason are stored with the decision, because six months later the
+// difference between a technical and a creative rejection is only visible in
+// the note that was left with it.
 app.post('/api/direk/assets/review', (req: Request, res: Response) => {
-  const body = req.body as { id?: string; name?: string; assetId?: string; action?: string };
+  const body = req.body as {
+    id?: string; name?: string; assetId?: string;
+    action?: string; disposition?: string;
+    reviewer?: string; reason?: string; replacementAssetId?: string;
+  };
   const target = body.id || body.assetId || body.name;
-  const action = body.action;
-  if (!target || !['approve', 'reject', 'pending'].includes(String(action))) {
+  const requested = body.disposition ?? body.action;
+  const disposition = normalizeDisposition(requested);
+  if (!target || !disposition) {
     res.status(400).json({
-      error: 'Kailangan ang asset id (o name) at action: "approve" | "reject" | "pending".',
+      error:
+        'Kailangan ang asset id (o name) at dispoisyon. Valid: ' +
+        `${VAULT_DISPOSITIONS.join(', ')} (o action: "approve" | "reject" | "pending").`,
+      dispositions: VAULT_DISPOSITIONS,
     });
     return;
   }
-  const status: ReviewStatus =
-    action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'pending';
-  const updated = reviewAsset(target, status);
+  const updated = reviewAsset(target, disposition, {
+    reviewer: typeof body.reviewer === 'string' ? body.reviewer.slice(0, 80) : undefined,
+    reason: typeof body.reason === 'string' ? body.reason.slice(0, 500) : undefined,
+    replacementAssetId:
+      typeof body.replacementAssetId === 'string' ? body.replacementAssetId : undefined,
+  });
   if (!updated) {
     res.status(404).json({ error: `Hindi mahanap ang asset na '${target}'.` });
     return;
   }
-  broadcastThought(`[RENDER VAULT] ${updated.name} → ${status}`);
+  broadcastThought(
+    `[RENDER VAULT] ${updated.name} → ${disposition}` +
+      `${updated.reason ? ` · ${updated.reason}` : ''}`,
+  );
   res.json({ ok: true, asset: updated });
 });
 
