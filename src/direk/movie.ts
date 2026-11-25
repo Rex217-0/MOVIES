@@ -913,6 +913,11 @@ export interface SceneRenderResult {
    * describes the whole cut.
    */
   seeds?: number[];
+  /**
+   * What this scene actually cost: wall-clock render time and the number of
+   * outbound vendor calls, summed over every shot. Measured, not assumed.
+   */
+  accounting?: { renderDurationMs: number; externalApiCalls: number };
 }
 
 /**
@@ -1078,6 +1083,9 @@ export async function renderFeatureScene(
     const shotClasses: MediaClass[] = [];
     const shotEngines = new Set<string>();
     const seeds: number[] = [];
+    // A scene is several renders, so the cost is the sum of its shots.
+    let renderDurationMs = 0;
+    let externalApiCalls = 0;
     for (const planned of plan) {
       const picture = await renderVideo({
         prompt: buildVeoStylePrompt(planned.prompt),
@@ -1096,6 +1104,8 @@ export async function renderFeatureScene(
       rendered.push({ file: norm.file, seconds: norm.seconds, slot: planned.seconds });
       shotClasses.push(picture.mediaClass);
       shotEngines.add(picture.engine);
+      renderDurationMs += picture.renderDurationMs ?? 0;
+      externalApiCalls += picture.externalApiCalls ?? 0;
       if (typeof picture.render?.seed === 'number') seeds.push(picture.render.seed);
     }
     const mediaClass = sceneMediaClass(shotClasses);
@@ -1129,6 +1139,7 @@ export async function renderFeatureScene(
       backend: [...shotEngines].join('+'),
       shots: plan.map(p => ({ index: p.index, framing: p.framing, seconds: p.seconds })),
       seeds: seeds.length ? seeds : undefined,
+      accounting: { renderDurationMs, externalApiCalls },
     };
   } finally {
     cleanup(dir);

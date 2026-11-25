@@ -41,6 +41,7 @@ import {
   generateVideoWithWan, editWithOpenCut, uploadToFal,
 } from './fal.ts';
 import { paidCloudAllowed, paidReady, PAID_BLOCKED_DETAIL } from './costPolicy.ts';
+import { withExternalCallCounter } from './externalCalls.ts';
 import { fetchStockClip, stockConfigured, toMp4 } from './stockVideo.ts';
 import { strictRealVideoOnly, strictRefusalDetail } from './strictVideo.ts';
 import {
@@ -158,6 +159,15 @@ export interface VideoRenderResult {
    * for engines that expose none, so a stock clip does not claim a seed.
    */
   render?: ComfyRenderFacts;
+  /**
+   * How many calls left this machine to reach a third party. Loopback calls to
+   * the local ComfyUI are not counted: no vendor sees them. The accounting
+   * ledger is only honest if this number is measured, not assumed, so it is
+   * counted around the real work rather than inferred from the engine name.
+   */
+  externalApiCalls: number;
+  /** Wall-clock milliseconds this render actually took, including editing. */
+  renderDurationMs: number;
 }
 
 /** True when a real local ComfyUI video backend can render right now. */
@@ -225,8 +235,16 @@ export async function videoRenderDetail(): Promise<string> {
  */
 export async function renderVideo(input: VideoRenderInput): Promise<VideoRenderResult> {
   const qualityTier: QualityTier = input.qualityTier ?? 'CANARY';
-  const { data, engine, credit, sourceUrl, licence, render } = await generateRaw({ ...input, qualityTier });
-  const edited = await maybeEdit(data, input.editInstructions);
+  const startedAt = Date.now();
+  // Every outbound call this render makes is counted inside this scope, so the
+  // ledger reports a measured number instead of a guess.
+  const { result, externalApiCalls } = await withExternalCallCounter(async () => {
+    const raw = await generateRaw({ ...input, qualityTier });
+    const edited = await maybeEdit(raw.data, input.editInstructions);
+    return { ...raw, edited };
+  });
+  const { data, engine, credit, sourceUrl, licence, render, edited } = result;
+  const renderDurationMs = Date.now() - startedAt;
   // The editing pass re-encodes but does not change what the motion is, so the
   // class stays with the engine that made it.
   const mediaClass = mediaClassForEngine(engine);
@@ -248,6 +266,8 @@ export async function renderVideo(input: VideoRenderInput): Promise<VideoRenderR
     editor: edited.editor,
     editNote: edited.note,
     render,
+    renderDurationMs,
+    externalApiCalls,
   };
 }
 

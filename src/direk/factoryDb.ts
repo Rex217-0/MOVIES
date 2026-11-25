@@ -68,6 +68,7 @@ interface MovieRow {
   quality_tier: string;
   originality: string | null;
   blocked: number;
+  accounting: string | null;
   started_at: number;
   ended_at: number | null;
 }
@@ -96,6 +97,7 @@ interface SceneRow {
   shot_plan: string | null;
   error: string | null;
   route: string;
+  accounting: string | null;
   started_at: number | null;
   ended_at: number | null;
 }
@@ -158,6 +160,7 @@ CREATE TABLE IF NOT EXISTS movie_jobs (
   quality_tier TEXT NOT NULL DEFAULT 'CANARY',
   originality TEXT,
   blocked INTEGER NOT NULL DEFAULT 0,
+  accounting TEXT,
   started_at INTEGER NOT NULL,
   ended_at INTEGER
 );
@@ -185,6 +188,7 @@ CREATE TABLE IF NOT EXISTS scene_jobs (
   shot_plan TEXT,
   error TEXT,
   route TEXT NOT NULL,
+  accounting TEXT,
   started_at INTEGER,
   ended_at INTEGER,
   PRIMARY KEY (movie_id, idx)
@@ -231,6 +235,7 @@ function migrate(db: DatabaseSync): void {
     ['quality_tier', "TEXT NOT NULL DEFAULT 'CANARY'"],
     ['originality', 'TEXT'],
     ['blocked', 'INTEGER NOT NULL DEFAULT 0'],
+    ['accounting', 'TEXT'],
   ];
   for (const [name, type] of addMovie) {
     if (!movieCols.has(name)) db.exec(`ALTER TABLE movie_jobs ADD COLUMN ${name} ${type}`);
@@ -256,6 +261,7 @@ function migrate(db: DatabaseSync): void {
     ['media_class', 'TEXT'],
     ['blocked_reason', 'TEXT'],
     ['shot_plan', 'TEXT'],
+    ['accounting', 'TEXT'],
     // A scene being rendered is leased, not just labelled 'rendering'. Without an
     // owner and an expiry, a crash mid-scene leaves a row that looks busy forever
     // and the batch can never finish it.
@@ -299,8 +305,9 @@ export class FactoryDb {
         `INSERT INTO movie_jobs
            (id, org_id, title, genre, rating, format, created_at, concept, status, percent, rendered,
             failed, approved, rejected, total, total_seconds, current_scene, rendered_seconds,
-            film, error, script, bible, quality_tier, originality, blocked, started_at, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            film, error, script, bible, quality_tier, originality, blocked, accounting,
+            started_at, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            org_id=excluded.org_id,
            title=excluded.title, genre=excluded.genre, rating=excluded.rating,
@@ -311,7 +318,7 @@ export class FactoryDb {
            current_scene=excluded.current_scene, rendered_seconds=excluded.rendered_seconds,
            film=excluded.film, error=excluded.error, script=excluded.script, bible=excluded.bible,
            quality_tier=excluded.quality_tier, originality=excluded.originality,
-           blocked=excluded.blocked,
+           blocked=excluded.blocked, accounting=excluded.accounting,
            started_at=excluded.started_at, ended_at=excluded.ended_at`,
       )
       .run(
@@ -340,6 +347,7 @@ export class FactoryDb {
         job.qualityTier,
         JSON.stringify(job.originality),
         job.blocked,
+        job.accounting ? JSON.stringify(job.accounting) : null,
         job.startedAt,
         job.endedAt ?? null,
       );
@@ -348,8 +356,8 @@ export class FactoryDb {
       `INSERT INTO scene_jobs
          (id, org_id, movie_id, scene_number, video_path, idx, act, heading, beat, narration, visual,
           mood, status, stage, percent, seconds, asset_id, asset_name, media_class, blocked_reason,
-          shot_plan, error, route, started_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          shot_plan, error, route, accounting, started_at, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(movie_id, idx) DO UPDATE SET
          org_id=excluded.org_id,
          id=excluded.id, scene_number=excluded.scene_number, video_path=excluded.video_path,
@@ -359,7 +367,7 @@ export class FactoryDb {
          asset_id=excluded.asset_id, asset_name=excluded.asset_name,
          media_class=excluded.media_class, blocked_reason=excluded.blocked_reason,
          shot_plan=excluded.shot_plan,
-         error=excluded.error, route=excluded.route,
+         error=excluded.error, route=excluded.route, accounting=excluded.accounting,
          started_at=excluded.started_at, ended_at=excluded.ended_at`,
     );
     for (const s of job.scenes) {
@@ -367,7 +375,8 @@ export class FactoryDb {
         sceneId(job.id, s.index), ORG_ID, job.id, s.index, s.assetName ?? null, s.index, s.act, s.heading,
         s.beat, s.narration, s.visual, s.mood, s.status, s.stage, s.percent, s.seconds,
         s.assetId ?? null, s.assetName ?? null, s.mediaClass ?? null, s.blockedReason ?? null,
-        s.shots ? JSON.stringify(s.shots) : null, s.error ?? null, JSON.stringify(s.route), s.startedAt ?? null, s.endedAt ?? null,
+        s.shots ? JSON.stringify(s.shots) : null, s.error ?? null, JSON.stringify(s.route),
+        s.accounting ? JSON.stringify(s.accounting) : null, s.startedAt ?? null, s.endedAt ?? null,
       );
     }
   }
@@ -403,6 +412,9 @@ export class FactoryDb {
       route: JSON.parse(row.route) as TaskRoute,
       startedAt: row.started_at ?? undefined,
       endedAt: row.ended_at ?? undefined,
+      accounting: row.accounting
+        ? (JSON.parse(row.accounting) as SceneState['accounting'])
+        : undefined,
     }));
 
     const job: FeatureJobView = {
@@ -434,6 +446,7 @@ export class FactoryDb {
     if (movie.script) job.script = movie.script;
     if (movie.bible) job.bible = movie.bible;
     if (movie.ended_at) job.endedAt = movie.ended_at;
+    if (movie.accounting) job.accounting = JSON.parse(movie.accounting) as FeatureJobView['accounting'];
     return job;
   }
 
@@ -680,6 +693,20 @@ export class FactoryDb {
       )
       .all(holder, at + (opts.ttlMs ?? 30 * 60 * 1000), at, movieId, ORG_ID, idx, at) as { idx: number }[];
     return rows.length > 0;
+  }
+
+  /**
+   * How many times this scene has been claimed, from the ledger. Absent row or
+   * absent database means 1: the attempt in flight is the first one.
+   */
+  sceneAttempts(movieId: string, idx: number): number | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT attempts FROM scene_jobs
+          WHERE movie_id = ? AND org_id = ? AND idx = ?`,
+      )
+      .get(movieId, ORG_ID, idx) as { attempts?: number } | undefined;
+    return row?.attempts;
   }
 
   /** Give a scene back so it can be retried by this or another holder. */

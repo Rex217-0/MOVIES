@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ffmpegPath } from './render.ts';
+import { countExternalCall } from './externalCalls.ts';
 
 /** Where a clip came from, so the UI can credit the source honestly. */
 export interface StockClip {
@@ -246,6 +247,7 @@ export async function searchPexelsBroll(
     per_page: String(Math.min(Math.max(opts.perPage ?? 15, 1), 80)),
   });
 
+  countExternalCall();
   const res = await fetch(`${pexelsVideoBase()}?${params}`, {
     headers: { Authorization: key },
     signal: AbortSignal.timeout(30_000),
@@ -283,6 +285,7 @@ async function searchPexels(query: string, minSeconds: number): Promise<StockCli
     orientation: 'landscape',
     size: 'medium',
   });
+  countExternalCall();
   const res = await fetch(`${pexelsBase()}?${params}`, {
     headers: { Authorization: key },
     signal: AbortSignal.timeout(30_000),
@@ -530,6 +533,7 @@ async function commonsApiJson(
   let lastStatus = 0;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (deadline !== undefined && Date.now() > deadline) break;
+    countExternalCall();
     const res = await fetch(url, {
       headers: { 'User-Agent': commonsUserAgent() },
       signal: AbortSignal.timeout(
@@ -547,6 +551,7 @@ async function commonsApiJson(
 }
 
 async function plainDownload(url: string, deadline?: number): Promise<Buffer> {
+  countExternalCall();
   const res = await fetch(url, {
     headers: { 'User-Agent': commonsUserAgent() },
     // Share the download deadline; a hardcoded 180s here let one stalled body
@@ -572,6 +577,7 @@ async function searchPixabay(query: string): Promise<StockClip | null> {
     per_page: '15',
     safesearch: 'true',
   });
+  countExternalCall();
   const res = await fetch(`${pixabayBase()}?${params}`, {
     signal: AbortSignal.timeout(30_000),
   });
@@ -650,6 +656,7 @@ export async function toMp4(data: Buffer): Promise<Buffer> {
 }
 
 async function download(url: string): Promise<Buffer> {
+  countExternalCall();
   const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const type = res.headers.get('content-type') || '';

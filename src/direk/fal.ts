@@ -14,6 +14,7 @@
  */
 import { fal } from '@fal-ai/client';
 import { paidCloudAllowed, PAID_BLOCKED_DETAIL } from './costPolicy.ts';
+import { countExternalCall } from './externalCalls.ts';
 
 /** The verified fal.ai text-to-video endpoint for Wan 2.2. */
 export const DEFAULT_WAN_ENDPOINT = 'fal-ai/wan/v2.2-a14b/text-to-video';
@@ -81,6 +82,7 @@ export async function generateVideoWithWan(input: WanVideoInput): Promise<{ data
   // Hard guard: a paid call must never run without the explicit opt-in.
   if (!paidCloudAllowed()) throw new Error(PAID_BLOCKED_DETAIL);
   const endpoint = wanEndpoint();
+  countExternalCall();
   const { data } = await client.subscribe(endpoint, {
     input: {
       prompt: input.prompt,
@@ -134,6 +136,7 @@ export function normaliseResolution(value?: string): WanResolution {
 }
 
 async function download(url: string): Promise<Buffer> {
+  countExternalCall();
   const res = await fetch(url);
   if (!res.ok) throw new Error(`fal download failed: ${res.status}`);
   return Buffer.from(await res.arrayBuffer());

@@ -7,6 +7,7 @@
  */
 
 import { GoogleGenAI } from '@google/genai';
+import { countExternalCall } from './externalCalls.ts';
 import { IMAGE_MODEL, IMAGE_MODEL_FREE } from '../config.ts';
 import { buildVeoStylePrompt, buildVeoStyleNegative } from '../tactical/rules.ts';
 import { generateWithComfy, comfyAvailable, type ComfyRenderFacts } from './comfyui.ts';
@@ -116,6 +117,7 @@ export async function imagine(prompt: string): Promise<GeneratedImage> {
       const url = `${pollinationsUrl()}/prompt/${encodeURIComponent(enhanced)}` +
         `?width=512&height=512&nologo=true`;
       try {
+        countExternalCall();
         const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
         if (!res.ok) {
           last = `Pollinations returned ${res.status}`;
