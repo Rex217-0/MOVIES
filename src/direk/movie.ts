@@ -30,7 +30,7 @@ import type { SceneStage } from './factory.ts';
 import { imagine, type ImageBackend } from './imagine.ts';
 import { fetchStockClip, stockConfigured } from './stockVideo.ts';
 import { buildVeoStylePrompt, buildVeoStyleNegative } from '../tactical/rules.ts';
-import { paidReady } from './costPolicy.ts';
+import { paidCloudAllowed } from './costPolicy.ts';
 
 export {
   VideoBackendUnavailable, videoRenderReady as videoBackendReady,
@@ -358,18 +358,54 @@ async function geminiSpeech(text: string, voice: TtsVoice): Promise<Buffer> {
 
 const FISH_API = process.env.FISH_AUDIO_API_URL || 'https://api.fish.audio';
 
+/**
+ * Fish Audio's free model. It needs no API credit, so it runs under the no-cost
+ * policy. Any other model id is billed, and Fish rejects it with a 402 until
+ * the account has credit — which is what happened when the model was left to
+ * the provider default.
+ */
+const FISH_FREE_MODEL = 's2.1-pro-free';
+
+/**
+ * The API key. `LANSA_FISH_TOKEN` is accepted as a fallback because that is the
+ * name the operator already had in their secret store; `FISH_AUDIO_API_KEY`
+ * stays first so existing deployments keep working.
+ */
+function fishKey(): string {
+  return (process.env.FISH_AUDIO_API_KEY || process.env.LANSA_FISH_TOKEN || '').trim();
+}
+
+/** The model id to send. Defaults to the free one so a fresh key just works. */
+export function fishModel(): string {
+  return (process.env.FISH_AUDIO_MODEL || FISH_FREE_MODEL).trim();
+}
+
+/** True when the selected model costs nothing. */
+export function fishModelIsFree(): boolean {
+  return fishModel().toLowerCase() === FISH_FREE_MODEL;
+}
+
 export function fishConfigured(): boolean {
   // A reference voice id is optional: Fish Audio uses a default voice when it
   // is absent. Only the API key is required.
-  return Boolean(process.env.FISH_AUDIO_API_KEY) && process.env.FISH_AUDIO_DISABLE !== '1';
+  return Boolean(fishKey()) && process.env.FISH_AUDIO_DISABLE !== '1';
+}
+
+/** Fish is usable when it is configured, and free unless a billed model is chosen. */
+export function fishReady(): boolean {
+  return fishConfigured() && (fishModelIsFree() || paidCloudAllowed());
 }
 
 /** One line of narration from Fish Audio, as a WAV. */
 export async function fishSpeech(text: string): Promise<Buffer> {
-  if (!process.env.FISH_AUDIO_API_KEY) throw new Error('Kailangan ng FISH_AUDIO_API_KEY.');
+  const key = fishKey();
+  if (!key) throw new Error('Kailangan ng FISH_AUDIO_API_KEY (o LANSA_FISH_TOKEN).');
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${process.env.FISH_AUDIO_API_KEY}`,
+    Authorization: `Bearer ${key}`,
     'Content-Type': 'application/json',
+    // The model belongs in this header. In the JSON body it is ignored, the
+    // request falls back to a billed default, and the call dies with a 402.
+    model: fishModel(),
   };
   const body: Record<string, unknown> = {
     text,
@@ -377,7 +413,6 @@ export async function fishSpeech(text: string): Promise<Buffer> {
     latency: process.env.FISH_AUDIO_LATENCY || 'normal',
   };
   if (process.env.FISH_AUDIO_REFERENCE_ID) body.reference_id = process.env.FISH_AUDIO_REFERENCE_ID;
-  if (process.env.FISH_AUDIO_MODEL) body.model = process.env.FISH_AUDIO_MODEL;
 
   let lastError: any = null;
   for (const wait of [0, 4000, 12000]) {
@@ -391,6 +426,12 @@ export async function fishSpeech(text: string): Promise<Buffer> {
       });
       if (!res.ok) {
         const detail = await res.text().catch(() => '');
+        if (res.status === 402) {
+          throw new Error(
+            `Fish Audio 402: walang credit ang model na "${fishModel()}". ` +
+            `I-set ang FISH_AUDIO_MODEL=${FISH_FREE_MODEL} (libre) o magdagdag ng credit. ${detail.slice(0, 120)}`,
+          );
+        }
         const error: any = new Error(`Fish Audio ${res.status}: ${detail.slice(0, 200)}`);
         if (res.status === 429 || res.status >= 500) {
           lastError = error;
@@ -561,7 +602,7 @@ export function narrationOrder(): NarrationSource[] {
 
 /** Whether a voice in the order can actually speak right now. */
 export function voiceReady(source: NarrationSource): boolean {
-  if (source === 'fish') return paidReady(fishConfigured());
+  if (source === 'fish') return fishReady();
   if (source === 'tagalog') return Boolean(tagalogVoice());
   if (source === 'piper') return Boolean(piperCommand());
   if (source === 'gemini') return ttsConfigured();
@@ -614,7 +655,7 @@ export function narrationBackends(): {
 } {
   const cmd = piperCommand();
   return {
-    fish: paidReady(fishConfigured()),
+    fish: fishReady(),
     cloud: ttsConfigured(),
     tagalog: Boolean(tagalogVoice()),
     offline: Boolean(cmd),

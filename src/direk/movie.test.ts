@@ -250,11 +250,12 @@ test('voiceReady reports a voice as usable only when it is configured', async ()
     assert.equal(voiceReady('tagalog'), false);
     assert.equal(voiceReady('piper'), false);
   });
-  // Fish is paid, so a key alone is not enough: the deployment must opt in.
-  await withEnv({ FISH_AUDIO_API_KEY: 'test-key', ALLOW_PAID_CLOUD: undefined }, () => {
+  // A billed model is still paid, so a key alone is not enough: the deployment
+  // must opt in. The free model is covered by its own test below.
+  await withEnv({ FISH_AUDIO_API_KEY: 'test-key', FISH_AUDIO_MODEL: 's2.1-pro', ALLOW_PAID_CLOUD: undefined }, () => {
     assert.equal(voiceReady('fish'), false, 'a paid voice stays off without the opt-in');
   });
-  await withEnv({ FISH_AUDIO_API_KEY: 'test-key', ALLOW_PAID_CLOUD: '1' }, () => {
+  await withEnv({ FISH_AUDIO_API_KEY: 'test-key', FISH_AUDIO_MODEL: 's2.1-pro', ALLOW_PAID_CLOUD: '1' }, () => {
     assert.equal(voiceReady('fish'), true);
   });
   await withEnv({ FISH_AUDIO_API_KEY: undefined, TTS_TAGALOG_DISABLE: undefined }, () => {
@@ -349,4 +350,48 @@ test('renderFeatureScene fails with AI_UNAVAILABLE when every engine is off', as
     if (prev.poll === undefined) delete process.env.POLLINATIONS_DISABLE; else process.env.POLLINATIONS_DISABLE = prev.poll;
     if (prev.motion === undefined) delete process.env.MOTION_DISABLE; else process.env.MOTION_DISABLE = prev.motion;
   }
+});
+
+test('Fish defaults to the free model so a new key works without credit', async () => {
+  const { fishModel, fishModelIsFree } = await import('./movie.ts');
+  await withEnv({ FISH_AUDIO_MODEL: undefined }, async () => {
+    assert.equal(fishModel(), 's2.1-pro-free');
+    assert.equal(fishModelIsFree(), true);
+  });
+});
+
+test('a free Fish model needs no paid opt-in', async () => {
+  const { fishReady } = await import('./movie.ts');
+  // The free model costs nothing, so the no-cost policy must not block it.
+  await withEnv({ FISH_AUDIO_API_KEY: 'k', FISH_AUDIO_MODEL: 's2.1-pro-free', ALLOW_PAID_CLOUD: undefined }, async () => {
+    assert.equal(fishReady(), true);
+  });
+});
+
+test('a billed Fish model still requires the paid opt-in', async () => {
+  const { fishReady } = await import('./movie.ts');
+  await withEnv({ FISH_AUDIO_API_KEY: 'k', FISH_AUDIO_MODEL: 's2.1-pro', ALLOW_PAID_CLOUD: undefined }, async () => {
+    assert.equal(fishReady(), false, 'a billed model must stay off without ALLOW_PAID_CLOUD');
+  });
+  await withEnv({ FISH_AUDIO_API_KEY: 'k', FISH_AUDIO_MODEL: 's2.1-pro', ALLOW_PAID_CLOUD: '1' }, async () => {
+    assert.equal(fishReady(), true);
+  });
+});
+
+test('LANSA_FISH_TOKEN is accepted as the key name', async () => {
+  const { fishConfigured, fishReady } = await import('./movie.ts');
+  // The operator already had the key under this name, so it is accepted rather
+  // than forcing a rename in their secret store.
+  await withEnv({ FISH_AUDIO_API_KEY: undefined, LANSA_FISH_TOKEN: 'sk-fish-test', FISH_AUDIO_MODEL: undefined }, async () => {
+    assert.equal(fishConfigured(), true);
+    assert.equal(fishReady(), true);
+  });
+});
+
+test('the Fish model goes in the header, never the body', async () => {
+  const src = fs.readFileSync(path.join(process.cwd(), 'src/direk/movie.ts'), 'utf8');
+  // In the JSON body Fish ignores it, falls back to a billed default, and the
+  // call dies with a 402 even though the key is valid.
+  assert.match(src, /model: fishModel\(\)/, 'the model is not sent as a header');
+  assert.doesNotMatch(src, /body\.model\s*=/, 'the model must not be sent in the body');
 });
