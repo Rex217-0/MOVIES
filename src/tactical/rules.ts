@@ -175,6 +175,10 @@ export interface VideoAsset {
   status: 'rendering' | 'completed' | 'failed';
   reviewStatus: 'pending' | 'approved' | 'rejected';
   createdAt: string;
+  /** What the bytes are, so a still pan is never listed as a synthetic render. */
+  mediaClass?: string;
+  /** The quality contract this asset was rendered under. */
+  qualityTier?: string;
 }
 
 /**

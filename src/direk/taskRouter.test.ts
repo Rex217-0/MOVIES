@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classifyTask, tierOf, classifyLoraTraining, planExecution, route_to_cloud,
-  routingTable, t3LocalAllowed, isLocalVideoTask, TASK_TIERS, TIER_LABELS, type Tier,
+  routingTable, t3LocalAllowed, t3Placement, isLocalVideoTask, TASK_TIERS, TIER_LABELS, type Tier,
 } from './taskRouter.ts';
 
 test('tierOf maps every known task type to its tier', () => {
@@ -166,12 +166,42 @@ test('routingTable lists every task with its tier and placement, T1 first', () =
   for (const row of table) {
     assert.ok(['T1', 'T2', 'T3'].includes(row.tier));
     const offloaded = row.tier === 'T3' && !isLocalVideoTask(row.task);
-    assert.equal(row.placement, offloaded ? 'cloud' : 'local');
+    assert.equal(row.placement, offloaded ? t3Placement() : 'local');
   }
   // Sorted by tier, so the light work comes first.
   const tiers = table.map(r => r.tier) as Tier[];
   assert.deepEqual(tiers, [...tiers].sort());
   assert.equal(table[0].tier, 'T1');
+});
+
+test('the routing table and the execution plan can never disagree', () => {
+  const allow = process.env.T3_ALLOW_LOCAL;
+  const cloud = process.env.CLOUD_T3_URL;
+  const states: [string | undefined, string | undefined][] = [
+    [undefined, undefined],
+    ['1', undefined],
+    ['0', undefined],
+    [undefined, 'https://worker.example/run'],
+    ['1', 'https://worker.example/run'],
+  ];
+  try {
+    for (const [allowValue, cloudValue] of states) {
+      if (allowValue === undefined) delete process.env.T3_ALLOW_LOCAL;
+      else process.env.T3_ALLOW_LOCAL = allowValue;
+      if (cloudValue === undefined) delete process.env.CLOUD_T3_URL;
+      else process.env.CLOUD_T3_URL = cloudValue;
+      for (const row of routingTable()) {
+        const plan = planExecution(row.task);
+        assert.equal(
+          row.placement, plan.run,
+          `${row.task} shows ${row.placement} but runs ${plan.run} (T3_ALLOW_LOCAL=${allowValue}, CLOUD_T3_URL=${cloudValue})`,
+        );
+      }
+    }
+  } finally {
+    if (allow === undefined) delete process.env.T3_ALLOW_LOCAL; else process.env.T3_ALLOW_LOCAL = allow;
+    if (cloud === undefined) delete process.env.CLOUD_T3_URL; else process.env.CLOUD_T3_URL = cloud;
+  }
 });
 
 test('every tier has a human-readable label', () => {

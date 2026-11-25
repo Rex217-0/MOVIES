@@ -56,12 +56,20 @@ export interface MovieConcept {
   brief: string;
 }
 
-/** Where a scene sits in the batch: pending, rendering, or reviewed. */
+/**
+ * Where a scene sits in the batch: pending, rendering, or reviewed.
+ *
+ * `blocked` is deliberately separate from `failed`: a failure is an engine that
+ * tried and fell over, while a block is the quality policy refusing to hand back
+ * a weaker clip than the job promised. A blocked scene must not be stitched into
+ * a MASTER film, and the operator clears it by starting ComfyUI.
+ */
 export type SceneStatus =
   | 'pending'
   | 'rendering'
   | 'rendered'
   | 'failed'
+  | 'blocked'
   | 'approved'
   | 'rejected';
 

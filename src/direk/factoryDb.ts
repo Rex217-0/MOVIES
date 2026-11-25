@@ -64,6 +64,8 @@ interface MovieRow {
   error: string | null;
   script: string | null;
   bible: string | null;
+  quality_tier: string;
+  blocked: number;
   started_at: number;
   ended_at: number | null;
 }
@@ -87,6 +89,9 @@ interface SceneRow {
   seconds: number;
   asset_id: string | null;
   asset_name: string | null;
+  media_class: string | null;
+  blocked_reason: string | null;
+  shot_plan: string | null;
   error: string | null;
   route: string;
   started_at: number | null;
@@ -148,6 +153,8 @@ CREATE TABLE IF NOT EXISTS movie_jobs (
   error TEXT,
   script TEXT,
   bible TEXT,
+  quality_tier TEXT NOT NULL DEFAULT 'CANARY',
+  blocked INTEGER NOT NULL DEFAULT 0,
   started_at INTEGER NOT NULL,
   ended_at INTEGER
 );
@@ -170,6 +177,9 @@ CREATE TABLE IF NOT EXISTS scene_jobs (
   seconds INTEGER NOT NULL DEFAULT 300,
   asset_id TEXT,
   asset_name TEXT,
+  media_class TEXT,
+  blocked_reason TEXT,
+  shot_plan TEXT,
   error TEXT,
   route TEXT NOT NULL,
   started_at INTEGER,
@@ -177,6 +187,22 @@ CREATE TABLE IF NOT EXISTS scene_jobs (
   PRIMARY KEY (movie_id, idx)
 );
 CREATE INDEX IF NOT EXISTS scene_jobs_movie ON scene_jobs (movie_id);
+
+-- The authoritative batch queue. One row per film that asked to run, so the
+-- order the work will actually happen in is a fact on disk rather than the order
+-- of a JS promise chain. A claim is a lease: the holder and the expiry are what
+-- let a row belonging to a dead process be seen and taken over.
+CREATE TABLE IF NOT EXISTS movie_leases (
+  movie_id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '${ORG_ID}',
+  holder TEXT NOT NULL,
+  status TEXT NOT NULL,
+  enqueued_at INTEGER NOT NULL,
+  started_at INTEGER,
+  renewed_at INTEGER,
+  expires_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS movie_leases_queue ON movie_leases (status, enqueued_at);
 `;
 
 /**
@@ -199,6 +225,8 @@ function migrate(db: DatabaseSync): void {
     ['created_at', 'INTEGER NOT NULL DEFAULT 0'],
     ['script', 'TEXT'],
     ['bible', 'TEXT'],
+    ['quality_tier', "TEXT NOT NULL DEFAULT 'CANARY'"],
+    ['blocked', 'INTEGER NOT NULL DEFAULT 0'],
   ];
   for (const [name, type] of addMovie) {
     if (!movieCols.has(name)) db.exec(`ALTER TABLE movie_jobs ADD COLUMN ${name} ${type}`);
@@ -221,6 +249,15 @@ function migrate(db: DatabaseSync): void {
     ['scene_number', 'INTEGER NOT NULL DEFAULT 0'],
     ['video_path', 'TEXT'],
     ['stage', "TEXT NOT NULL DEFAULT 'scripting'"],
+    ['media_class', 'TEXT'],
+    ['blocked_reason', 'TEXT'],
+    ['shot_plan', 'TEXT'],
+    // A scene being rendered is leased, not just labelled 'rendering'. Without an
+    // owner and an expiry, a crash mid-scene leaves a row that looks busy forever
+    // and the batch can never finish it.
+    ['lease_holder', 'TEXT'],
+    ['lease_expires_at', 'INTEGER'],
+    ['attempts', 'INTEGER NOT NULL DEFAULT 0'],
   ];
   for (const [name, type] of addScene) {
     if (!sceneCols.has(name)) db.exec(`ALTER TABLE scene_jobs ADD COLUMN ${name} ${type}`);
@@ -258,8 +295,8 @@ export class FactoryDb {
         `INSERT INTO movie_jobs
            (id, org_id, title, genre, rating, format, created_at, concept, status, percent, rendered,
             failed, approved, rejected, total, total_seconds, current_scene, rendered_seconds,
-            film, error, script, bible, started_at, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            film, error, script, bible, quality_tier, blocked, started_at, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            org_id=excluded.org_id,
            title=excluded.title, genre=excluded.genre, rating=excluded.rating,
@@ -269,6 +306,7 @@ export class FactoryDb {
            total=excluded.total, total_seconds=excluded.total_seconds,
            current_scene=excluded.current_scene, rendered_seconds=excluded.rendered_seconds,
            film=excluded.film, error=excluded.error, script=excluded.script, bible=excluded.bible,
+           quality_tier=excluded.quality_tier, blocked=excluded.blocked,
            started_at=excluded.started_at, ended_at=excluded.ended_at`,
       )
       .run(
@@ -294,6 +332,8 @@ export class FactoryDb {
         job.error ?? null,
         job.script ?? null,
         job.bible ?? null,
+        job.qualityTier,
+        job.blocked,
         job.startedAt,
         job.endedAt ?? null,
       );
@@ -301,23 +341,27 @@ export class FactoryDb {
     const scene = this.db.prepare(
       `INSERT INTO scene_jobs
          (id, org_id, movie_id, scene_number, video_path, idx, act, heading, beat, narration, visual,
-          mood, status, stage, percent, seconds, asset_id, asset_name, error, route, started_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          mood, status, stage, percent, seconds, asset_id, asset_name, media_class, blocked_reason,
+          shot_plan, error, route, started_at, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(movie_id, idx) DO UPDATE SET
          org_id=excluded.org_id,
          id=excluded.id, scene_number=excluded.scene_number, video_path=excluded.video_path,
          act=excluded.act, heading=excluded.heading, beat=excluded.beat,
          narration=excluded.narration, visual=excluded.visual, mood=excluded.mood,
          status=excluded.status, stage=excluded.stage, percent=excluded.percent, seconds=excluded.seconds,
-         asset_id=excluded.asset_id, asset_name=excluded.asset_name, error=excluded.error,
-         route=excluded.route, started_at=excluded.started_at, ended_at=excluded.ended_at`,
+         asset_id=excluded.asset_id, asset_name=excluded.asset_name,
+         media_class=excluded.media_class, blocked_reason=excluded.blocked_reason,
+         shot_plan=excluded.shot_plan,
+         error=excluded.error, route=excluded.route,
+         started_at=excluded.started_at, ended_at=excluded.ended_at`,
     );
     for (const s of job.scenes) {
       scene.run(
         sceneId(job.id, s.index), ORG_ID, job.id, s.index, s.assetName ?? null, s.index, s.act, s.heading,
         s.beat, s.narration, s.visual, s.mood, s.status, s.stage, s.percent, s.seconds,
-        s.assetId ?? null, s.assetName ?? null, s.error ?? null, JSON.stringify(s.route),
-        s.startedAt ?? null, s.endedAt ?? null,
+        s.assetId ?? null, s.assetName ?? null, s.mediaClass ?? null, s.blockedReason ?? null,
+        s.shots ? JSON.stringify(s.shots) : null, s.error ?? null, JSON.stringify(s.route), s.startedAt ?? null, s.endedAt ?? null,
       );
     }
   }
@@ -346,6 +390,9 @@ export class FactoryDb {
       seconds: row.seconds,
       assetId: row.asset_id ?? undefined,
       assetName: row.asset_name ?? undefined,
+      mediaClass: (row.media_class as SceneState['mediaClass']) ?? undefined,
+      blockedReason: row.blocked_reason ?? undefined,
+      shots: row.shot_plan ? (JSON.parse(row.shot_plan) as SceneState['shots']) : undefined,
       error: row.error ?? undefined,
       route: JSON.parse(row.route) as TaskRoute,
       startedAt: row.started_at ?? undefined,
@@ -356,10 +403,12 @@ export class FactoryDb {
       id: movie.id,
       orgId: movie.org_id,
       concept: JSON.parse(movie.concept) as MovieConcept,
+      qualityTier: (movie.quality_tier as FeatureJobView['qualityTier']) || 'CANARY',
       status: movie.status as FeatureStatus,
       percent: movie.percent,
       rendered: movie.rendered,
       failed: movie.failed,
+      blocked: movie.blocked ?? 0,
       approved: movie.approved,
       rejected: movie.rejected,
       total: movie.total,
@@ -427,6 +476,222 @@ export class FactoryDb {
   count(): number {
     const row = this.db.prepare('SELECT count(*) AS n FROM movie_jobs WHERE org_id = ?').get(ORG_ID) as { n: number };
     return row.n;
+  }
+
+  // -------------------------------------------------------------------------
+  // Batch queue and leases.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Put a film in the queue, or leave it where it is when it is already there.
+   *
+   * `INSERT OR IGNORE` is what makes enqueueing idempotent: pressing START twice
+   * cannot create a second queue entry, so the film cannot be run twice at once.
+   * A film that already finished is re-queued deliberately, with `requeue`.
+   */
+  enqueue(movieId: string, opts: { now?: number; holder?: string; requeue?: boolean } = {}): void {
+    const at = opts.now ?? Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO movie_leases
+           (movie_id, org_id, holder, status, enqueued_at, started_at, renewed_at, expires_at)
+         VALUES (?, ?, ?, 'queued', ?, NULL, NULL, NULL)
+         ON CONFLICT(movie_id) DO NOTHING`,
+      )
+      .run(movieId, ORG_ID, opts.holder ?? '', at);
+    if (opts.requeue) {
+      this.db
+        .prepare(
+          `UPDATE movie_leases
+              SET status = 'queued', enqueued_at = ?, started_at = NULL, renewed_at = NULL, expires_at = NULL
+            WHERE movie_id = ? AND status IN ('done', 'failed', 'cancelled')`,
+        )
+        .run(at, movieId);
+    }
+  }
+
+  /**
+   * Claim the next film to run, as one atomic step.
+   *
+   * The `UPDATE ... WHERE movie_id = (SELECT ...)` form is the whole point: the
+   * row that is chosen and the row that is claimed are decided by the same
+   * statement, so two processes calling this at the same moment cannot both be
+   * handed the same film.
+   */
+  claimNext(
+    holder: string,
+    opts: { now?: number; ttlMs?: number } = {},
+  ): { movieId: string; startedAt: number; expiresAt: number } | undefined {
+    const at = opts.now ?? Date.now();
+    const expiresAt = at + (opts.ttlMs ?? 30 * 60 * 1000);
+    const rows = this.db
+      .prepare(
+        `UPDATE movie_leases
+            SET status = 'running', holder = ?, started_at = ?, renewed_at = ?, expires_at = ?
+          WHERE movie_id = (
+                  SELECT movie_id FROM movie_leases
+                   WHERE org_id = ?
+                     AND (status = 'queued'
+                          OR (status = 'running' AND (expires_at IS NULL OR expires_at <= ?)))
+                   ORDER BY enqueued_at
+                   LIMIT 1
+                )
+            AND status IN ('queued', 'running')
+          RETURNING movie_id, started_at`,
+      )
+      .all(holder, at, at, expiresAt, ORG_ID, at) as { movie_id: string; started_at: number }[];
+    if (rows.length === 0) return undefined;
+    return { movieId: rows[0].movie_id, startedAt: rows[0].started_at, expiresAt };
+  }
+
+  /** Extend a lease this holder still owns. False means it was taken over. */
+  renewLease(movieId: string, holder: string, opts: { now?: number; ttlMs?: number } = {}): boolean {
+    const at = opts.now ?? Date.now();
+    const rows = this.db
+      .prepare(
+        `UPDATE movie_leases SET renewed_at = ?, expires_at = ?
+          WHERE movie_id = ? AND holder = ? AND status = 'running'
+          RETURNING movie_id`,
+      )
+      .all(at, at + (opts.ttlMs ?? 30 * 60 * 1000), movieId, holder) as { movie_id: string }[];
+    return rows.length > 0;
+  }
+
+  /** Record a terminal state, but only if this holder still owns the row. */
+  finish(movieId: string, holder: string, status: 'done' | 'failed' | 'cancelled'): boolean {
+    const rows = this.db
+      .prepare(
+        `UPDATE movie_leases SET status = ?, holder = '', expires_at = NULL
+          WHERE movie_id = ? AND holder = ? AND status = 'running'
+          RETURNING movie_id`,
+      )
+      .all(status, movieId, holder) as { movie_id: string }[];
+    return rows.length > 0;
+  }
+
+  /** Ask a running film to stop. It keeps its completed scenes. */
+  requestCancel(movieId: string): boolean {
+    const rows = this.db
+      .prepare(
+        `UPDATE movie_leases SET status = 'cancelled', expires_at = NULL
+          WHERE movie_id = ? AND status IN ('queued', 'running')
+          RETURNING movie_id`,
+      )
+      .all(movieId) as { movie_id: string }[];
+    return rows.length > 0;
+  }
+
+  /** True when a stop was asked for, so the running batch can notice. */
+  isCancelled(movieId: string): boolean {
+    const row = this.db
+      .prepare(`SELECT status FROM movie_leases WHERE movie_id = ? AND org_id = ?`)
+      .get(movieId, ORG_ID) as { status: string } | undefined;
+    return row?.status === 'cancelled';
+  }
+
+  /** Every row in the queue, oldest first, for the UI to show honestly. */
+  queue(): { movieId: string; status: string; holder: string; enqueuedAt: number; expiresAt: number | null }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT movie_id, status, holder, enqueued_at, expires_at FROM movie_leases
+          WHERE org_id = ? ORDER BY enqueued_at`,
+      )
+      .all(ORG_ID) as { movie_id: string; status: string; holder: string; enqueued_at: number; expires_at: number | null }[];
+    return rows.map(r => ({
+      movieId: r.movie_id,
+      status: r.status,
+      holder: r.holder.replace(/#.*$/, ''),
+      enqueuedAt: r.enqueued_at,
+      expiresAt: r.expires_at,
+    }));
+  }
+
+  /**
+   * Turn a running film that nobody owns any more back into a queued one, and
+   * release its stranded scene. Called on boot, so a crash costs one scene, not
+   * the whole film.
+   *
+   * Returns the ids that were recovered.
+   */
+  recoverAbandoned(opts: { now?: number } = {}): string[] {
+    const at = opts.now ?? Date.now();
+    const stale = this.db
+      .prepare(
+        `SELECT movie_id, holder FROM movie_leases
+          WHERE org_id = ? AND status = 'running' AND (expires_at IS NULL OR expires_at <= ?)`,
+      )
+      .all(ORG_ID, at) as { movie_id: string; holder: string }[];
+    if (stale.length === 0) return [];
+
+    for (const row of stale) {
+      this.db
+        .prepare(
+          `UPDATE movie_leases
+              SET status = 'queued', holder = '', started_at = NULL, renewed_at = NULL, expires_at = NULL
+            WHERE movie_id = ? AND status = 'running'`,
+        )
+        .run(row.movie_id);
+      // A scene left mid-render is not done. Put it back to pending so the batch
+      // renders it again, and clear the lease that the dead owner never freed.
+      this.db
+        .prepare(
+          `UPDATE scene_jobs
+              SET status = 'pending', stage = 'scripting', percent = 0,
+                  lease_holder = NULL, lease_expires_at = NULL, started_at = NULL, ended_at = NULL
+            WHERE movie_id = ? AND org_id = ? AND status = 'rendering'`,
+        )
+        .run(row.movie_id, ORG_ID);
+      // The film itself is no longer running; leaving it 'running' would show a
+      // progress bar that never moves.
+      this.db
+        .prepare(
+          `UPDATE movie_jobs SET status = 'paused'
+            WHERE id = ? AND org_id = ? AND status = 'running'`,
+        )
+        .run(row.movie_id, ORG_ID);
+    }
+    return stale.map(r => r.movie_id);
+  }
+
+  /**
+   * Claim one scene for this holder. Returns false when another holder already
+   * owns it, so a scene is never rendered twice for the same attempt.
+   */
+  claimScene(movieId: string, idx: number, holder: string, opts: { now?: number; ttlMs?: number } = {}): boolean {
+    const at = opts.now ?? Date.now();
+    const rows = this.db
+      .prepare(
+        `UPDATE scene_jobs
+            SET lease_holder = ?, lease_expires_at = ?, attempts = attempts + 1, started_at = ?
+          WHERE movie_id = ? AND org_id = ? AND idx = ?
+            AND (lease_holder IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?)
+          RETURNING idx`,
+      )
+      .all(holder, at + (opts.ttlMs ?? 30 * 60 * 1000), at, movieId, ORG_ID, idx, at) as { idx: number }[];
+    return rows.length > 0;
+  }
+
+  /** Give a scene back so it can be retried by this or another holder. */
+  releaseScene(movieId: string, idx: number): void {
+    this.db
+      .prepare(
+        `UPDATE scene_jobs SET lease_holder = NULL, lease_expires_at = NULL
+          WHERE movie_id = ? AND org_id = ? AND idx = ?`,
+      )
+      .run(movieId, ORG_ID, idx);
+  }
+
+  /** The scenes that still need work, in film order: completed ones are skipped. */
+  pendingScenes(movieId: string): number[] {
+    const rows = this.db
+      .prepare(
+        `SELECT idx FROM scene_jobs
+          WHERE movie_id = ? AND org_id = ?
+            AND status NOT IN ('rendered', 'approved', 'rejected', 'failed', 'blocked')
+          ORDER BY idx`,
+      )
+      .all(movieId, ORG_ID) as { idx: number }[];
+    return rows.map(r => r.idx);
   }
 
   sceneCount(movieId: string): number {

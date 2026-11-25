@@ -18,14 +18,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { GoogleGenAI } from '@google/genai';
-import { ffmpegPath, fontPath, filterPath, probe, concatVideos } from './render.ts';
+import { ffmpegPath, fontPath, filterPath, probe, concatVideos, concatCopy } from './render.ts';
 import { defaultPython } from './platform.ts';
 import { saveAsset, type AssetMeta } from './assets.ts';
 import { MOODS, MOOD_LABELS, TTS_VOICES, type Mood, type MovieOptions, type TtsVoice, sceneCount } from '../movieMeta.ts';
 import {
-  renderVideo, VideoBackendUnavailable,
+  renderVideo, VideoBackendUnavailable, MasterBackendBlocked,
   videoRenderReady as videoBackendReady, videoRenderDetail as videoBackendDetail,
 } from './videoRenderService.ts';
+import { acceptsMediaClass, type MediaClass, type QualityTier } from './mediaClass.ts';
+import { planSceneShots, repeatFactor, sceneMediaClass, type ShotFraming } from './shotPlan.ts';
 import type { SceneStage } from './factory.ts';
 import { imagine, type ImageBackend } from './imagine.ts';
 import { fetchStockClip, stockConfigured } from './stockVideo.ts';
@@ -785,11 +787,24 @@ export async function renderShot(
     filters.push(drawtext(wrapText(scene.narration), { size: 26, y: 'h-text_h-h*0.07', color: 'white', from: 0.8, to: seconds }));
   }
   // A still needs -loop 1 to fill the shot; a stock clip is already moving, so
-  // it is looped by the filter graph instead and trimmed to the scene length.
+  // it is repeated only as many times as its own length requires — never with
+  // `-stream_loop -1`, which would repeat it forever and hide a clip that is
+  // far too short for the shot it is standing in for.
   const isVideo = still.file.endsWith('.mp4');
-  const input = isVideo
-    ? ['-stream_loop', '-1', '-i', still.file]
-    : ['-loop', '1', '-i', still.file];
+  let input: string[];
+  if (isVideo) {
+    const clipSeconds = (await probe(still.file)).duration;
+    const repeats = Math.ceil(seconds / Math.max(clipSeconds, 0.1));
+    if (repeats > MAX_SHOT_REPEATS) {
+      throw new Error(
+        `Masyadong maikli ang stock clip: ${clipSeconds.toFixed(1)}s para sa ${seconds.toFixed(1)}s na shot ` +
+          `(kailangan ng ${repeats} ulit, lampas sa ${MAX_SHOT_REPEATS}).`,
+      );
+    }
+    input = ['-stream_loop', String(repeats), '-i', still.file];
+  } else {
+    input = ['-loop', '1', '-i', still.file];
+  }
   if (isVideo) filters.unshift('setpts=PTS-STARTPTS');
   await ff(['-y', '-hide_banner', '-loglevel', 'error', ...input, '-t', String(seconds), '-vf', filters.join(','), '-an', '-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '22', out]);
   return { file: out, source: still.source };
@@ -886,19 +901,27 @@ export interface SceneRenderResult {
   seconds: number;
   voiced: boolean;
   voiceSource: NarrationSource;
+  /** What the picture actually is: a generative render or a moved still. */
+  mediaClass: MediaClass;
+  /** Which engine made the picture, for the vault record. */
+  backend?: string;
+  /** The shots the scene was cut into, in film order. */
+  shots?: { index: number; framing: ShotFraming; seconds: number }[];
 }
 
 /**
- * Normalise a generated clip to the film's fixed format (1280x720, 30fps, stereo
- * AAC), then extend it to the full scene length by looping the encoded clip and
- * copying it (`-c copy`), so the long scene is never re-encoded. Every scene
- * then carries the same codec, size and audio layout, so the whole picture
- * joins with `ffmpeg -c copy`.
+ * Normalise one generated clip to the film's fixed format (1280x720, 30fps,
+ * stereo AAC).
+ *
+ * The clip is cut to its own length; it is NOT stretched to the scene length.
+ * Stretching was done by looping the clip with `-stream_loop -1`, which turned a
+ * five second render into a five minute repeat. A scene is now covered by
+ * several of these clips, assembled in order, each playing once.
  */
-async function normaliseShot(clip: string, dir: string, seconds: number): Promise<string> {
+async function normaliseShot(clip: string, dir: string, name: string): Promise<{ file: string; seconds: number }> {
   const info = await probe(clip);
   const vf = `scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=increase,crop=${WIDTH}:${HEIGHT},fps=${FPS},format=yuv420p`;
-  const norm = path.join(dir, 'shot-normalised.mp4');
+  const norm = path.join(dir, `${name}-normalised.mp4`);
   const args = ['-y', '-hide_banner', '-loglevel', 'error', '-i', clip];
   if (info.hasAudio) {
     args.push('-vf', vf, '-c:a', 'aac', '-ar', '44100', '-ac', '2');
@@ -910,11 +933,66 @@ async function normaliseShot(clip: string, dir: string, seconds: number): Promis
   }
   args.push('-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-crf', '22', norm);
   await ff(args);
-  const out = path.join(dir, 'shot.mp4');
+  const out = path.join(dir, `${name}.mp4`);
+  fs.copyFileSync(norm, out);
+  return { file: out, seconds: info.duration };
+}
+
+/**
+ * Make one shot cover exactly the seconds the timeline gives it.
+ *
+ * A render is a few seconds; a shot slot is whatever the scene leaves it. The
+ * slot is filled by trimming when the render is long enough, and by repeating
+ * the render when it is not. The repetition is capped: past MAX_SHOT_REPEATS the
+ * shot is refused rather than filled, because a one second clip stretched over
+ * a minute is not coverage, it is a stall.
+ *
+ * This is a deliberate limit of the design, not a loophole. The repetition that
+ * used to happen — one clip covering the entire scene — is gone; what remains is
+ * a short render repeating inside its own shot, with the next shot cut to a
+ * different framing. A scene therefore changes look several times instead of
+ * holding one look for its whole length.
+ */
+export const MAX_SHOT_REPEATS = 12;
+
+async function fitShot(input: string, dir: string, name: string, seconds: number, renderSeconds: number): Promise<string> {
+  const out = path.join(dir, `${name}-fit.mp4`);
+  if (renderSeconds >= seconds - 0.05) {
+    await ff([
+      '-y', '-hide_banner', '-loglevel', 'error', '-i', input, '-t', String(seconds), '-c', 'copy', out,
+    ]);
+    return out;
+  }
+  const repeats = repeatFactor(seconds, renderSeconds);
+  if (repeats > MAX_SHOT_REPEATS) {
+    throw new Error(
+      `Masyadong maikli ang render para sa shot: ${renderSeconds.toFixed(1)}s lang para sa ` +
+        `${seconds.toFixed(1)}s na slot (kailangan ng ${repeats} ulit, lampas sa ${MAX_SHOT_REPEATS}).`,
+    );
+  }
   await ff([
     '-y', '-hide_banner', '-loglevel', 'error',
-    '-stream_loop', '-1', '-i', norm, '-t', String(seconds), '-c', 'copy', out,
+    '-stream_loop', String(repeats), '-i', input, '-t', String(seconds), '-c', 'copy', out,
   ]);
+  return out;
+}
+
+/**
+ * Assemble a scene from its shots, in order.
+ *
+ * Each shot is fitted to its slot and then joined with `-c copy`, so the scene
+ * is the sum of distinct pictures rather than one picture repeated. A single
+ * shot is passed through unchanged: concat needs two inputs.
+ */
+async function assembleShots(shots: { file: string; seconds: number; slot: number }[], dir: string): Promise<string> {
+  const fitted: string[] = [];
+  for (let i = 0; i < shots.length; i++) {
+    fitted.push(await fitShot(shots[i].file, dir, `shot${i + 1}`, shots[i].slot, shots[i].seconds));
+  }
+  if (fitted.length === 1) return fitted[0];
+  const joined = await concatCopy(fitted, dir);
+  const out = path.join(dir, 'scene-assembled.mp4');
+  fs.writeFileSync(out, joined.data);
   return out;
 }
 
@@ -958,13 +1036,21 @@ async function mixScene(shot: string, narration: string | null, bed: string, sec
  */
 export async function renderFeatureScene(
   scene: MovieScene,
-  opts: { index: number; voice?: TtsVoice; seconds?: number; onStage?: (stage: SceneStage) => void } = { index: 1 },
+  opts: {
+    index: number;
+    voice?: TtsVoice;
+    seconds?: number;
+    onStage?: (stage: SceneStage) => void;
+    /** The tier the job promised; a MASTER job never accepts a still pan. */
+    qualityTier?: QualityTier;
+  } = { index: 1 },
 ): Promise<SceneRenderResult> {
   const dir = workDir();
   const stage = opts.onStage ?? (() => {});
   try {
     const voice = opts.voice ?? 'Kore';
     const seconds = opts.seconds ?? MAX_SCENE_SECONDS;
+    const qualityTier = opts.qualityTier ?? 'CANARY';
 
     // 1. The picture: local ComfyUI first, Wan 2.2 on fal.ai as the fallback.
     // No backend -> no scene.
@@ -972,14 +1058,40 @@ export async function renderFeatureScene(
     if (!(await videoBackendReady())) {
       throw new VideoBackendUnavailable(await videoBackendDetail());
     }
+    // 2. The picture, as a sequence of shots.
+    //
+    //    One clip is a few seconds; the scene is minutes. The scene is cut into
+    //    distinct shots (establishing, wide, medium, close…) and each is
+    //    rendered once, so the picture keeps changing instead of looping a
+    //    single render for the whole scene. Every shot states what it actually
+    //    is, and the scene keeps the strictest of its shots' classes: a MASTER
+    //    scene is only ever as real as its weakest shot.
+    const plan = planSceneShots({ visual: scene.visual, heading: scene.heading, seconds });
     stage('rendering');
-    const prompt = buildVeoStylePrompt(`${scene.heading}. ${scene.visual}`);
-    const { data } = await renderVideo({ prompt, negative: buildVeoStyleNegative() });
-    const clip = path.join(dir, 'comfy.mp4');
-    fs.writeFileSync(clip, data);
-
-    // 2. Normalise to the film's fixed format and extend to the scene length.
-    const shot = await normaliseShot(clip, dir, seconds);
+    const rendered: { file: string; seconds: number; slot: number }[] = [];
+    const shotClasses: MediaClass[] = [];
+    const shotEngines = new Set<string>();
+    for (const planned of plan) {
+      const picture = await renderVideo({
+        prompt: buildVeoStylePrompt(planned.prompt),
+        negative: buildVeoStyleNegative(),
+        qualityTier,
+        seconds: Math.ceil(planned.seconds),
+      });
+      // Refused before a single frame is normalised, encoded or written to the vault.
+      const verdict = acceptsMediaClass(qualityTier, picture.mediaClass);
+      if (!verdict.accepted) {
+        throw new MasterBackendBlocked(verdict.reason, qualityTier);
+      }
+      const clip = path.join(dir, `shot${planned.index}-raw.mp4`);
+      fs.writeFileSync(clip, picture.data);
+      const norm = await normaliseShot(clip, dir, `shot${planned.index}`);
+      rendered.push({ file: norm.file, seconds: norm.seconds, slot: planned.seconds });
+      shotClasses.push(picture.mediaClass);
+      shotEngines.add(picture.engine);
+    }
+    const mediaClass = sceneMediaClass(shotClasses);
+    const shot = await assembleShots(rendered, dir);
 
     // 3. Narration, from the first voice that answers; a caption otherwise.
     stage('audio');
@@ -1000,7 +1112,15 @@ export async function renderFeatureScene(
     const out = path.join(dir, 'scene.mp4');
     await mixScene(shot, narrationFile, bed, seconds, out);
     stage('completed');
-    return { data: fs.readFileSync(out), seconds, voiced: Boolean(narrationFile), voiceSource };
+    return {
+      data: fs.readFileSync(out),
+      seconds,
+      voiced: Boolean(narrationFile),
+      voiceSource,
+      mediaClass,
+      backend: [...shotEngines].join('+'),
+      shots: plan.map(p => ({ index: p.index, framing: p.framing, seconds: p.seconds })),
+    };
   } finally {
     cleanup(dir);
   }

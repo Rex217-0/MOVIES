@@ -99,19 +99,33 @@ export function tierOf(taskType: string): Tier | null {
  */
 export function classifyTask(taskType: string): TaskRoute {
   const task = normalise(taskType) || 'unknown';
+  const known = tierOf(task) !== null;
   const tier = tierOf(task) ?? 'T3';
   // Heavy video always renders on the local ComfyUI GPU, never the cloud.
   if (isLocalVideoTask(task)) {
     return { task, tier, placement: 'local', reason: VIDEO_REASON };
   }
+  if (tier !== 'T3') {
+    return { task, tier, placement: 'local', reason: REASONS[tier] };
+  }
+  // An unknown task never reaches the local GPU: we cannot say what it needs.
+  if (!known) {
+    return {
+      task,
+      tier,
+      placement: 'cloud',
+      reason: 'Hindi kilalang task: itinuturing na mabigat (T3) at iniaakyat sa cloud.',
+    };
+  }
+  const placement = t3Placement();
   return {
     task,
     tier,
-    placement: tier === 'T3' ? 'cloud' : 'local',
+    placement,
     reason:
-      tierOf(task) === null
-        ? 'Hindi kilalang task: itinuturing na mabigat (T3) at iniaakyat sa cloud.'
-        : REASONS[tier],
+      placement === 'local'
+        ? `T3 (${task}) sa lokal na Server-2: walang CLOUD_T3_URL at pinapayagan ng T3_ALLOW_LOCAL.`
+        : `T3 (${task}) sa cloud: ${process.env.CLOUD_T3_URL ? 'may CLOUD_T3_URL' : 'T3_ALLOW_LOCAL=0'}.`,
   };
 }
 
@@ -159,11 +173,12 @@ export function route_to_cloud(task: string, payload: Record<string, unknown> = 
 
 /** The full routing table, for the UI and the status endpoint. */
 export function routingTable(): { task: string; tier: Tier; placement: Placement }[] {
+  const t3 = t3Placement();
   return Object.entries(TASK_TIERS)
     .map(([task, tier]) => ({
       task,
       tier,
-      placement: tier === 'T3' && !isLocalVideoTask(task) ? ('cloud' as const) : ('local' as const),
+      placement: tier !== 'T3' || isLocalVideoTask(task) ? ('local' as const) : t3,
     }))
     .sort((a, b) => a.tier.localeCompare(b.tier) || a.task.localeCompare(b.task));
 }
@@ -209,6 +224,16 @@ export function t3LocalAllowed(): boolean {
   return process.env.T3_ALLOW_LOCAL !== '0';
 }
 
+/**
+ * Where a non-video T3 job goes. One resolver, so the routing table that the UI
+ * shows and the plan that actually runs can never disagree: a configured cloud
+ * worker wins, then the `T3_ALLOW_LOCAL` veto, then the local Server-2 GPU.
+ */
+export function t3Placement(): Placement {
+  if (process.env.CLOUD_T3_URL) return 'cloud';
+  return t3LocalAllowed() ? 'local' : 'cloud';
+}
+
 export interface ExecutionPlan {
   route: TaskRoute;
   /** Run it here, or hand it to the cloud placeholder. */
@@ -224,7 +249,5 @@ export function planExecution(taskType: string, payload: Record<string, unknown>
   if (route.tier !== 'T3') return { route, run: 'local' };
   // Video renders on the local ComfyUI GPU and is never offloaded to the cloud.
   if (isLocalVideoTask(route.task)) return { route, run: 'local' };
-  const cloudConfigured = Boolean(process.env.CLOUD_T3_URL);
-  if (cloudConfigured || !t3LocalAllowed()) return { route, run: 'cloud' };
-  return { route: { ...route, placement: 'local' }, run: 'local' };
+  return { route, run: route.placement };
 }

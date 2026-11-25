@@ -453,6 +453,15 @@ export function FeatureFilmFactory() {
                         : STAGES[stageIndex(scene.stage)].label}
                   </p>
                   {scene.error && <p className="mt-1 text-[10px] text-red-300">{scene.error.slice(0, 60)}</p>}
+                  {scene.shots && scene.shots.length > 0 && (
+                    <p
+                      className="mt-1 text-[10px] text-dim"
+                      title={scene.shots.map(s => `${s.framing} ${s.seconds}s`).join(' → ')}
+                    >
+                      {scene.shots.length} shot{scene.shots.length > 1 ? 's' : ''} ·{' '}
+                      {scene.shots.map(s => s.framing[0].toUpperCase()).join('→')}
+                    </p>
+                  )}
                   {scene.renderUrl && (scene.status === 'rendered' || scene.status === 'approved') && (
                     <a
                       href={scene.renderUrl}
