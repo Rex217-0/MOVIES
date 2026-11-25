@@ -24,7 +24,7 @@ The policy lives in one place, `src/direk/costPolicy.ts`
 | --- | --- | --- | --- | --- |
 | 1 | Video clip | local ComfyUI → Wan 2.2 on fal.ai | free → paid | Wan needs `ALLOW_PAID_CLOUD=1` |
 | 2 | Video edit (OpenCut) | OpenCut on fal.ai | paid | skipped unless `ALLOW_PAID_CLOUD=1` |
-| 3 | Narration (voice) | Tagalog (bundled) → Gemini TTS → Piper → Fish Audio | free → free tier → free → paid | only Fish needs `ALLOW_PAID_CLOUD=1` |
+| 3 | Narration (voice) | Tagalog (bundled) → Gemini TTS → Piper → Fish Audio | free → free tier → free → free (`s2.1-pro-free`) | Fish is free on its default model; a billed model needs `ALLOW_PAID_CLOUD=1` |
 | 4 | Images / posters | local ComfyUI → Gemini → Pollinations | free → paid → free | Gemini needs `ALLOW_PAID_CLOUD=1`; Pollinations is the free default |
 | 5 | Screenplay / text | Kaggle pilot → local Ollama → Gemini text | free → free → free tier | Gemini text needs a key; free tier, not billed |
 | 6 | Music bed | bundled asset | free | — |
@@ -62,7 +62,9 @@ The default order is free-first:
 tagalog (bundled, offline)  →  gemini (free tier)  →  piper (local)  →  fish (paid)
 ```
 
-Fish Audio is the only paid voice, so it is dropped from the ready list unless
+Fish Audio is free on its default model (`s2.1-pro-free`), so it stays in the
+ready list with a key alone. If `FISH_AUDIO_MODEL` names a billed model it is
+dropped unless
 `ALLOW_PAID_CLOUD=1`. The Gemini voice (`gemini-2.5-flash-preview-tts`) is on the
 **free tier** per Google's pricing page, so it is not gated. When no voice is
 ready the shot carries a burned-in caption instead. `TTS_ORDER` can still pin an
@@ -97,7 +99,7 @@ plus an optional free Google Drive upload.
 | `src/direk/costPolicy.ts` | New. One switch, `ALLOW_PAID_CLOUD`; `paidCloudAllowed()` and `paidReady()`. |
 | `src/direk/videoRenderService.ts` | Default engine is `comfyui` (free-first). Wan and OpenCut gated by the policy; blocked calls fail with a named reason. |
 | `src/direk/fal.ts` | `generateVideoWithWan` and `editWithOpenCut` refuse to run without the opt-in. |
-| `src/direk/movie.ts` | Narration order is free-first (Gemini free tier before the paid Fish); Fish gated by the policy. |
+| `src/direk/movie.ts` | Narration order is free-first; Fish defaults to the free model, and a billed model is gated by the policy. |
 | `.env.example` | Documents the policy and the new default. |
 
 ## How to verify

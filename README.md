@@ -251,6 +251,9 @@ free voices come first; Fish Audio is paid and is skipped unless
 3. **Piper** — an English backup voice (there is no Tagalog Piper voice upstream).
    Point `TTS_PIPER_VOICE` at a `.onnx` file.
 4. **Fish Audio** — best Tagalog, and can clone a voice. Needs `FISH_AUDIO_API_KEY`
+   (or `LANSA_FISH_TOKEN`). Defaults to the free model `s2.1-pro-free`, which
+   needs no API credit; pick another model only if you have credit and set
+   `ALLOW_PAID_CLOUD=1`.
    and `ALLOW_PAID_CLOUD=1`, because it is a paid cloud service.
 
 When none of them answers, the shot carries the line as a burned-in **caption**
@@ -260,9 +263,9 @@ cloud voice off. `GET /api/direk/movie/status` reports `narration_order`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `FISH_AUDIO_API_KEY` | (unset) | Enables the Fish Audio Tagalog voice (only this is required) |
+| `FISH_AUDIO_API_KEY` | (unset) | Enables the Fish Audio Tagalog voice. `LANSA_FISH_TOKEN` is accepted as an alias |
 | `FISH_AUDIO_REFERENCE_ID` | (unset) | Optional cloned voice id; without it Fish uses its default voice |
-| `FISH_AUDIO_MODEL` | provider default | Fish Audio model id |
+| `FISH_AUDIO_MODEL` | `s2.1-pro-free` | Fish Audio model id. The free one needs no credit; any other id is billed and also needs `ALLOW_PAID_CLOUD=1` |
 | `TTS_ORDER` | `fish,tagalog,gemini,piper` | Comma-separated voice priority |
 | `TTS_PIPER_BIN` | `piper` | Piper executable |
 | `TTS_PIPER_VOICE` | (unset) | Piper `.onnx` voice file |

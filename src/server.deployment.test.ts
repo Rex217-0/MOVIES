@@ -62,6 +62,10 @@ async function startServer(env: Record<string, string>) {
       GEMINI_API_KEY: '',
       DEEPSEEK_API_KEY: '',
       ANTHROPIC_API_KEY: '',
+      // Blank the Fish keys too. dotenv loads .env into the child, and a real
+      // key here makes a test call the live TTS API once per scene.
+      FISH_AUDIO_API_KEY: '',
+      LANSA_FISH_TOKEN: '',
       OLLAMA_DISABLE: '1',
       COMFYUI_DISABLE: '1',
       DIREK_ASSETS_DIR: assetsDir,
