@@ -643,14 +643,20 @@ export class FactoryDb {
    *
    * Returns the ids that were recovered.
    */
-  recoverAbandoned(opts: { now?: number } = {}): string[] {
+  recoverAbandoned(opts: { now?: number; alive?: (holder: string) => boolean } = {}): string[] {
     const at = opts.now ?? Date.now();
-    const stale = this.db
+    const running = this.db
       .prepare(
-        `SELECT movie_id, holder FROM movie_leases
-          WHERE org_id = ? AND status = 'running' AND (expires_at IS NULL OR expires_at <= ?)`,
+        `SELECT movie_id, holder, expires_at FROM movie_leases
+          WHERE org_id = ? AND status = 'running'`,
       )
-      .all(ORG_ID, at) as { movie_id: string; holder: string }[];
+      .all(ORG_ID) as { movie_id: string; holder: string; expires_at: number | null }[];
+    // A lease is abandoned when it expired, or when the process that holds it is
+    // gone. Waiting for the 30-minute expiry is what left a crashed film looking
+    // 'running' with no render behind it; the PID check recovers it at once.
+    const stale = running.filter(
+      row => row.expires_at === null || row.expires_at <= at || (opts.alive ? !opts.alive(row.holder) : false),
+    );
     if (stale.length === 0) return [];
 
     for (const row of stale) {

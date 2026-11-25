@@ -787,3 +787,33 @@ test('the scheduler survives a database error and hands the film back', async ()
     db.close();
   }
 });
+
+test('a fresh screenplay does not throw away the scenes already rendered', async () => {
+  // START asks the Pilot for a new screenplay every time it is pressed, and that
+  // breakdown used to rebuild the whole scene list as `pending`. A film that was
+  // 60% rendered fell back to 0% and re-rendered what it already had — the bar
+  // that appears to restart is worse than one that appears stuck.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'breakdown-'));
+  process.env.DIREK_ASSETS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'bdassets-'));
+  process.env.DIREK_RENDERS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'bdrenders-'));
+  const db = new FactoryDb(path.join(dir, 'factory.db'));
+  const factory = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
+    ffmpegAvailable: async () => true,
+    db,
+  });
+  const job = factory.create({ brief: 'Isang horror sa gubat.' });
+  const first = job.scenes[0];
+  first.status = 'rendered';
+  first.stage = 'completed';
+  first.percent = 100;
+  first.assetId = 'AST-KEEP-ME';
+  first.assetName = 'kept.mp4';
+  factory.applyScript(job.id, 'script', { scenes: { scenes: [] } });
+
+  const after = factory.get(job.id)!;
+  assert.equal(after.scenes[0].status, 'rendered', 'a rendered scene must survive a new breakdown');
+  assert.equal(after.scenes[0].assetId, 'AST-KEEP-ME');
+  assert.equal(after.scenes[1].status, 'pending', 'an unrendered scene still takes the new text');
+  db.close();
+});

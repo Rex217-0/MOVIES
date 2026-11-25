@@ -85,7 +85,44 @@ export interface SceneState {
   accounting?: JobAccounting;
 }
 
-export type FeatureStatus = 'idle' | 'running' | 'paused' | 'done' | 'error';
+/**
+ * True when the process that holds a lease is still running.
+ *
+ * A holder is written as `pid-random`; a PID that no longer exists means the
+ * lease was left behind by a crash. Waiting for the TTL instead is what kept a
+ * dead film looking alive for half an hour.
+ */
+export function holderAlive(holder: string): boolean {
+  const text = String(holder);
+  // A GPU lease is written `label#pid-token`; a film lease is just `pid-token`.
+  // Reading the label as a PID would report every GPU holder as alive, which is
+  // what let a zombie keep the device for the whole TTL.
+  const token = text.includes('#') ? text.slice(text.indexOf('#') + 1) : text;
+  const pid = Number(token.split('-')[0]);
+  if (!Number.isFinite(pid) || pid <= 0) return true; // unknown format: assume alive
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  // A killed process stays visible as a zombie until its parent reaps it, and
+  // `kill(pid, 0)` still succeeds on one. Its render is over either way, so a
+  // zombie must not keep the lease. The state is the third field of /proc stat.
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const state = stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3);
+    return state !== 'Z' && state !== 'X';
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * `queued` is a film waiting its turn behind another one. It is not `running`:
+ * the batch has not started, so its percent stays at 0 and the UI must say it is
+ * waiting rather than show a bar that looks stuck.
+ */
+export type FeatureStatus = 'idle' | 'queued' | 'running' | 'paused' | 'done' | 'error';
 
 export interface FeatureJobView {
   id: string;
@@ -325,8 +362,18 @@ export class FeatureFactory {
    * frontend.
    */
   get(id: string): FeatureJobView | undefined {
-    const job = this.jobs.get(id);
-    return job && this.inVault(job) ? job : undefined;
+    let job = this.jobs.get(id);
+    if (!job) {
+      // A film recovered at boot was dropped from memory on purpose, so that the
+      // next read would come from the database. Reading it here is what lets the
+      // operator press START on it again; returning undefined made a recovered
+      // film unreachable (404) and its scenes unrenderable.
+      const stored = this.deps.db?.load(id);
+      if (!stored) return undefined;
+      this.jobs.set(id, stored);
+      job = stored;
+    }
+    return this.inVault(job) ? job : undefined;
   }
 
   /** The newest job, for a UI that only shows one film. */
@@ -345,13 +392,26 @@ export class FeatureFactory {
       .sort((a, b) => b.startedAt - a.startedAt);
   }
 
-  /** Replace the scene list with a richer one (a model breakdown). */
+  /**
+   * Replace the scene list with a richer one (a model breakdown).
+   *
+   * A scene that already has a rendered asset keeps its state. START asks for a
+   * fresh screenplay every time it is pressed, and rebuilding the list from
+   * scratch threw away every finished shot: the film went back to 0% and
+   * re-rendered work it already had. Only scenes without an asset take the new
+   * text.
+   */
   applyBreakdown(id: string, model: unknown): FeatureJobView | undefined {
     const job = this.jobs.get(id);
     if (!job) return undefined;
+    const existing = new Map(job.scenes.map(scene => [scene.index, scene]));
     const fallback = buildScenes(job.concept);
     const merged = mergeScenes(model, fallback, job.concept);
-    job.scenes = merged.map(s => ({ ...this.sceneState(s), status: 'pending' as SceneStatus }));
+    job.scenes = merged.map(s => {
+      const done = existing.get(s.index);
+      if (done && (done.status === 'rendered' || done.status === 'approved')) return done;
+      return { ...this.sceneState(s), status: 'pending' as SceneStatus };
+    });
     this.persist(job);
     return job;
   }
@@ -401,9 +461,13 @@ export class FeatureFactory {
     const job = this.jobs.get(id);
     if (!job || job.status === 'running') return job;
 
-    // Mark it running before the scheduler is kicked, so the very next poll sees
-    // the truth and never reports a film that is queued as still idle.
-    job.status = 'running';
+    // With a ledger, START only puts the film in the queue: another film may be
+    // rendering, and this one will not touch a single shot until it is claimed.
+    // Reporting it as `running` was the bar that sat at 0% for an hour while the
+    // film ahead of it rendered — the status has to match what is happening.
+    // Without a database the promise chain runs it here and now, so it is running.
+    const queued = Boolean(this.deps.db);
+    job.status = queued ? 'queued' : 'running';
     job.error = undefined;
     job.endedAt = undefined;
     this.persist(job);
@@ -458,8 +522,11 @@ export class FeatureFactory {
     // The in-memory view is what the UI polls, and `start()` refuses to re-enter
     // a running film. Leaving it `running` after the batch is gone is the bar
     // that never moves, whether or not a database is wired in.
+    // A queued film is included: the scheduler is what would have claimed it, and
+    // it has just stopped. Leaving it `queued` would promise a turn that nothing
+    // will ever give it.
     for (const job of this.jobs.values()) {
-      if (job.status === 'running') {
+      if (job.status === 'running' || job.status === 'queued') {
         job.status = 'paused';
         job.error = (error as any)?.message || 'Nahinto ang scheduler.';
         this.persist(job);
@@ -552,7 +619,8 @@ export class FeatureFactory {
   recover(): string[] {
     const db = this.deps.db;
     if (!db) return [];
-    const recovered = db.recoverAbandoned();
+    // A holder is `pid-random`, so the PID says whether that process still runs.
+    const recovered = db.recoverAbandoned({ alive: holderAlive });
     for (const id of recovered) {
       // Drop the stale in-memory copy so the next read comes from the database.
       this.jobs.delete(id);

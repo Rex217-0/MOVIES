@@ -1082,7 +1082,7 @@ export interface FeatureJobView {
   /** The private vault this job belongs to (`LJRgroupORG`). */
   orgId: string;
   concept: { title: string; genre: string; rating: string; format: string; brief: string };
-  status: 'idle' | 'running' | 'paused' | 'done' | 'error';
+  status: 'idle' | 'queued' | 'running' | 'paused' | 'done' | 'error';
   percent: number;
   rendered: number;
   failed: number;

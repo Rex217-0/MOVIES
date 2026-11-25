@@ -94,7 +94,7 @@ import { originalityProvenance } from './src/direk/provenance.ts';
 import { FactoryDb, factoryDbPath } from './src/direk/factoryDb.ts';
 import { rendersDir, renderPath } from './src/direk/renderStore.ts';
 import {
-  FeatureFactory, factorySummary,
+  FeatureFactory, factorySummary, holderAlive,
 } from './src/direk/factory.ts';
 import {
   breakdownPrompt, parseBreakdown, type ConceptOptions,
@@ -1814,6 +1814,19 @@ const featureFactory = new FeatureFactory({
   // Local SQLite store for MovieJobs and SceneJobs (factory.db).
   db: featureDb,
 });
+
+// The GPU lease outlives a crash too: it is held for 30 minutes because a real
+// render can take that long, so a dead holder blocked every later render until
+// the TTL ran out. A boot proves the old process is gone, so the row is freed
+// here. The PID check keeps a lease held by a live sibling process.
+{
+  const freed = gpuStore().recoverAbandoned({
+    alive: holder => holderAlive(String(holder)),
+  });
+  if (freed) {
+    broadcastThought(`[RECOVERY] Nabuksan ang GPU na hawak ng patay na proseso (${freed}).`);
+  }
+}
 
 // A film that was running when this process died still looks 'running' in the
 // database. Recover it before serving anything, so the UI shows the truth (a

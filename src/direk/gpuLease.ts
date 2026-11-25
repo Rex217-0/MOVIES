@@ -190,6 +190,34 @@ export class GpuLeaseStore {
     return freed.length > 0;
   }
 
+  /**
+   * Free a GPU held by a process that is gone.
+   *
+   * The lease is deliberately long (30 min) because a real render can take that
+   * long, so a crash leaves the row `held` and every later render waits for a
+   * holder that will never release it. A boot is proof that no earlier process
+   * of ours is still rendering, so the row is freed here.
+   *
+   * `alive` is injected so a test can decide, and the real caller passes a PID
+   * check. A lease held by a live process is left alone.
+   */
+  recoverAbandoned(opts: { alive?: (holder: string) => boolean; now?: () => number } = {}): string | undefined {
+    const at = this.now(opts);
+    const row = this.db
+      .prepare(`SELECT holder, status FROM gpu_leases WHERE resource = ?`)
+      .get(GPU_RESOURCE) as { holder: string; status: string } | undefined;
+    if (!row || row.status !== 'held' || !row.holder) return undefined;
+    if (opts.alive?.(row.holder)) return undefined;
+    const freed = this.db
+      .prepare(
+        `UPDATE gpu_leases SET status = 'free', holder = '', renewed_at = ?, expires_at = ?
+          WHERE resource = ? AND status = 'held' AND holder = ?
+          RETURNING holder`,
+      )
+      .all(at, at, GPU_RESOURCE, row.holder) as { holder: string }[];
+    return freed.length > 0 ? row.holder : undefined;
+  }
+
   close(): void {
     this.db.close();
   }
