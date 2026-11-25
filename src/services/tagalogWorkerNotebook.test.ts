@@ -51,7 +51,15 @@ function executableSource(): string {
  * "repetition" would pass while the scorer still returns 60 for obvious
  * garbage. Python is already a test dependency here (see loraNotebook.test.ts).
  */
-function runGate(text: string): { score: number; issues: string[]; threshold: number } {
+interface GateResult {
+  score: number;
+  issues: string[];
+  threshold: number;
+  accepted?: boolean;
+  shape?: { eksena: number; visual: number; narration: number; pamagat: number };
+}
+
+function runGate(text: string, screenplay = false): GateResult {
   const cell = codeCells().find(src => src.includes('def tagalog_report'));
   assert.ok(cell, 'the Tagalog gate cell is missing');
 
@@ -66,14 +74,20 @@ function runGate(text: string): { score: number; issues: string[]; threshold: nu
 import json, os, re, sys
 ${body}
 text = sys.stdin.read()
-score, issues = tagalog_report(text)
-print("__GATE__" + json.dumps({"score": score, "issues": issues, "threshold": MIN_TAGALOG_SCORE}))
+payload = {"threshold": MIN_TAGALOG_SCORE}
+if ${screenplay ? 'True' : 'False'}:
+    ok, score, issues, shape = screenplay_report(text)
+    payload.update({"score": score, "issues": issues, "accepted": ok, "shape": shape})
+else:
+    score, issues = tagalog_report(text)
+    payload.update({"score": score, "issues": issues})
+print("__GATE__" + json.dumps(payload))
 `;
 
   const out = execFileSync('python3', ['-c', script], { input: text, encoding: 'utf8' });
   const line = out.split('\n').find(l => l.startsWith('__GATE__'));
   assert.ok(line, `the gate produced no result:\n${out}`);
-  return JSON.parse(line.slice('__GATE__'.length));
+  return JSON.parse(line.slice('__GATE__'.length)) as GateResult;
 }
 
 /** The exact output the Qwen 2.5 3B worker produced on Kaggle, quoted verbatim. */
@@ -110,6 +124,51 @@ EKSENA 2: Palengke - Umaga
 EKSENA 3: Bahay - Gabi
   VISUAL: Nakaupo si Isko sa harap ng larawan ng anak niya habang umiiyak.
   NARRATION: Sa wakas, tinanggap niya na ang dagat ay hindi na magbabalik sa kaniya.`;
+
+
+/**
+ * The three outputs from Rex's real Kaggle run (2026-11-25), quoted verbatim.
+ *
+ * These matter more than any sample I could invent: the gate passed two of them
+ * before the shape check existed, because their Tagalog, while wrong, is not
+ * repetitive enough to trip the language score alone.
+ */
+const REAL_RUN_HORROR = `Pagbabago: Ang Paglinting ng Pangangasiwa
+Paglinting ng Pangangasiwa
+Simula:
+"Sa mga araw na ito ng proseso ng paglinting, ang pangangasiwa ay hindi makakakuha ng sumusunod na kasaysayan."
+Gitna:
+"Nagiging masariling panahon na lang, kapag ang mga tao ay natapos sila ng paglinting. Hindi pa rin sila makakasama sa kanilang mga sarili."
+Wika:
+"Pagguluhan sila ngunit hindi nila alam kung ano ang ibig sila matutunan. Naglalarawan sila ng mga puso ng mga tao, ngunit hindi sila makakatawan sa kanyang mga damdamin."
+Pagtatayo:
+"Hindi sila makakatawan sa kanyang mga damdamin, at hindi sila makakakuha ng sumusunod na kasaysayan. Kaya't hindi sila makakakuha ng sumusunod na kasaysayan."
+Wika:
+"Hindi sila makakakuha ng sumusunod na kasaysayan, at hindi sila makakasama sa kanilang mga sarili. Hindi sila makakasama sa kanilang mga sarili, at hindi sila makakasama sa kanilang mga sarili."`;
+
+const REAL_RUN_ROMANCE = `Pagbabago ng Pamagat: "Diwa sa Pag-ibig"
+Simula:
+"Diwa sa Pag-ibig"
+Gitna:
+Isang malaking balay ng pagsamba ang pinakamataas na umaga sa lungsod. Sa loob ng kanilang parusa, isa pa rin sila'y nagtrato ng pagkain at paglalarawan. Si Leon, isang mag-aaral na babae, ay nagpunta sa panahon ng pagkain bilang parte ng iba't ibang trabaho.
+Wakas:
+Sa ilalim ng malaking taas ng pagkain, tinukoy si Leon sa kanilang taberno ang kanyang kapamilya. Ang mga anak niya ay naglabas ng mga sigla at pagbasa sa kanya. Ito ang pinaka-pagmamananahan sa lahat - ang pagkain, ang paglabas ng mga anak, at ang di-dili-tiwasang pag-iiba ng pag-ibig sa kanyang sariling halip na nagtrato ng pagkain.`;
+
+const REAL_RUN_COMEDY = `"Palengke Palpit"
+Simula:
+Tindera ni Juan ay nagpunta sa palengke.
+Gitna:
+Nakita niya ang mga anak niya sa pista ng pagdami.
+Juan: "Ani, anak! Hindi ka ba nagtrato ng pagdami?"
+Wakas:
+Nag-ask siya kay mga magbigay ng pagdami.
+Juan: "Sige, anu-ano ang pricelist mo?"
+Mga anak ni Juan: "Sir, 50 per unit."
+Juan: "Ha? Ano nga bang 50 pesos ang isang unit?"
+Mga anak ni Juan: "Eh, hindi pa rin kami makakakuha ng 50 pesos sa isang unit."
+Juan: "Masakit po talaga ako, anak!"
+Juan: "Diyosito, di ko alam kung ano ang problema nila."
+Juan: "Ani, anak! Nagpunta ako dito para makuha ang pagdami, hindi lang para makuha ang halaman mo!"`;
 
 test('the notebook exists, is valid JSON, and has no committed outputs', () => {
   assert.ok(fs.existsSync(NOTEBOOK), 'scripts/direk_tagalog_worker.ipynb is missing');
@@ -232,6 +291,109 @@ test('the gate runs before the model check, so it can answer while weights load'
   assert.ok(
     gateAt < modelAt,
     'the gate is pure string logic and needs no model; behind the model check it stays silent for the whole model load',
+  );
+});
+
+test('all three real Kaggle outputs are rejected as screenplays', () => {
+  // The language score alone passed two of these. The shape check is what
+  // catches them: the model wrote "Simula/Gitna/Wakas" prose, and the app reads
+  // EKSENA/VISUAL/NARRATION, so a passing score here meant an empty film.
+  for (const [label, text] of Object.entries({
+    horror: REAL_RUN_HORROR,
+    romance: REAL_RUN_ROMANCE,
+    comedy: REAL_RUN_COMEDY,
+  })) {
+    const result = runGate(text, true);
+    assert.equal(result.accepted, false, `${label} was accepted as a screenplay`);
+    assert.equal(result.shape?.eksena, 0, `${label} should have zero EKSENA headings`);
+    assert.ok(
+      result.issues.some(i => i.includes('eksena')),
+      `${label} was rejected without naming the missing scenes: ${result.issues.join('; ')}`,
+    );
+  }
+});
+
+test('a real screenplay still passes the shape check', () => {
+  const result = runGate(GOOD_SCREENPLAY, true);
+  assert.equal(result.accepted, true, `clean screenplay rejected: ${result.issues.join('; ')}`);
+  assert.equal(result.shape?.eksena, 3);
+  assert.equal(result.shape?.visual, 3);
+  assert.equal(result.shape?.narration, 3);
+});
+
+test('an essay with a fake VISUAL line bolted on is still rejected', () => {
+  // VISUAL/NARRATION only count when they sit under an EKSENA heading. Counting
+  // them anywhere would let a prose answer pass by appending two lines.
+  const trapped = `${REAL_RUN_ROMANCE}\nVISUAL: isang eksena\nNARRATION: isang linya`;
+  const result = runGate(trapped, true);
+  assert.equal(result.accepted, false);
+  assert.equal(result.shape?.eksena, 0);
+  assert.equal(result.shape?.visual, 0, 'a VISUAL outside any EKSENA must not count');
+});
+
+test('the invented-word rule does not punish real Tagalog compounds', () => {
+  // The first version of this rule flagged 13 of these 31 words. A gate that
+  // rejects "bahay-kubo" and "takip-silim" is worse than no gate: it would train
+  // Rex to ignore it.
+  const real = [
+    'bahay-kubo', 'balik-aral', 'anak-araw', 'tao-tao', 'iba-iba', 'sari-sari',
+    'araw-araw', 'gabi-gabi', 'sabay-sabay', 'dahan-dahan', 'unti-unti',
+    'pag-asa', 'pag-ibig', 'nag-iisip', 'mag-aaral', 'di-wasto', 'bigay-kaya',
+    'kapit-bisig', 'lakad-pagong', 'ningas-kugon', 'patay-malisya',
+    'takip-silim', 'bahag-hari', 'agaw-buhay', 'hampas-lupa',
+    'pakikipag-ugnayan', 'nagpapasalamat', 'tagapagtanggol',
+  ];
+  const cell = codeCells().find(src => src.includes('def reduplication_errors'));
+  assert.ok(cell, 'reduplication_errors is missing');
+  const body = cell
+    .split('\n')
+    .filter(line => !/^\s*(import|from)\s/.test(line))
+    .join('\n');
+  const script = `
+import json, os, re, sys
+${body}
+words = json.loads(sys.stdin.read())
+print("__W__" + json.dumps({w: bool(reduplication_errors(w)) for w in words}))
+`;
+  const out = execFileSync('python3', ['-c', script], {
+    input: JSON.stringify(real),
+    encoding: 'utf8',
+  });
+  const flagged = JSON.parse(out.split('\n').find(l => l.startsWith('__W__'))!.slice(5));
+  const bad = Object.entries(flagged).filter(([, v]) => v).map(([k]) => k);
+  assert.deepEqual(bad, [], `real Tagalog compounds flagged as invented: ${bad.join(', ')}`);
+});
+
+test('the invented-word rule still catches the garbage it was written for', () => {
+  const cell = codeCells().find(src => src.includes('def reduplication_errors'))!;
+  const body = cell
+    .split('\n')
+    .filter(line => !/^\s*(import|from)\s/.test(line))
+    .join('\n');
+  const script = `
+import json, os, re, sys
+${body}
+words = json.loads(sys.stdin.read())
+print("__W__" + json.dumps({w: bool(reduplication_errors(w)) for w in words}))
+`;
+  const out = execFileSync('python3', ['-c', script], {
+    input: JSON.stringify(['pagkakaiba-biba', 'masamang-masamang']),
+    encoding: 'utf8',
+  });
+  const flagged = JSON.parse(out.split('\n').find(l => l.startsWith('__W__'))!.slice(5));
+  assert.equal(flagged['pagkakaiba-biba'], true, 'pagkakaiba-biba must be flagged');
+  assert.equal(flagged['masamang-masamang'], true, 'masamang-masamang must be flagged');
+});
+
+test('generate_script refuses to return prose it cannot turn into scenes', () => {
+  const src = codeCells().find(s => s.includes('def generate_script'))!;
+  assert.match(src, /screenplay_report\(/, 'generate_script never calls the screenplay gate');
+  // The failure branch is `if not ok:` ... `return unavailable(...)`, with the
+  // rationale comment in between. Match the branch, not the whitespace.
+  assert.match(
+    src,
+    /if not ok:[\s\S]{0,400}?return unavailable\(/,
+    'generate_script must return an honest 503 when the gate fails, not the prose',
   );
 });
 
