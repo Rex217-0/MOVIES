@@ -57,6 +57,10 @@ import {
 import {
   checkSwarmReachability, generateWithSwarm, swarmUrl, swarmConfigured,
 } from './src/direk/swarmui.ts';
+// One lease for the whole local GPU. SwarmUI (:7801) and ComfyUI (:8188) run on
+// the same device, so every route that renders locally walks through this.
+import { runOnLocalGpu, gpuStore } from './src/direk/localGpu.ts';
+import { GpuBusyError } from './src/direk/gpuLease.ts';
 import { pollinationsUrl, resetComfyCache } from './src/direk/imagine.ts';
 import { extensionRegistry } from './src/extensions/registry.ts';
 import { createSeasonOneHarvester, runsRoot as loraRunsRoot, SCIFI_NEON_PRESET, startSeasonalScheduler } from './src/extensions/season01/index.ts';
@@ -727,14 +731,21 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
   try {
-    const { data, engine, editor, editNote, credit, sourceUrl, mediaClass } = await renderVideo({
-      prompt: formattedPrompt,
-      negative: buildVeoStyleNegative(),
-      aspectRatio: validAspect,
-      resolution,
-      seconds: Number.isFinite(Number(duration)) && Number(duration) > 0 ? Number(duration) : undefined,
-      qualityTier,
-    });
+    // Video is always local (see planExecution), so it holds the same GPU lease
+    // as an image would. This is what makes `concurrency = 1` true for real
+    // rather than only within one route.
+    const { data, engine, editor, editNote, credit, sourceUrl, mediaClass } = await runOnLocalGpu(
+      `video: "${prompt.slice(0, 40)}"`,
+      () =>
+        renderVideo({
+          prompt: formattedPrompt,
+          negative: buildVeoStyleNegative(),
+          aspectRatio: validAspect,
+          resolution,
+          seconds: Number.isFinite(Number(duration)) && Number(duration) > 0 ? Number(duration) : undefined,
+          qualityTier,
+        }),
+    );
     if (editNote) broadcastThought(`[VIDEO EDIT] ${editNote}`);
     const elapsedMs = Date.now() - startTime;
     const dataUrl = `data:video/mp4;base64,${data.toString('base64')}`;
@@ -811,6 +822,12 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
         detail,
         required: TIER_ACCEPTS[error.tier as QualityTier] ?? [],
       });
+      return;
+    }
+    // A busy GPU is a queue, not an outage: name the holder so the operator can
+    // wait for it (or stop it) instead of debugging a backend that is fine.
+    if (error instanceof GpuBusyError) {
+      res.status(503).json({ ...aiUnavailable('video', error.message, 'LOCAL_GPU_BUSY'), code: 'LOCAL_GPU_BUSY', holder: error.holder, expiresAt: error.expiresAt });
       return;
     }
     res.status(503).json(aiUnavailable('video', detail, reason));
@@ -890,15 +907,20 @@ app.post('/api/direk/swarm/generate', async (req: Request, res: Response) => {
   }
   const started = Date.now();
   try {
-    const png = await generateWithSwarm(prompt.trim(), {
-      negative: typeof negative === 'string' ? negative : undefined,
-      width: Number(width) || undefined,
-      height: Number(height) || undefined,
-      steps: Number(steps) || undefined,
-      cfgScale: Number(cfgScale) || undefined,
-      seed: Number.isFinite(Number(seed)) ? Number(seed) : undefined,
-      model: typeof model === 'string' && model.trim() ? model.trim() : undefined,
-    });
+    // SwarmUI drives its own ComfyUI backend, but on the same GPU as a movie
+    // render. Waiting here is what keeps the two from fighting for VRAM; the
+    // image simply runs after the scene finishes instead of corrupting it.
+    const png = await runOnLocalGpu(`SwarmUI image: "${prompt.trim().slice(0, 40)}"`, () =>
+      generateWithSwarm(prompt.trim(), {
+        negative: typeof negative === 'string' ? negative : undefined,
+        width: Number(width) || undefined,
+        height: Number(height) || undefined,
+        steps: Number(steps) || undefined,
+        cfgScale: Number(cfgScale) || undefined,
+        seed: Number.isFinite(Number(seed)) ? Number(seed) : undefined,
+        model: typeof model === 'string' && model.trim() ? model.trim() : undefined,
+      }),
+    );
     const elapsedMs = Date.now() - started;
     broadcastThought(`[SWARMUI] Image generated (${elapsedMs}ms).`);
     res.json({
@@ -916,6 +938,13 @@ app.post('/api/direk/swarm/generate', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
+    // A busy GPU is not a broken SwarmUI. Say which it is: 503 with the holder's
+    // name is actionable, while "unreachable" would send the operator chasing a
+    // problem that does not exist.
+    if (error instanceof GpuBusyError) {
+      res.status(503).json(aiUnavailable('gpu-busy', error.message, 'LOCAL_GPU_BUSY'));
+      return;
+    }
     const reason = error?.message || 'Unknown error';
     console.error('[SWARMUI ERROR]', reason);
     broadcastThought(`[SWARMUI ERROR] ${reason}`);
@@ -954,10 +983,12 @@ app.post('/api/pilot/image/generate', async (req: Request, res: Response) => {
   const backend = await resolveImageBackend();
   if (backend === 'comfyui') {
     try {
-      const png = await generateWithComfy(enhancedPrompt, {
-        negative: buildVeoStyleNegative(),
-        width: 1024, height: 1024, lora: parseLoraChoice({ lora, loraStrength }),
-      });
+      const png = await runOnLocalGpu(`ComfyUI image: "${prompt.slice(0, 40)}"`, () =>
+        generateWithComfy(enhancedPrompt, {
+          negative: buildVeoStyleNegative(),
+          width: 1024, height: 1024, lora: parseLoraChoice({ lora, loraStrength }),
+        }),
+      );
       const elapsedMs = Date.now() - startTime;
       const dataUrl = `data:image/png;base64,${png.toString('base64')}`;
       broadcastThought(`[IMAGE COMPLETE] ComfyUI image generated (${elapsedMs}ms).`);
@@ -1734,22 +1765,40 @@ const featureFactory = new FeatureFactory({
   // (unreachable, no video workflow) the scene fails with AI_UNAVAILABLE; the
   // factory never fabricates a placeholder clip.
   renderScene: async ({ scene, index, qualityTier, onStage }) => {
-    const result = await renderFeatureScene(scene, {
-      index, seconds: FEATURE_SCENE_SECONDS, qualityTier, onStage,
+    // Each scene holds the one GPU lease for its whole render, so no image, video
+    // or SwarmUI request can slip in between shots. The lease is what makes the
+    // "one render at a time" rule a device rule rather than a promise-chain rule.
+    return runOnLocalGpu(`film scene ${index}: "${scene.heading.slice(0, 40)}"`, async () => {
+      const result = await renderFeatureScene(scene, {
+        index, seconds: FEATURE_SCENE_SECONDS, qualityTier, onStage,
+      });
+      return {
+        data: result.data,
+        seconds: result.seconds,
+        voiced: result.voiced,
+        mediaClass: result.mediaClass,
+        backend: result.backend,
+        shots: result.shots,
+      };
     });
-    return {
-      data: result.data,
-      seconds: result.seconds,
-      voiced: result.voiced,
-      mediaClass: result.mediaClass,
-      backend: result.backend,
-      shots: result.shots,
-    };
   },
   ffmpegAvailable,
   // Local SQLite store for MovieJobs and SceneJobs (factory.db).
   db: featureDb,
 });
+
+// A film that was running when this process died still looks 'running' in the
+// database. Recover it before serving anything, so the UI shows the truth (a
+// paused film with one pending scene) instead of a progress bar that never moves.
+{
+  const interrupted = featureFactory.recover();
+  if (interrupted.length > 0) {
+    broadcastThought(
+      `[RECOVERY] ${interrupted.length} pelikula ang naantala ng pag-crash. ` +
+        `Nabalik sa queue ang hindi natapos na eksena; pindutin ang START para ipagpatuloy.`,
+    );
+  }
+}
 
 function featureView(job: ReturnType<FeatureFactory['create']>) {
   return {
@@ -1794,6 +1843,26 @@ app.get('/api/direk/feature/status', async (req: Request, res: Response) => {
       local: pilot.local,
     },
     job: job ? featureView(job) : null,
+  });
+});
+
+/**
+ * The queue as the ledger sees it: what is running, what is waiting, and in what
+ * order. This is the authoritative list — it comes from SQLite, not from the UI's
+ * idea of what it asked for.
+ */
+app.get('/api/direk/feature/queue', (req: Request, res: Response) => {
+  const rows = featureDb.queue();
+  const active = rows.find(r => r.status === 'running');
+  // The GPU lease is what actually serialises the hardware, and it is reported
+  // separately: a film can be "running" while an image holds the GPU in between
+  // its scenes, and the operator should see that rather than guess.
+  const gpu = gpuStore().current();
+  res.json({
+    queue: rows,
+    active: active ?? null,
+    concurrency: 1,
+    gpu: gpu ? { holder: gpu.holder, expiresAt: gpu.expiresAt, expired: gpu.expired } : null,
   });
 });
 
@@ -2207,7 +2276,11 @@ function generateLoraImage(
   // The LoRA only applies to ComfyUI; the hosted paths have no LoRA concept.
   // Every path ends in toPng: the hosted backends answer with a JPEG, and a
   // JPEG under a `.png` name is not a usable LoRA training image.
-  if (backend === 'comfyui') return generateWithComfy(prompt, { lora });
+  if (backend === 'comfyui') {
+    // LoRA previews are batch work on the same GPU as a film; a training run that
+    // grabbed it first must not be interleaved with a movie scene.
+    return runOnLocalGpu(`LoRA image: "${prompt.slice(0, 40)}"`, () => generateWithComfy(prompt, { lora }));
+  }
   if (backend === 'pollinations') return generatePollinationsImage(prompt, seed).then(toPng);
   return generateGeminiImage(prompt).then(png => (png ? toPng(png) : null));
 }
