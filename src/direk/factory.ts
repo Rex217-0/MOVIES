@@ -15,6 +15,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { classifyTask, planExecution, route_to_cloud, type TaskRoute } from './taskRouter.ts';
 import { saveAsset, assetPath, listAssets, type ReviewStatus } from './assets.ts';
+import {
+  acceptsMediaClass, parseQualityTier, requiresMasterBackend,
+  MASTER_BACKEND_UNAVAILABLE_CODE, masterRefusalReason,
+  type MediaClass, type QualityTier,
+} from './mediaClass.ts';
 import { concatCopy } from './render.ts';
 import { saveRender, type StoredRender } from './renderStore.ts';
 import { ORG_ID, type FactoryDb } from './factoryDb.ts';
@@ -30,7 +35,7 @@ import {
  * `scripting` is the plan/shot list, `rendering` is the ComfyUI picture,
  * `audio` is the narration + music mix, `completed` is a finished scene.
  */
-export type SceneStage = 'scripting' | 'rendering' | 'audio' | 'completed';
+export type SceneStage = 'scripting' | 'rendering' | 'audio' | 'completed' | 'blocked';
 
 /** One scene's place in the batch, for the UI. */
 export interface SceneState {
@@ -48,6 +53,10 @@ export interface SceneState {
   stage: SceneStage;
   percent: number;
   seconds: number;
+  /** What the file on disk actually is, once it exists. */
+  mediaClass?: MediaClass;
+  /** The block state when the quality tier refused a weaker engine. */
+  blockedReason?: string;
   assetId?: string;
   assetName?: string;
   /** Public URL of the scene file in the local render store. */
@@ -65,11 +74,18 @@ export interface FeatureJobView {
   /** The private vault this job belongs to (`LJRgroupORG`). */
   orgId: string;
   concept: MovieConcept;
+  /**
+   * What this job promised. Fixed at creation: a job cannot be promoted to
+   * MASTER later, because the scenes already rendered would not qualify.
+   */
+  qualityTier: QualityTier;
   status: FeatureStatus;
   /** 0-100 across the whole film. */
   percent: number;
   rendered: number;
   failed: number;
+  /** Scenes the quality tier refused: a weaker clip was offered and not taken. */
+  blocked: number;
   approved: number;
   rejected: number;
   total: number;
@@ -92,12 +108,24 @@ export interface FeatureJobView {
 export interface SceneRenderInput {
   scene: FeatureScene;
   index: number;
+  /** The tier the job promised, so the renderer never returns a weaker clip. */
+  qualityTier: QualityTier;
   /** The renderer reports each pipeline stage as it reaches it. */
   onStage?: (stage: SceneStage) => void;
 }
 
-/** What an injected renderer must return. */
-export type SceneRenderer = (input: SceneRenderInput) => Promise<{ data: Buffer; seconds?: number; voiced?: boolean }>;
+/**
+ * What an injected renderer must return. `mediaClass` is required: a renderer
+ * cannot say "done" without saying what the bytes are, which is what stops a
+ * still-motion fallback from being reported as a synthetic render.
+ */
+export type SceneRenderer = (input: SceneRenderInput) => Promise<{
+  data: Buffer;
+  seconds?: number;
+  voiced?: boolean;
+  mediaClass: MediaClass;
+  backend?: string;
+}>;
 
 export interface FactoryDeps {
   renderScene: SceneRenderer;
@@ -131,7 +159,7 @@ export class FeatureFactory {
   }
 
   /** Create a job from one brief; every field is derived when not given. */
-  create(opts: ConceptOptions): FeatureJobView {
+  create(opts: ConceptOptions & { qualityTier?: QualityTier | string }): FeatureJobView {
     const concept = buildConcept(opts);
     const scenes = buildScenes(concept, opts.mood);
     const id = `FILM-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -139,10 +167,12 @@ export class FeatureFactory {
       id,
       orgId: ORG_ID,
       concept,
+      qualityTier: parseQualityTier(opts.qualityTier),
       status: 'idle',
       percent: 0,
       rendered: 0,
       failed: 0,
+      blocked: 0,
       approved: 0,
       rejected: 0,
       total: FEATURE_SCENES,
@@ -277,10 +307,13 @@ export class FeatureFactory {
   private recompute(job: FeatureJobView): void {
     job.rendered = job.scenes.filter(s => s.status === 'rendered' || s.status === 'approved').length;
     job.failed = job.scenes.filter(s => s.status === 'failed').length;
+    job.blocked = job.scenes.filter(s => s.status === 'blocked').length;
     job.approved = job.scenes.filter(s => s.status === 'approved').length;
     job.rejected = job.scenes.filter(s => s.status === 'rejected').length;
     job.renderedSeconds = job.scenes.filter(s => s.status === 'rendered' || s.status === 'approved').length * FEATURE_SCENE_SECONDS;
-    const done = job.scenes.filter(s => s.status === 'rendered' || s.status === 'approved' || s.status === 'failed').length;
+    const done = job.scenes.filter(
+      s => s.status === 'rendered' || s.status === 'approved' || s.status === 'failed' || s.status === 'blocked',
+    ).length;
     job.percent = Math.round((done / job.total) * 100);
   }
 
@@ -309,6 +342,7 @@ export class FeatureFactory {
         const out = await this.deps.renderScene({
           scene: scenes[i],
           index: state.index,
+          qualityTier: job.qualityTier,
           // Mirror the renderer's real sub-stage (ComfyUI picture, then audio
           // mix) onto the scene so the UI's four bars are honest.
           onStage: stage => {
@@ -317,6 +351,26 @@ export class FeatureFactory {
             this.persist(job);
           },
         });
+        // The renderer says what it made; the job decides whether that is what it
+        // promised. A MASTER job handed a still-motion clip is refused here rather
+        // than stitched into the film and reported as a synthetic render.
+        const verdict = acceptsMediaClass(job.qualityTier, out.mediaClass);
+        if (!verdict.accepted) {
+          state.status = 'blocked';
+          state.stage = 'blocked' as SceneStage;
+          state.blockedReason = verdict.reason;
+          state.error = verdict.reason;
+          state.percent = 100;
+          state.endedAt = Date.now();
+          console.error(
+            `[FILM BLOCKED] Eksena ${state.index} ("${state.heading}"): ` +
+              `${job.qualityTier} ay tumanggap ng ${out.mediaClass}. ${verdict.reason}`,
+          );
+          this.recompute(job);
+          this.persist(job);
+          continue;
+        }
+        state.mediaClass = out.mediaClass;
         const seconds = out.seconds ?? state.seconds;
         state.percent = 90;
         const asset = saveAsset(out.data, {
@@ -325,6 +379,9 @@ export class FeatureFactory {
           mime: 'video/mp4',
           source: 'feature-film-factory',
           prompt: scenes[i].visual,
+          mediaClass: out.mediaClass,
+          qualityTier: job.qualityTier,
+          backend: out.backend,
         });
         // The served copy lives in public/renders/ for playback and download.
         const stored: StoredRender = saveRender(out.data, `scene-${state.index}-${job.concept.title}`);
@@ -337,6 +394,21 @@ export class FeatureFactory {
         state.percent = 100;
         state.endedAt = Date.now();
       } catch (error: any) {
+        // A policy stand-down is not a crash: mark it blocked so the operator
+        // sees "refused on purpose", not "retry me".
+        const refusal = masterRefusalReason(error);
+        if (refusal) {
+          state.status = 'blocked';
+          state.stage = 'blocked' as SceneStage;
+          state.blockedReason = refusal;
+          state.error = refusal;
+          state.percent = 100;
+          state.endedAt = Date.now();
+          console.error(`[FILM BLOCKED] Eksena ${state.index} ("${state.heading}"): ${refusal}`);
+          this.recompute(job);
+          this.persist(job);
+          continue;
+        }
         // Fail-safe: log it, skip it, keep going.
         state.status = 'failed';
         state.percent = 100;
@@ -459,23 +531,41 @@ export class FeatureFactory {
     state.stage = 'rendering';
     state.percent = 10;
     state.error = undefined;
+    state.blockedReason = undefined;
     this.persist(job);
     try {
       const out = await this.deps.renderScene({
         scene,
         index,
+        qualityTier: job.qualityTier,
         onStage: stage => {
           state.stage = stage;
           state.percent = stage === 'audio' ? 80 : state.percent;
           this.persist(job);
         },
       });
+      const verdict = acceptsMediaClass(job.qualityTier, out.mediaClass);
+      if (!verdict.accepted) {
+        state.status = 'blocked';
+        state.stage = 'blocked';
+        state.blockedReason = verdict.reason;
+        state.error = verdict.reason;
+        state.percent = 100;
+        state.endedAt = Date.now();
+        this.recompute(job);
+        this.persist(job);
+        return job;
+      }
+      state.mediaClass = out.mediaClass;
       const asset = saveAsset(out.data, {
         title: `Scene ${index} — ${job.concept.title}`,
         ext: 'mp4',
         mime: 'video/mp4',
         source: 'feature-film-factory',
         prompt: scene.visual,
+        mediaClass: out.mediaClass,
+        qualityTier: job.qualityTier,
+        backend: out.backend,
       });
       const stored = saveRender(out.data, `scene-${index}-${job.concept.title}`);
       state.assetId = asset.id;
@@ -485,9 +575,18 @@ export class FeatureFactory {
       state.stage = 'completed';
       state.percent = 100;
     } catch (error: any) {
-      state.status = 'failed';
-      state.error = error?.message || 'Nabigo ang render.';
-      console.error(`[FILM ERROR] Eksena ${index} ("${scene.heading}") nabigo: ${state.error}`);
+      const refusal = masterRefusalReason(error);
+      if (refusal) {
+        state.status = 'blocked';
+        state.stage = 'blocked' as SceneStage;
+        state.blockedReason = refusal;
+        state.error = refusal;
+        console.error(`[FILM BLOCKED] Eksena ${index} ("${scene.heading}"): ${refusal}`);
+      } else {
+        state.status = 'failed';
+        state.error = error?.message || 'Nabigo ang render.';
+        console.error(`[FILM ERROR] Eksena ${index} ("${scene.heading}") nabigo: ${state.error}`);
+      }
     }
     this.recompute(job);
     this.persist(job);

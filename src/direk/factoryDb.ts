@@ -64,6 +64,8 @@ interface MovieRow {
   error: string | null;
   script: string | null;
   bible: string | null;
+  quality_tier: string;
+  blocked: number;
   started_at: number;
   ended_at: number | null;
 }
@@ -87,6 +89,8 @@ interface SceneRow {
   seconds: number;
   asset_id: string | null;
   asset_name: string | null;
+  media_class: string | null;
+  blocked_reason: string | null;
   error: string | null;
   route: string;
   started_at: number | null;
@@ -148,6 +152,8 @@ CREATE TABLE IF NOT EXISTS movie_jobs (
   error TEXT,
   script TEXT,
   bible TEXT,
+  quality_tier TEXT NOT NULL DEFAULT 'CANARY',
+  blocked INTEGER NOT NULL DEFAULT 0,
   started_at INTEGER NOT NULL,
   ended_at INTEGER
 );
@@ -170,6 +176,8 @@ CREATE TABLE IF NOT EXISTS scene_jobs (
   seconds INTEGER NOT NULL DEFAULT 300,
   asset_id TEXT,
   asset_name TEXT,
+  media_class TEXT,
+  blocked_reason TEXT,
   error TEXT,
   route TEXT NOT NULL,
   started_at INTEGER,
@@ -199,6 +207,8 @@ function migrate(db: DatabaseSync): void {
     ['created_at', 'INTEGER NOT NULL DEFAULT 0'],
     ['script', 'TEXT'],
     ['bible', 'TEXT'],
+    ['quality_tier', "TEXT NOT NULL DEFAULT 'CANARY'"],
+    ['blocked', 'INTEGER NOT NULL DEFAULT 0'],
   ];
   for (const [name, type] of addMovie) {
     if (!movieCols.has(name)) db.exec(`ALTER TABLE movie_jobs ADD COLUMN ${name} ${type}`);
@@ -221,6 +231,8 @@ function migrate(db: DatabaseSync): void {
     ['scene_number', 'INTEGER NOT NULL DEFAULT 0'],
     ['video_path', 'TEXT'],
     ['stage', "TEXT NOT NULL DEFAULT 'scripting'"],
+    ['media_class', 'TEXT'],
+    ['blocked_reason', 'TEXT'],
   ];
   for (const [name, type] of addScene) {
     if (!sceneCols.has(name)) db.exec(`ALTER TABLE scene_jobs ADD COLUMN ${name} ${type}`);
@@ -258,8 +270,8 @@ export class FactoryDb {
         `INSERT INTO movie_jobs
            (id, org_id, title, genre, rating, format, created_at, concept, status, percent, rendered,
             failed, approved, rejected, total, total_seconds, current_scene, rendered_seconds,
-            film, error, script, bible, started_at, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            film, error, script, bible, quality_tier, blocked, started_at, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            org_id=excluded.org_id,
            title=excluded.title, genre=excluded.genre, rating=excluded.rating,
@@ -269,6 +281,7 @@ export class FactoryDb {
            total=excluded.total, total_seconds=excluded.total_seconds,
            current_scene=excluded.current_scene, rendered_seconds=excluded.rendered_seconds,
            film=excluded.film, error=excluded.error, script=excluded.script, bible=excluded.bible,
+           quality_tier=excluded.quality_tier, blocked=excluded.blocked,
            started_at=excluded.started_at, ended_at=excluded.ended_at`,
       )
       .run(
@@ -294,6 +307,8 @@ export class FactoryDb {
         job.error ?? null,
         job.script ?? null,
         job.bible ?? null,
+        job.qualityTier,
+        job.blocked,
         job.startedAt,
         job.endedAt ?? null,
       );
@@ -301,23 +316,26 @@ export class FactoryDb {
     const scene = this.db.prepare(
       `INSERT INTO scene_jobs
          (id, org_id, movie_id, scene_number, video_path, idx, act, heading, beat, narration, visual,
-          mood, status, stage, percent, seconds, asset_id, asset_name, error, route, started_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          mood, status, stage, percent, seconds, asset_id, asset_name, media_class, blocked_reason,
+          error, route, started_at, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(movie_id, idx) DO UPDATE SET
          org_id=excluded.org_id,
          id=excluded.id, scene_number=excluded.scene_number, video_path=excluded.video_path,
          act=excluded.act, heading=excluded.heading, beat=excluded.beat,
          narration=excluded.narration, visual=excluded.visual, mood=excluded.mood,
          status=excluded.status, stage=excluded.stage, percent=excluded.percent, seconds=excluded.seconds,
-         asset_id=excluded.asset_id, asset_name=excluded.asset_name, error=excluded.error,
-         route=excluded.route, started_at=excluded.started_at, ended_at=excluded.ended_at`,
+         asset_id=excluded.asset_id, asset_name=excluded.asset_name,
+         media_class=excluded.media_class, blocked_reason=excluded.blocked_reason,
+         error=excluded.error, route=excluded.route,
+         started_at=excluded.started_at, ended_at=excluded.ended_at`,
     );
     for (const s of job.scenes) {
       scene.run(
         sceneId(job.id, s.index), ORG_ID, job.id, s.index, s.assetName ?? null, s.index, s.act, s.heading,
         s.beat, s.narration, s.visual, s.mood, s.status, s.stage, s.percent, s.seconds,
-        s.assetId ?? null, s.assetName ?? null, s.error ?? null, JSON.stringify(s.route),
-        s.startedAt ?? null, s.endedAt ?? null,
+        s.assetId ?? null, s.assetName ?? null, s.mediaClass ?? null, s.blockedReason ?? null,
+        s.error ?? null, JSON.stringify(s.route), s.startedAt ?? null, s.endedAt ?? null,
       );
     }
   }
@@ -346,6 +364,8 @@ export class FactoryDb {
       seconds: row.seconds,
       assetId: row.asset_id ?? undefined,
       assetName: row.asset_name ?? undefined,
+      mediaClass: (row.media_class as SceneState['mediaClass']) ?? undefined,
+      blockedReason: row.blocked_reason ?? undefined,
       error: row.error ?? undefined,
       route: JSON.parse(row.route) as TaskRoute,
       startedAt: row.started_at ?? undefined,
@@ -356,10 +376,12 @@ export class FactoryDb {
       id: movie.id,
       orgId: movie.org_id,
       concept: JSON.parse(movie.concept) as MovieConcept,
+      qualityTier: (movie.quality_tier as FeatureJobView['qualityTier']) || 'CANARY',
       status: movie.status as FeatureStatus,
       percent: movie.percent,
       rendered: movie.rendered,
       failed: movie.failed,
+      blocked: movie.blocked ?? 0,
       approved: movie.approved,
       rejected: movie.rejected,
       total: movie.total,

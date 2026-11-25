@@ -22,7 +22,7 @@ test('a created job is written to movie_jobs and its 18 scenes to scene_jobs', (
   tmpStore();
   const db = tmpDb();
   const factory = new FeatureFactory({
-    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS }),
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
     ffmpegAvailable: async () => true,
     db,
   });
@@ -45,7 +45,7 @@ test('the batch writes each scene status through to the database', async () => {
   const factory = new FeatureFactory({
     renderScene: async ({ index }) => {
       if (index === 2) throw new Error('pumutok');
-      return { data: Buffer.from(`s${index}`), seconds: FEATURE_SCENE_SECONDS };
+      return { data: Buffer.from(`s${index}`), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const };
     },
     ffmpegAvailable: async () => true,
     concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
@@ -73,7 +73,7 @@ test('load returns undefined for an unknown id, and list is newest-first', () =>
   tmpStore();
   const db = tmpDb();
   const factory = new FeatureFactory({
-    renderScene: async () => ({ data: Buffer.from('x') }),
+    renderScene: async () => ({ data: Buffer.from('x'), mediaClass: 'SYNTHETIC_MOTION' as const }),
     ffmpegAvailable: async () => true,
     db,
   });
@@ -90,7 +90,7 @@ test('movieDoc carries the exact MovieJobs columns Copilot Firestore uses', () =
   tmpStore();
   const db = tmpDb();
   const factory = new FeatureFactory({
-    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS }),
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
     ffmpegAvailable: async () => true,
     db,
   });
@@ -117,7 +117,7 @@ test('sceneDocs carries the exact SceneJobs columns, scene_number 1-18', () => {
   tmpStore();
   const db = tmpDb();
   const factory = new FeatureFactory({
-    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS }),
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
     ffmpegAvailable: async () => true,
     db,
   });
@@ -142,7 +142,7 @@ test('a rendered scene writes its asset name into SceneJobs.video_path', async (
   tmpStore();
   const db = tmpDb();
   const factory = new FeatureFactory({
-    renderScene: async () => ({ data: Buffer.from('scene'), seconds: FEATURE_SCENE_SECONDS }),
+    renderScene: async () => ({ data: Buffer.from('scene'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
     ffmpegAvailable: async () => true,
     concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
     db,
@@ -210,7 +210,7 @@ test('every read is scoped to LJRgroupORG, so another org cannot leak in', () =>
   tmpStore();
   const db = tmpDb();
   const factory = new FeatureFactory({
-    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS }),
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
     ffmpegAvailable: async () => true,
     db,
   });
@@ -237,7 +237,7 @@ test('every read is scoped to LJRgroupORG, so another org cannot leak in', () =>
 test('the factory serves only its own vault through get, latest and list', () => {
   tmpStore();
   const factory = new FeatureFactory({
-    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS }),
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
     ffmpegAvailable: async () => true,
   });
   const ours = factory.create({ brief: 'Sa amin ito.' });

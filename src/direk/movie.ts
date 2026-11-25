@@ -23,9 +23,10 @@ import { defaultPython } from './platform.ts';
 import { saveAsset, type AssetMeta } from './assets.ts';
 import { MOODS, MOOD_LABELS, TTS_VOICES, type Mood, type MovieOptions, type TtsVoice, sceneCount } from '../movieMeta.ts';
 import {
-  renderVideo, VideoBackendUnavailable,
+  renderVideo, VideoBackendUnavailable, MasterBackendBlocked,
   videoRenderReady as videoBackendReady, videoRenderDetail as videoBackendDetail,
 } from './videoRenderService.ts';
+import { acceptsMediaClass, type MediaClass, type QualityTier } from './mediaClass.ts';
 import type { SceneStage } from './factory.ts';
 import { imagine, type ImageBackend } from './imagine.ts';
 import { fetchStockClip, stockConfigured } from './stockVideo.ts';
@@ -886,6 +887,10 @@ export interface SceneRenderResult {
   seconds: number;
   voiced: boolean;
   voiceSource: NarrationSource;
+  /** What the picture actually is: a generative render or a moved still. */
+  mediaClass: MediaClass;
+  /** Which engine made the picture, for the vault record. */
+  backend?: string;
 }
 
 /**
@@ -958,13 +963,21 @@ async function mixScene(shot: string, narration: string | null, bed: string, sec
  */
 export async function renderFeatureScene(
   scene: MovieScene,
-  opts: { index: number; voice?: TtsVoice; seconds?: number; onStage?: (stage: SceneStage) => void } = { index: 1 },
+  opts: {
+    index: number;
+    voice?: TtsVoice;
+    seconds?: number;
+    onStage?: (stage: SceneStage) => void;
+    /** The tier the job promised; a MASTER job never accepts a still pan. */
+    qualityTier?: QualityTier;
+  } = { index: 1 },
 ): Promise<SceneRenderResult> {
   const dir = workDir();
   const stage = opts.onStage ?? (() => {});
   try {
     const voice = opts.voice ?? 'Kore';
     const seconds = opts.seconds ?? MAX_SCENE_SECONDS;
+    const qualityTier = opts.qualityTier ?? 'CANARY';
 
     // 1. The picture: local ComfyUI first, Wan 2.2 on fal.ai as the fallback.
     // No backend -> no scene.
@@ -974,7 +987,18 @@ export async function renderFeatureScene(
     }
     stage('rendering');
     const prompt = buildVeoStylePrompt(`${scene.heading}. ${scene.visual}`);
-    const { data } = await renderVideo({ prompt, negative: buildVeoStyleNegative() });
+    const picture = await renderVideo({
+      prompt,
+      negative: buildVeoStyleNegative(),
+      qualityTier,
+    });
+    // A MASTER job whose only reachable engine is the still pan is refused here,
+    // before a single frame is normalised, encoded or written to the vault.
+    const verdict = acceptsMediaClass(qualityTier, picture.mediaClass);
+    if (!verdict.accepted) {
+      throw new MasterBackendBlocked(verdict.reason, qualityTier);
+    }
+    const { data } = picture;
     const clip = path.join(dir, 'comfy.mp4');
     fs.writeFileSync(clip, data);
 
@@ -1000,7 +1024,14 @@ export async function renderFeatureScene(
     const out = path.join(dir, 'scene.mp4');
     await mixScene(shot, narrationFile, bed, seconds, out);
     stage('completed');
-    return { data: fs.readFileSync(out), seconds, voiced: Boolean(narrationFile), voiceSource };
+    return {
+      data: fs.readFileSync(out),
+      seconds,
+      voiced: Boolean(narrationFile),
+      voiceSource,
+      mediaClass: picture.mediaClass,
+      backend: picture.engine,
+    };
   } finally {
     cleanup(dir);
   }

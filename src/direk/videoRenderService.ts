@@ -43,12 +43,34 @@ import {
 import { paidCloudAllowed, paidReady, PAID_BLOCKED_DETAIL } from './costPolicy.ts';
 import { fetchStockClip, stockConfigured, toMp4 } from './stockVideo.ts';
 import { strictRealVideoOnly, strictRefusalDetail } from './strictVideo.ts';
+import {
+  acceptsMediaClass, enginesForTier, masterBackendBlockedDetail,
+  MASTER_BACKEND_UNAVAILABLE_CODE, mediaClassForEngine,
+  type MediaClass, type QualityTier, type RenderEngine,
+} from './mediaClass.ts';
 
 export class VideoBackendUnavailable extends Error {
-  readonly code: 'AI_UNAVAILABLE' | 'COMFYUI_WAN22_UNAVAILABLE' = 'AI_UNAVAILABLE';
+  readonly code: 'AI_UNAVAILABLE' | 'COMFYUI_WAN22_UNAVAILABLE' | 'REQUIRED_MASTER_BACKEND_UNAVAILABLE' = 'AI_UNAVAILABLE';
   constructor(detail: string) {
     super(`Walang video backend: ${detail}`);
     this.name = 'VideoBackendUnavailable';
+  }
+}
+
+/**
+ * A MASTER job refused a weaker engine. This is not a render failure: nothing
+ * was attempted, because the policy forbids substituting still motion for a
+ * promised synthetic render. Its own code lets the API answer with the block
+ * state instead of a generic 503 outage.
+ */
+export class MasterBackendBlocked extends VideoBackendUnavailable {
+  override readonly code = 'REQUIRED_MASTER_BACKEND_UNAVAILABLE';
+  /** The tier that was refused, so the caller can echo it back. */
+  readonly tier: QualityTier;
+  constructor(detail: string, tier: QualityTier = 'MASTER') {
+    super(masterBackendBlockedDetail(detail));
+    this.name = 'MasterBackendBlocked';
+    this.tier = tier;
   }
 }
 
@@ -106,12 +128,21 @@ export interface VideoRenderInput {
   seconds?: number;
   /** Optional editing instructions; when set, OpenCut runs on the raw clip. */
   editInstructions?: string;
+  /**
+   * What the caller promised. A MASTER job is refused rather than quietly
+   * downgraded when no generative engine can run. Defaults to CANARY.
+   */
+  qualityTier?: QualityTier;
 }
 
 export interface VideoRenderResult {
   data: Buffer;
   /** Which engine produced the clip: `stock`, `comfyui`, `wan`, or the free `motion`. */
   engine: 'stock' | 'comfyui' | 'wan' | 'motion';
+  /** What the bytes actually are, derived from the engine that made them. */
+  mediaClass: MediaClass;
+  /** The tier that was asked for, echoed back for the ledger. */
+  qualityTier: QualityTier;
   /** Who shot the footage, when the clip came from a stock provider. */
   credit?: string;
   /** The source page for a stock clip, for attribution. */
@@ -188,17 +219,44 @@ export async function videoRenderDetail(): Promise<string> {
  * clip is optionally routed through OpenCut, then returned as a Buffer.
  */
 export async function renderVideo(input: VideoRenderInput): Promise<VideoRenderResult> {
-  const { data, engine, credit, sourceUrl, licence } = await generateRaw(input);
+  const qualityTier: QualityTier = input.qualityTier ?? 'CANARY';
+  const { data, engine, credit, sourceUrl, licence } = await generateRaw({ ...input, qualityTier });
   const edited = await maybeEdit(data, input.editInstructions);
+  // The editing pass re-encodes but does not change what the motion is, so the
+  // class stays with the engine that made it.
+  const mediaClass = mediaClassForEngine(engine);
+  // Belt and braces: the engines were filtered before the attempt, so a class the
+  // tier refuses here means an engine slipped past the filter. Refuse the clip
+  // rather than hand back something the tier never promised.
+  const verdict = acceptsMediaClass(qualityTier, mediaClass);
+  if (!verdict.accepted) {
+    throw new MasterBackendBlocked(verdict.reason, qualityTier);
+  }
   return {
     data: edited.data,
     engine,
+    mediaClass,
+    qualityTier,
     credit,
     sourceUrl,
     licence,
     editor: edited.editor,
     editNote: edited.note,
   };
+}
+
+/** True when the tier may use this engine at all, checked before any attempt. */
+function engineAllowedForTier(engine: RenderEngine, tier: QualityTier): boolean {
+  return enginesForTier(tier).includes(engine);
+}
+
+/**
+ * The refusal a MASTER job gets when its generative engine cannot run.
+ * `need` names what was required; `cause` says what actually failed, so the
+ * operator is not left guessing.
+ */
+function masterRefusal(need: string, cause: string): MasterBackendBlocked {
+  return new MasterBackendBlocked(`Kailangan ng ${need} para sa MASTER, ngunit ${cause}`, 'MASTER');
 }
 
 async function generateRaw(
@@ -210,12 +268,20 @@ async function generateRaw(
   sourceUrl?: string;
   licence?: string;
 }> {
+  const tier: QualityTier = input.qualityTier ?? 'CANARY';
+  const mayUse = (engine: RenderEngine) => engineAllowedForTier(engine, tier);
   const preferred = preferredRenderEngine();
 
   // Real footage. A stock clip is a real camera pointed at real people, animals,
   // weather and places, which no generative model can claim. `hybrid` tries it
   // first and only falls through to the generated chain when there is no match.
-  if (preferred === 'stock' || preferred === 'hybrid') {
+  // A MASTER job skips this whole branch: stock footage is not this film's render.
+  if ((preferred === 'stock' || preferred === 'hybrid') && !mayUse('stock')) {
+    if (preferred === 'stock') {
+      throw masterRefusal('comfyui', 'ang PREFERRED_RENDER_ENGINE=stock ay STOCK_FOOTAGE lamang');
+    }
+    console.log(`[RENDER] ${tier}: stock footage ay hindi tinatanggap, generated chain ang gagamitin.`);
+  } else if (preferred === 'stock' || preferred === 'hybrid') {
     if (!stockConfigured()) {
       if (preferred === 'stock') {
         throw new VideoBackendUnavailable(
@@ -253,7 +319,11 @@ async function generateRaw(
   }
 
   // No cost: a free image, animated with ffmpeg. No cloud spend, no account.
+  // Refused for a tier that will not accept still motion, before any work runs.
   if (preferred === 'motion') {
+    if (!mayUse('motion')) {
+      throw masterRefusal('comfyui', 'ang PREFERRED_RENDER_ENGINE=motion ay STILL_MOTION lamang');
+    }
     console.log('[RENDER] Using the free motion engine (image + ffmpeg).');
     return await generateMotionClip(input);
   }
@@ -298,15 +368,24 @@ async function generateRaw(
   }
 
   // The free engine is the first thing that catches a missing ComfyUI: it needs
-  // no key, no GPU and no account.
-  if (!strict && (await motionReady())) {
+  // no key, no GPU and no account. A tier that will not accept still motion must
+  // not take this branch at all: that is the numbered rule this policy exists for.
+  if (!strict && mayUse('motion') && (await motionReady())) {
     try {
       const { data } = await generateMotionClip(input);
-      console.log(`[RENDER] ComfyUI hindi available (${comfyFailure.reason}); libreng motion engine ang sumalo.`);
+      console.log(
+        `[RENDER] ComfyUI hindi available (${comfyFailure.reason}); libreng motion engine ang sumalo ` +
+          `(${tier} ay tumatanggap ng STILL_MOTION).`,
+      );
       return { data, engine: 'motion' };
     } catch (error: any) {
       console.log(`[RENDER] motion engine nabigo: ${error?.message || error}`);
     }
+  } else if (!strict && !mayUse('motion')) {
+    console.warn(
+      `[RENDER] ${tier}: hindi papayagan ang libreng motion engine (STILL_MOTION), ` +
+        `kahit na hindi available ang ComfyUI (${comfyFailure.reason}).`,
+    );
   }
 
   if (wanAllowed()) {
@@ -333,12 +412,20 @@ async function generateRaw(
       : `${comfyFailure.reason}; at walang FAL_KEY (Wan 2.2 fallback)`;
     const { detail, missing } = await strictRefusalDetail(cause);
     console.error(`[RENDER] STRICT_REAL_VIDEO_ONLY: ${detail}`);
+    // A MASTER job must report the block, not a generic outage and not a Wan 2.2
+    // weight complaint: what it needs is a generative backend, whatever the cause.
+    if (!mayUse('motion')) {
+      throw masterRefusal('comfyui o wan', cause);
+    }
     throw new ComfyWan22Unavailable(detail, missing);
   }
   if (wanConfigured() && !paidCloudAllowed()) {
     throw new VideoBackendUnavailable(`${comfyFailure.reason}; at ${PAID_BLOCKED_DETAIL}`);
   }
   if (!falKeyConfigured()) {
+    if (!mayUse('motion')) {
+      throw masterRefusal('comfyui o wan', `${comfyFailure.reason}; at walang FAL_KEY (Wan 2.2 fallback)`);
+    }
     throw new VideoBackendUnavailable(
       `${comfyFailure.reason}; at walang FAL_KEY (Wan 2.2 fallback)`,
     );

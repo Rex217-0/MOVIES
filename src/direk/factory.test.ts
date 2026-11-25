@@ -33,7 +33,7 @@ function makeFactory(overrides: {
       attempts.set(index, seen);
       // Fail only the first attempt, so a re-render can succeed.
       if (overrides.failOn?.includes(index) && seen === 1) throw new Error(`scene ${index} pumutok`);
-      return { data: Buffer.from(`scene-${index}`), seconds: FEATURE_SCENE_SECONDS, voiced: false };
+      return { data: Buffer.from(`scene-${index}`), seconds: FEATURE_SCENE_SECONDS, voiced: false, mediaClass: 'SYNTHETIC_MOTION' as const };
     },
     ffmpegAvailable: async () => overrides.ffmpeg ?? true,
     concat: async files => {
@@ -97,7 +97,7 @@ test('a scene reports its real pipeline stages as the renderer reaches them', as
         onStage?.(stage);
         seen[index].push(stage);
       }
-      return { data: Buffer.from(`scene-${index}`), seconds: FEATURE_SCENE_SECONDS, voiced: false };
+      return { data: Buffer.from(`scene-${index}`), seconds: FEATURE_SCENE_SECONDS, voiced: false, mediaClass: 'SYNTHETIC_MOTION' as const };
     },
     ffmpegAvailable: async () => true,
     concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
@@ -136,7 +136,7 @@ test('pause stops the batch; the scenes already done are kept', async () => {
   const factory = new FeatureFactory({
     renderScene: async ({ index }) => {
       if (index === 3) await new Promise<void>(r => { release = r; });
-      return { data: Buffer.from(`scene-${index}`), seconds: FEATURE_SCENE_SECONDS, voiced: false };
+      return { data: Buffer.from(`scene-${index}`), seconds: FEATURE_SCENE_SECONDS, voiced: false, mediaClass: 'SYNTHETIC_MOTION' as const };
     },
     ffmpegAvailable: async () => true,
     concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
@@ -298,7 +298,7 @@ test('stitchMovie reads a film back from the database when memory was cleared', 
   const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitchdb-'));
   const db = new FactoryDb(path.join(dbDir, 'factory.db'));
   const dbFactory = new FeatureFactory({
-    renderScene: async ({ index }) => ({ data: Buffer.from(`scene-${index}`), seconds: FEATURE_SCENE_SECONDS }),
+    renderScene: async ({ index }) => ({ data: Buffer.from(`scene-${index}`), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
     ffmpegAvailable: async () => true,
     concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
     db,
@@ -314,7 +314,7 @@ test('stitchMovie reads a film back from the database when memory was cleared', 
 
   // A fresh factory with an empty memory, same database: stitch still works.
   const cold = new FeatureFactory({
-    renderScene: async () => ({ data: Buffer.alloc(0) }),
+    renderScene: async () => ({ data: Buffer.alloc(0), mediaClass: 'SYNTHETIC_MOTION' as const }),
     ffmpegAvailable: async () => true,
     concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
     db,
@@ -325,3 +325,206 @@ test('stitchMovie reads a film back from the database when memory was cleared', 
   db.close();
 });
 
+
+test('a MASTER job blocks a still-motion clip instead of stitching it', async () => {
+  freshStore();
+  let calls = 0;
+  const factory = new FeatureFactory({
+    // The free engine catches a missing ComfyUI in production; this stands in
+    // for exactly that, so the factory sees a STILL_MOTION clip on a MASTER job.
+    renderScene: async () => {
+      calls += 1;
+      return { data: Buffer.from('still'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'STILL_MOTION' as const };
+    },
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+  });
+  const job = factory.create({ brief: 'Isang pelikulang MASTER.', qualityTier: 'MASTER' });
+  assert.equal(job.qualityTier, 'MASTER');
+  factory.start(job.id);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && job.status === 'running') {
+    await new Promise(r => setTimeout(r, 5));
+  }
+  assert.equal(job.status, 'done');
+  // Every scene was blocked, not failed, and none became a rendered scene.
+  assert.equal(job.blocked, FEATURE_SCENES);
+  assert.equal(job.rendered, 0);
+  assert.equal(job.failed, 0);
+  for (const scene of job.scenes) {
+    assert.equal(scene.status, 'blocked');
+    assert.match(scene.blockedReason ?? '', /MASTER/);
+    assert.match(scene.blockedReason ?? '', /STILL_MOTION/);
+    assert.equal(scene.mediaClass, undefined, 'a blocked scene has no accepted media class');
+  }
+  // Nothing was written to the vault, so no still clip can be reviewed as a film.
+  assert.equal(listAssets().length, 0);
+  // No film was stitched from an empty, blocked set.
+  assert.equal(job.film, undefined);
+  assert.ok(calls >= FEATURE_SCENES);
+});
+
+test('a MASTER job accepts a synthetic render and records what it is', async () => {
+  freshStore();
+  const factory = new FeatureFactory({
+    renderScene: async () => ({
+      data: Buffer.from('render'), seconds: FEATURE_SCENE_SECONDS,
+      mediaClass: 'SYNTHETIC_MOTION' as const, backend: 'comfyui',
+    }),
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+  });
+  const job = factory.create({ brief: 'Totoong render.', qualityTier: 'MASTER' });
+  factory.start(job.id);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && job.status === 'running') {
+    await new Promise(r => setTimeout(r, 5));
+  }
+  assert.equal(job.blocked, 0);
+  assert.equal(job.rendered, FEATURE_SCENES);
+  // The vault sidecar carries the provenance, so a review can tell what it is.
+  const assets = listAssets();
+  assert.equal(assets.length, FEATURE_SCENES);
+  for (const asset of assets) {
+    assert.equal(asset.mediaClass, 'SYNTHETIC_MOTION');
+    assert.equal(asset.qualityTier, 'MASTER');
+    assert.equal(asset.backend, 'comfyui');
+    assert.ok(asset.checksum && asset.checksum.length === 64);
+  }
+});
+
+test('a CANARY job still accepts the free still-motion engine', async () => {
+  freshStore();
+  const factory = new FeatureFactory({
+    renderScene: async () => ({
+      data: Buffer.from('still'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'STILL_MOTION' as const,
+    }),
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+  });
+  const job = factory.create({ brief: 'Mabilis na canary.' });
+  // No tier given means CANARY, which proves the pipeline without a GPU.
+  assert.equal(job.qualityTier, 'CANARY');
+  factory.start(job.id);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && job.status === 'running') {
+    await new Promise(r => setTimeout(r, 5));
+  }
+  assert.equal(job.blocked, 0);
+  assert.equal(job.rendered, FEATURE_SCENES);
+  assert.equal(listAssets().filter(a => a.mediaClass === 'STILL_MOTION').length, FEATURE_SCENES);
+});
+
+test('a re-render cannot smuggle a weaker clip past the tier', async () => {
+  freshStore();
+  let nextClass: 'SYNTHETIC_MOTION' | 'STILL_MOTION' = 'SYNTHETIC_MOTION';
+  const factory = new FeatureFactory({
+    renderScene: async () => ({
+      data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: nextClass,
+    }),
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+  });
+  const job = factory.create({ brief: 'Re-render test.', qualityTier: 'MASTER' });
+  factory.start(job.id);
+  let deadline = Date.now() + 5000;
+  while (Date.now() < deadline && job.status === 'running') {
+    await new Promise(r => setTimeout(r, 5));
+  }
+  const scene = job.scenes[0];
+  assert.equal(scene.status, 'rendered');
+
+  // The backend disappears; the free engine catches it. The re-render must block.
+  nextClass = 'STILL_MOTION';
+  await factory.rerender(job.id, scene.index);
+  assert.equal(scene.status, 'blocked');
+  assert.match(scene.blockedReason ?? '', /STILL_MOTION/);
+  // The previously accepted asset is still on record; nothing weaker replaced it.
+  assert.ok(scene.assetName, 'the earlier real render must not be deleted by a block');
+});
+
+test('the tier is persisted, so a restart cannot quietly downgrade the contract', async () => {
+  freshStore();
+  const db = new FactoryDb(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'db-')), 'f.db'));
+  const factory = new FeatureFactory({
+    renderScene: async () => ({
+      data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const,
+    }),
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+    db,
+  });
+  const job = factory.create({ brief: 'Persistensya.', qualityTier: 'MASTER' });
+  factory.start(job.id);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && job.status === 'running') {
+    await new Promise(r => setTimeout(r, 5));
+  }
+  const reloaded = db.load(job.id)!;
+  assert.equal(reloaded.qualityTier, 'MASTER');
+  assert.equal(reloaded.blocked, 0);
+  assert.equal(reloaded.scenes[0].mediaClass, 'SYNTHETIC_MOTION');
+  db.close();
+});
+
+test('a refusal that throws is still blocked, not a generic failure', async () => {
+  freshStore();
+  const factory = new FeatureFactory({
+    // The real path throws instead of returning a refused class: no engine at
+    // all is available for a MASTER job. That must read as blocked.
+    renderScene: async () => {
+      const error: any = new Error(
+        'BLOCKED: REQUIRED_MASTER_BACKEND_UNAVAILABLE Ang MASTER job ay nangangailangan ng generative na render.',
+      );
+      error.code = 'REQUIRED_MASTER_BACKEND_UNAVAILABLE';
+      error.name = 'MasterBackendBlocked';
+      error.tier = 'MASTER';
+      throw error;
+    },
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+  });
+  const job = factory.create({ brief: 'Walang GPU.', qualityTier: 'MASTER' });
+  factory.start(job.id);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && job.status === 'running') {
+    await new Promise(r => setTimeout(r, 5));
+  }
+  assert.equal(job.blocked, FEATURE_SCENES);
+  assert.equal(job.failed, 0, 'a policy refusal must never be counted as a failure');
+  assert.equal(job.rendered, 0);
+  for (const scene of job.scenes) {
+    assert.equal(scene.status, 'blocked');
+    assert.equal(scene.stage, 'blocked');
+    assert.match(scene.blockedReason ?? '', /REQUIRED_MASTER_BACKEND_UNAVAILABLE/);
+  }
+});
+
+test('rerender turns a thrown refusal into blocked too', async () => {
+  freshStore();
+  let refuse = false;
+  const factory = new FeatureFactory({
+    renderScene: async () => {
+      if (refuse) {
+        const error: any = new Error('BLOCKED: REQUIRED_MASTER_BACKEND_UNAVAILABLE walang ComfyUI');
+        error.code = 'REQUIRED_MASTER_BACKEND_UNAVAILABLE';
+        throw error;
+      }
+      return { data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const };
+    },
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+  });
+  const job = factory.create({ brief: 'Rerender.', qualityTier: 'MASTER' });
+  factory.start(job.id);
+  let deadline = Date.now() + 5000;
+  while (Date.now() < deadline && job.status === 'running') {
+    await new Promise(r => setTimeout(r, 5));
+  }
+  refuse = true;
+  await factory.rerender(job.id, 1);
+  assert.equal(job.scenes[0].status, 'blocked');
+  assert.equal(job.blocked, 1);
+  assert.equal(job.failed, 0);
+  assert.ok(job.scenes[0].assetName, 'the earlier accepted asset stays on record');
+});

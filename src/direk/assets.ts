@@ -6,9 +6,11 @@
  * each with a small JSON sidecar so we know what it is and where it came from.
  */
 
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createZip, type ZipEntry } from './zip.ts';
+import type { MediaClass, QualityTier } from './mediaClass.ts';
 
 export interface AssetMeta {
   id: string;
@@ -23,6 +25,17 @@ export interface AssetMeta {
   createdAt: string;
   /** Review state for the Staging Vault. Absent means it was never reviewed. */
   reviewStatus?: ReviewStatus;
+  /**
+   * What these bytes are. Absent on assets written before this field existed,
+   * which is why `listAssets` never invents a value for an old row.
+   */
+  mediaClass?: MediaClass;
+  /** The tier the job promised, so the vault can show what it has to satisfy. */
+  qualityTier?: QualityTier;
+  /** Which engine made it (`comfyui`, `wan`, `motion`, `stock`). */
+  backend?: string;
+  /** SHA-256 of the file, so a review can prove the bytes did not change. */
+  checksum?: string;
 }
 
 /** A render's place in the review flow: staging, published, or thrown out. */
@@ -48,6 +61,11 @@ function kindOf(ext: string): AssetMeta['kind'] {
   return 'other';
 }
 
+/** SHA-256 of the bytes, so a sidecar can prove the file on disk is the one reviewed. */
+export function checksumOf(data: Buffer): string {
+  return createHash('sha256').update(data).digest('hex');
+}
+
 function slug(text: string, fallback: string): string {
   const base = (text || '')
     .toLowerCase()
@@ -62,7 +80,16 @@ function slug(text: string, fallback: string): string {
 /** Save a buffer as an asset and return its metadata. */
 export function saveAsset(
   data: Buffer,
-  opts: { title: string; ext: string; mime: string; source: string; prompt?: string },
+  opts: {
+    title: string;
+    ext: string;
+    mime: string;
+    source: string;
+    prompt?: string;
+    mediaClass?: MediaClass;
+    qualityTier?: QualityTier;
+    backend?: string;
+  },
 ): AssetMeta {
   const dir = ensureDir();
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -80,6 +107,10 @@ export function saveAsset(
     prompt: opts.prompt,
     source: opts.source,
     createdAt: new Date().toISOString(),
+    mediaClass: opts.mediaClass,
+    qualityTier: opts.qualityTier,
+    backend: opts.backend,
+    checksum: checksumOf(data),
   };
   fs.writeFileSync(path.join(dir, `${name}${SIDECAR_SUFFIX}`), JSON.stringify(meta, null, 2), 'utf8');
   return meta;

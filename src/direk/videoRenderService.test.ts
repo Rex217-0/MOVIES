@@ -459,3 +459,83 @@ test('STRICT_REAL_VIDEO_ONLY=false still allows the free motion engine', async (
     assert.equal(out.engine, 'motion', 'the operator opted out, so the fallback runs');
   });
 });
+
+test('a MASTER job is refused before the free motion engine can touch it', async (t) => {
+  const poll = await startFakePollinations();
+  t.after(() => poll.close());
+  await withEnv({
+    PREFERRED_RENDER_ENGINE: 'comfyui',
+    COMFYUI_DISABLE: '1',
+    POLLINATIONS_URL: poll.url,
+    STRICT_REAL_VIDEO_ONLY: 'false',
+    FAL_KEY: '',
+  }, async () => {
+    // ComfyUI is off and the operator disabled strict mode, so the free engine
+    // is reachable. A CANARY job takes it; a MASTER job must not.
+    const canary = await renderVideo({ prompt: 'gubat', seconds: 2, qualityTier: 'CANARY' });
+    assert.equal(canary.engine, 'motion');
+    assert.equal(canary.mediaClass, 'STILL_MOTION');
+
+    await assert.rejects(
+      () => renderVideo({ prompt: 'gubat', seconds: 2, qualityTier: 'MASTER' }),
+      (error: any) => {
+        assert.equal(error.code, 'REQUIRED_MASTER_BACKEND_UNAVAILABLE');
+        assert.equal(error.name, 'MasterBackendBlocked');
+        assert.match(error.message, /STILL_MOTION/);
+        // It must never hand back a clip alongside the refusal.
+        assert.equal(error.data, undefined);
+        return true;
+      },
+    );
+  });
+});
+
+test('a MASTER job reports what the bytes are, so the caller can check it', async (t) => {
+  const comfy = await startMockComfyUI();
+  t.after(() => comfy.close());
+  const workflow = writeVideoWorkflow(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-')));
+  await withEnv({
+    PREFERRED_RENDER_ENGINE: 'comfyui',
+    COMFYUI_URL: comfy.url,
+    COMFYUI_VIDEO_WORKFLOW: workflow,
+    STRICT_REAL_VIDEO_ONLY: 'true',
+  }, async () => {
+    const out = await renderVideo({ prompt: 'isang render', qualityTier: 'MASTER' });
+    assert.equal(out.engine, 'comfyui');
+    assert.equal(out.mediaClass, 'SYNTHETIC_MOTION');
+    assert.equal(out.qualityTier, 'MASTER');
+  });
+});
+
+test('PREFERRED_RENDER_ENGINE=motion is refused outright for MASTER', async () => {
+  await withEnv({
+    PREFERRED_RENDER_ENGINE: 'motion',
+    STRICT_REAL_VIDEO_ONLY: 'false',
+  }, async () => {
+    await assert.rejects(
+      () => renderVideo({ prompt: 'x', seconds: 1, qualityTier: 'MASTER' }),
+      (error: any) => {
+        assert.equal(error.code, 'REQUIRED_MASTER_BACKEND_UNAVAILABLE');
+        assert.match(error.message, /PREFERRED_RENDER_ENGINE=motion/);
+        return true;
+      },
+    );
+  });
+});
+
+test('PREFERRED_RENDER_ENGINE=stock is refused for MASTER, since stock is not this render', async () => {
+  await withEnv({
+    PREFERRED_RENDER_ENGINE: 'stock',
+    PEXELS_API_KEY: 'test-key',
+    STRICT_REAL_VIDEO_ONLY: 'false',
+  }, async () => {
+    await assert.rejects(
+      () => renderVideo({ prompt: 'x', seconds: 1, qualityTier: 'MASTER' }),
+      (error: any) => {
+        assert.equal(error.code, 'REQUIRED_MASTER_BACKEND_UNAVAILABLE');
+        assert.match(error.message, /stock/i);
+        return true;
+      },
+    );
+  });
+});

@@ -33,6 +33,10 @@ import { MarketIntel } from './src/direk/market.ts';
 import { runConnector, connectorCatalog, allAssets } from './src/direk/connectors.ts';
 import { ffmpegAvailable, ffmpegPath, isPng, toPng } from './src/direk/render.ts';
 import { assetsDir, assetPath, reviewAsset, type ReviewStatus } from './src/direk/assets.ts';
+import {
+  QUALITY_TIERS, TIER_ACCEPTS, MEDIA_CLASSES, MASTER_BACKEND_UNAVAILABLE_CODE,
+  parseQualityTier, requiresMasterBackend, type QualityTier,
+} from './src/direk/mediaClass.ts';
 import { driveStatus, authUrl, redirectUri, exchangeCode } from './src/direk/gdrive.ts';
 import { DirekService, type ChatMessage } from './src/direk/service.ts';
 import { configuredTextProviders, generateTextWithFallback, sanitizeError } from './src/services/aiRouter.ts';
@@ -364,6 +368,10 @@ interface MediaItem {
   model: string;
   sourceImageUrl?: string;
   details?: string;
+  /** What the file is, so the gallery never presents a still pan as a render. */
+  media_class?: string;
+  /** The quality contract the request was made under. */
+  quality_tier?: string;
 }
 
 // Media gallery
@@ -687,6 +695,10 @@ Respond in strict JSON with:
 // ==========================================
 app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   const { prompt, aspect_ratio, duration, resolution } = req.body;
+  // Optional quality contract. Without one the request is CANARY, which accepts
+  // any real clip; a caller that needs a synthetic render must say MASTER, and
+  // then a still-motion fallback is refused rather than returned.
+  const qualityTier = parseQualityTier(req.body?.quality_tier ?? req.body?.qualityTier);
 
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     res.status(400).json({ error: 'Video prompt is required.' });
@@ -715,12 +727,13 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
   broadcastThought(`[VIDEO PIPELINE] Video request for: "${prompt.slice(0, 50)}..." [Aspect: ${validAspect}]`);
 
   try {
-    const { data, engine, editor, editNote, credit, sourceUrl } = await renderVideo({
+    const { data, engine, editor, editNote, credit, sourceUrl, mediaClass } = await renderVideo({
       prompt: formattedPrompt,
       negative: buildVeoStyleNegative(),
       aspectRatio: validAspect,
       resolution,
       seconds: Number.isFinite(Number(duration)) && Number(duration) > 0 ? Number(duration) : undefined,
+      qualityTier,
     });
     if (editNote) broadcastThought(`[VIDEO EDIT] ${editNote}`);
     const elapsedMs = Date.now() - startTime;
@@ -737,6 +750,8 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
       aspect_ratio: validAspect,
       timestamp: new Date().toLocaleTimeString(),
       model: engine,
+      media_class: mediaClass,
+      quality_tier: qualityTier,
       details: credit
         ? `${engine} render ng tunay na footage — ${credit}`
         : editor ? `${engine} render, edited with ${editor}` : `${engine} render`,
@@ -748,6 +763,8 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
       title: cleanPrompt(prompt),
       url: dataUrl,
       status: 'completed',
+      mediaClass,
+      qualityTier,
       reviewStatus: 'pending',
       createdAt: new Date().toISOString(),
     });
@@ -778,6 +795,21 @@ app.post('/api/pilot/video/generate', async (req: Request, res: Response) => {
         code: 'COMFYUI_WAN22_UNAVAILABLE',
         missing: Array.isArray(error.missing) ? error.missing : [],
         strict: true,
+      });
+      return;
+    }
+    // The quality policy refused: a MASTER job was offered a weaker engine and
+    // did not take it. Answer 422 — the request was understood and valid, but
+    // this deployment cannot meet it — instead of a 503 "no backend" that hides
+    // the fact that a backend ran and its output was not good enough.
+    if (error?.code === MASTER_BACKEND_UNAVAILABLE_CODE) {
+      res.status(422).json({
+        error: error.message,
+        code: MASTER_BACKEND_UNAVAILABLE_CODE,
+        state: 'BLOCKED',
+        tier: error.tier,
+        detail,
+        required: TIER_ACCEPTS[error.tier as QualityTier] ?? [],
       });
       return;
     }
@@ -1701,9 +1733,17 @@ const featureFactory = new FeatureFactory({
   // Every scene is a real ComfyUI render. When ComfyUI cannot render the shot
   // (unreachable, no video workflow) the scene fails with AI_UNAVAILABLE; the
   // factory never fabricates a placeholder clip.
-  renderScene: async ({ scene, index, onStage }) => {
-    const result = await renderFeatureScene(scene, { index, seconds: FEATURE_SCENE_SECONDS, onStage });
-    return { data: result.data, seconds: result.seconds, voiced: result.voiced };
+  renderScene: async ({ scene, index, qualityTier, onStage }) => {
+    const result = await renderFeatureScene(scene, {
+      index, seconds: FEATURE_SCENE_SECONDS, qualityTier, onStage,
+    });
+    return {
+      data: result.data,
+      seconds: result.seconds,
+      voiced: result.voiced,
+      mediaClass: result.mediaClass,
+      backend: result.backend,
+    };
   },
   ffmpegAvailable,
   // Local SQLite store for MovieJobs and SceneJobs (factory.db).
@@ -1716,6 +1756,10 @@ function featureView(job: ReturnType<FeatureFactory['create']>) {
     totalSeconds: FEATURE_TOTAL_SECONDS,
     filmClock: filmClock(job.renderedSeconds),
     totalClock: filmClock(FEATURE_TOTAL_SECONDS),
+    // What this tier will accept, so the UI can explain a blocked scene instead
+    // of showing a bare "failed".
+    tierAccepts: TIER_ACCEPTS[job.qualityTier],
+    requiresRealBackend: requiresMasterBackend(job.qualityTier),
   };
 }
 
@@ -1735,6 +1779,11 @@ app.get('/api/direk/feature/status', async (req: Request, res: Response) => {
     formats: FORMATS,
     narration_order: backends.order,
     ffmpeg: Boolean(ffmpegPath()),
+    // The quality policies the UI offers, and what each one accepts. Sent with
+    // the status so the client never hard-codes a tier list that can drift.
+    quality_tiers: QUALITY_TIERS,
+    tier_accepts: TIER_ACCEPTS,
+    media_classes: MEDIA_CLASSES,
     pilot: {
       configured: pilot.configured,
       reachable: pilot.reachable,
@@ -1780,6 +1829,7 @@ app.get('/api/direk/feature/scene-errors', async (req: Request, res: Response) =
 app.post('/api/direk/feature/create', async (req: Request, res: Response) => {
   const body = req.body as {
     brief?: string; title?: string; genre?: string; rating?: string; format?: string; mood?: string;
+    quality_tier?: string; qualityTier?: string;
   };
   const brief = typeof body.brief === 'string' ? body.brief.trim() : '';
   if (!brief) {
@@ -1789,8 +1839,11 @@ app.post('/api/direk/feature/create', async (req: Request, res: Response) => {
   const rating = (RATINGS as readonly string[]).includes(String(body.rating)) ? (body.rating as Rating) : undefined;
   const format = (FORMATS as readonly string[]).includes(String(body.format)) ? (body.format as FilmFormat) : undefined;
   const mood = (MOODS as string[]).includes(String(body.mood)) ? (body.mood as Mood) : undefined;
+  // An unknown tier is not silently promoted: parseQualityTier falls back to
+  // CANARY, the tier that accepts anything real, so a typo cannot demand MASTER.
+  const qualityTier = parseQualityTier(body.quality_tier ?? body.qualityTier);
   const opts: ConceptOptions = { brief, title: body.title, genre: body.genre, rating, format, mood };
-  const job = featureFactory.create(opts);
+  const job = featureFactory.create({ ...opts, qualityTier });
 
   // A richer breakdown from a text model when one is available; the built-in
   // 18-beat structure stands in when there is none.
