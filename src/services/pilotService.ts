@@ -162,7 +162,10 @@ export async function pilotStatus(): Promise<PilotStatus> {
     };
   } else {
     try {
-      const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(5000) });
+      const res = await fetch(`${url}/health`, {
+        signal: AbortSignal.timeout(5000),
+        headers: { 'ngrok-skip-browser-warning': '1' },
+      });
       kaggle = res.ok
         ? { configured: true, reachable: true, url, detail: 'Online ang Kaggle Pilot.' }
         : { configured: true, reachable: false, url, detail: `Sumagot ang Kaggle Pilot ng ${res.status} sa /health.` };
@@ -193,7 +196,12 @@ async function pilotPost(path: string, body: Record<string, unknown>): Promise<u
       'Hindi naka-set ang KAGGLE_PILOT_URL. I-set ito sa Cloudflare tunnel URL ng Kaggle Notebook.',
     );
   }
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    // ngrok's free tier serves an HTML warning page to browser-like clients;
+    // this header opts out. Harmless on every other host.
+    'ngrok-skip-browser-warning': '1',
+  };
   if (process.env.KAGGLE_PILOT_TOKEN) headers.Authorization = `Bearer ${process.env.KAGGLE_PILOT_TOKEN}`;
 
   let res: Response;

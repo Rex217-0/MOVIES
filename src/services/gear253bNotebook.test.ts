@@ -108,3 +108,37 @@ test('the notebook holds no secret', () => {
     assert.doesNotMatch(source, pattern);
   }
 });
+
+test('the notebook prefers the free permanent ngrok tunnel', () => {
+  const source = notebookSource();
+  // ngrok's free plan includes one static domain per account, so this is the
+  // option that needs no purchased domain. It has to come before the
+  // Cloudflare fallbacks, which either need a domain or change URL each run.
+  assert.ok(source.includes('NGROK_AUTHTOKEN'), 'NGROK_AUTHTOKEN is never read');
+  assert.ok(source.includes('ngrok-v3-stable-linux-amd64'), 'the ngrok binary is never fetched');
+  const ngrokAt = source.indexOf('if NGROK_AUTHTOKEN:');
+  const cloudflareAt = source.indexOf('cloudflared');
+  assert.ok(ngrokAt > 0, 'the ngrok branch is missing');
+  assert.ok(ngrokAt < cloudflareAt, 'ngrok must be tried before Cloudflare');
+});
+
+test('the ngrok authtoken never reaches argv', () => {
+  const cell = notebook().cells[8]!.source.join('');
+  // `ps aux` is world-readable on a shared host, so the token goes in through
+  // the environment only. A `--authtoken` flag would leak it to every user.
+  assert.doesNotMatch(cell, /--authtoken/);
+  assert.ok(cell.includes('ng_env["NGROK_AUTHTOKEN"]'), 'the token is not passed via the environment');
+});
+
+test('the tunnel cell reports whether the URL is permanent', () => {
+  const cell = notebook().cells[8]!.source.join('');
+  assert.ok(cell.includes('PERMANENTE'), 'the operator is never told the URL is stable');
+  assert.ok(cell.includes('PANSAMANTALA'), 'the operator is never warned the URL will change');
+});
+
+test('the app asks ngrok to skip its browser warning page', () => {
+  const src = fs.readFileSync(path.join(process.cwd(), 'src/services/pilotService.ts'), 'utf8');
+  // The free tier answers browser-like clients with an HTML warning instead of
+  // the API response, which would read as a broken worker.
+  assert.ok(src.includes('ngrok-skip-browser-warning'), 'the ngrok warning header is missing');
+});
