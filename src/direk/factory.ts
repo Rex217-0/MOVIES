@@ -144,10 +144,24 @@ export interface FactoryDeps {
 /** Which review states count as "done enough to stitch". */
 const STITCHABLE: SceneStatus[] = ['approved'];
 
+/**
+ * How long a running film keeps its claim without a renewal. A single scene can
+ * take a long time on CPU, so this is generous; its job is only to be finite, so
+ * a process that died stops holding the queue.
+ */
+const LEASE_TTL_MS = 30 * 60 * 1000;
+
 export class FeatureFactory {
   private jobs = new Map<string, FeatureJobView>();
   private queue: Promise<void> = Promise.resolve();
   private deps: FactoryDeps;
+  /**
+   * Who this process is on the queue ledger. Unique per factory instance, so a
+   * second process (or a restarted one) can tell its rows from a dead one's.
+   */
+  private holder = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  private draining = false;
+  private drainPromise: Promise<void> | undefined;
 
   constructor(deps: FactoryDeps) {
     this.deps = deps;
@@ -288,16 +302,125 @@ export class FeatureFactory {
   /**
    * Run the batch. Scenes are rendered one at a time, in order. A scene that
    * fails is logged, marked failed, and skipped; the batch continues.
+   *
+   * START goes through the ledger first. Only the claim holder runs the film, so
+   * pressing START on the same film twice cannot produce two batches racing for
+   * the same shots, and a second film waits its turn instead of interleaving
+   * scenes into the same GPU.
    */
   start(id: string): FeatureJobView | undefined {
     const job = this.jobs.get(id);
     if (!job || job.status === 'running') return job;
+
+    // Mark it running before the scheduler is kicked, so the very next poll sees
+    // the truth and never reports a film that is queued as still idle.
     job.status = 'running';
     job.error = undefined;
     job.endedAt = undefined;
     this.persist(job);
-    this.queue = this.queue.then(() => this.runBatch(job)).catch(() => {});
+
+    // No database means an in-memory build (tests, a bare engine): fall back to
+    // the promise chain, which is still one-at-a-time within this process.
+    if (!this.deps.db) {
+      this.queue = this.queue.then(() => this.runBatch(job)).catch(() => {});
+      return job;
+    }
+
+    // A finished, failed, or cancelled film is re-queued when START is pressed
+    // again: it keeps its rendered scenes and resumes at the first one missing.
+    this.deps.db.enqueue(id, { holder: this.holder, requeue: true });
+    this.scheduler();
     return job;
+  }
+
+  /**
+   * Drain the queue, one film at a time, until nothing is left to claim.
+   *
+   * This is the scheduler. It is a loop rather than a callback because the queue
+   * lives in SQLite: whoever calls it may be a fresh process after a crash, and
+   * the loop simply picks up whatever is queued next.
+   */
+  private scheduler(): void {
+    if (this.draining) return;
+    this.draining = true;
+    this.drainPromise = this.drain().finally(() => {
+      this.draining = false;
+    });
+  }
+
+  private async drain(): Promise<void> {
+    const db = this.deps.db;
+    if (!db) return;
+    for (;;) {
+      const claimed = db.claimNext(this.holder, { ttlMs: LEASE_TTL_MS });
+      if (!claimed) return;
+      const job = this.get(claimed.movieId) ?? db.load(claimed.movieId);
+      if (!job) {
+        // The queue row outlived its film: finish it so it cannot block the head
+        // of the queue forever.
+        db.finish(claimed.movieId, this.holder, 'failed');
+        continue;
+      }
+      this.jobs.set(job.id, job);
+      if (job.status === 'done' || job.status === 'error') {
+        db.finish(job.id, this.holder, 'done');
+        continue;
+      }
+      const lease = setInterval(() => {
+        db.renewLease(job.id, this.holder, { ttlMs: LEASE_TTL_MS });
+      }, Math.max(1000, Math.floor(LEASE_TTL_MS / 2)));
+      lease.unref?.();
+      try {
+        job.status = 'running';
+        job.error = undefined;
+        job.endedAt = undefined;
+        this.persist(job);
+        await this.runBatch(job);
+      } finally {
+        clearInterval(lease);
+        // `runBatch` decides the final status, so it is read back through the
+        // declared type rather than the 'running' TypeScript narrowed above.
+        const finalStatus = job.status as FeatureStatus;
+        // A cancelled film keeps its progress but stops being "running", and its
+        // queue row is already 'cancelled', so the ledger is left as it is.
+        if (db.isCancelled(job.id)) {
+          job.status = 'paused';
+          this.persist(job);
+          db.finish(job.id, this.holder, 'cancelled');
+        } else {
+          db.finish(job.id, this.holder, finalStatus === 'done' ? 'done' : 'failed');
+        }
+      }
+    }
+  }
+
+  /** Resolves when the scheduler has nothing left to run. Used by tests. */
+  whenIdle(): Promise<void> {
+    return this.drainPromise ?? Promise.resolve();
+  }
+
+  /**
+   * Pick up where a previous process stopped. Called once at boot.
+   *
+   * A crash cannot be prevented, so the recovery rule is what matters: a film
+   * that was `running` when the process died has a stale lease, and its scene
+   * that was mid-render is put back to `pending`. The film goes back to the head
+   * of the queue and renders again from that scene. Everything already rendered
+   * stays rendered, so a crash costs at most the one scene in flight.
+   *
+   * Nothing resumes on its own. Recovery only makes the work claimable again;
+   * the operator still presses START, so a boot loop cannot start a render loop.
+   */
+  recover(): string[] {
+    const db = this.deps.db;
+    if (!db) return [];
+    const recovered = db.recoverAbandoned();
+    for (const id of recovered) {
+      // Drop the stale in-memory copy so the next read comes from the database.
+      this.jobs.delete(id);
+      console.error(`[FILM RECOVERY] "${id}" was interrupted; its unfinished scene is pending again.`);
+    }
+    return recovered;
   }
 
   pause(id: string): FeatureJobView | undefined {
@@ -305,6 +428,9 @@ export class FeatureFactory {
     if (!job || job.status !== 'running') return job;
     job.status = 'paused';
     this.persist(job);
+    // The scene stays completed; only the batch stops. Cancelling at the ledger
+    // level is what tells the running loop to stop after the current scene.
+    this.deps.db?.requestCancel(id);
     return job;
   }
 
@@ -326,8 +452,21 @@ export class FeatureFactory {
     const plan = planExecution('video_render');
     for (let i = 0; i < job.scenes.length; i++) {
       if (job.status !== 'running') return; // paused or stopped
+      // A stop asked for from another process is visible only in the ledger, so
+      // check it per scene: the scene in flight finishes, nothing new starts.
+      if (this.deps.db?.isCancelled(job.id)) {
+        job.status = 'paused';
+        this.persist(job);
+        return;
+      }
       const state = job.scenes[i];
       if (state.status === 'rendered' || state.status === 'approved') continue;
+      // Claim the shot before rendering it. A scene already claimed by someone
+      // else is skipped, not rendered twice into the same asset slot.
+      const claimed = this.deps.db
+        ? this.deps.db.claimScene(job.id, state.index, this.holder, { ttlMs: LEASE_TTL_MS })
+        : true;
+      if (!claimed) continue;
       job.currentScene = state.index;
       state.status = 'rendering';
       state.stage = 'rendering';
@@ -420,6 +559,10 @@ export class FeatureFactory {
         state.error = error?.message || 'Nabigo ang render.';
         state.endedAt = Date.now();
         console.error(`[FILM ERROR] Eksena ${state.index} ("${state.heading}") nabigo: ${state.error}`);
+      } finally {
+        // Hand the shot back whether it rendered or failed: a lease kept past the
+        // attempt would make the scene unclaimable by the next run.
+        this.deps.db?.releaseScene(job.id, state.index);
       }
       this.recompute(job);
       this.persist(job);
