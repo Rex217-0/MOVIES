@@ -80,6 +80,19 @@ function extractImage(interaction: any): Buffer | null {
  * Generate one image from a prompt. Throws a clear error when no backend is
  * available, so the caller can fall back to a text-only poster.
  */
+/**
+ * How long a throttled Pollinations image call asks us to wait, or null when the
+ * answer is not a rate limit. The free tier allows roughly one picture every
+ * 15-45 seconds per IP, so the hint matters more than a fixed backoff.
+ */
+function pollinationsRetryMs(status: number, body: string): number | null {
+  if (status !== 402 && status !== 429 && status !== 503) return null;
+  const match = /retry after (\d+)/i.exec(body) || /"retry_after"\s*:\s*(\d+)/i.exec(body);
+  const seconds = match ? Number(match[1]) : 20;
+  if (!Number.isFinite(seconds) || seconds > 90) return null;
+  return Math.max(1000, seconds * 1000 + 500);
+}
+
 export async function imagine(prompt: string): Promise<GeneratedImage> {
   const enhanced = buildVeoStylePrompt(prompt);
   const backend = await imageBackend();
@@ -120,7 +133,18 @@ export async function imagine(prompt: string): Promise<GeneratedImage> {
         countExternalCall();
         const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
         if (!res.ok) {
+          // The keyless image tier throttles per IP and answers 402/429 with a
+          // "retry after Ns" hint. A film needs one picture per scene, so a
+          // 1.5s backoff cannot clear it — scene 1 died on exactly this while
+          // scene 2 rendered fine. Honour the hint when it is short enough to
+          // be worth waiting for.
           last = `Pollinations returned ${res.status}`;
+          const hint = await res.text().catch(() => '');
+          const wait = pollinationsRetryMs(res.status, hint);
+          if (wait !== null) {
+            if (attempt < 3) await new Promise(r => setTimeout(r, wait));
+            continue;
+          }
         } else {
           const raw = Buffer.from(await res.arrayBuffer());
           if (raw.length >= 1024) {

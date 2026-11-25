@@ -373,3 +373,45 @@ test('an old row without accounting loads with none claimed', () => {
   assert.equal(loaded.scenes[0].accounting, undefined, 'a pending scene has not spent anything yet');
   db.close();
 });
+
+test('the connection is configured to wait for a competing writer', () => {
+  // Scene renders finish from more than one process against one file, and a bare
+  // WAL connection throws SQLITE_BUSY instantly. `busy_timeout` is what turns
+  // that into a wait, so it must be set on every connection this class opens.
+  tmpStore();
+  const db = tmpDb();
+  const row = (db as any).db.prepare('PRAGMA busy_timeout').get() as { timeout: number };
+  assert.ok(row.timeout >= 1000, `busy_timeout was ${row.timeout}`);
+  const journal = (db as any).db.prepare('PRAGMA journal_mode').get() as { journal_mode: string };
+  assert.equal(String(journal.journal_mode).toLowerCase(), 'wal');
+  db.close();
+});
+
+test('releasing a failed holder makes the film claimable again at once', () => {
+  // A batch that throws keeps its claim unless it is handed back, and START
+  // refuses to re-enter a running film. Waiting for the lease to expire is the
+  // "stuck at 0%" the operator sees; this is the release that avoids it.
+  tmpStore();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-'));
+  const db = new FactoryDb(path.join(dir, 'factory.db'));
+  const factory = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
+    ffmpegAvailable: async () => true,
+    db,
+  });
+  const job = factory.create({ brief: 'Isang horror sa gubat.' });
+  db.enqueue(job.id);
+
+  assert.equal(db.claimNext('dead-holder', { ttlMs: 60 * 60 * 1000 })?.movieId, job.id);
+  assert.equal(db.claimScene(job.id, 1, 'dead-holder'), true);
+  // The claim is live, so nobody else can have it yet.
+  assert.equal(db.claimNext('next-holder', { ttlMs: 1000 }), undefined);
+
+  assert.deepEqual(db.releaseHeld('dead-holder'), [job.id]);
+
+  // The film is back in the queue, and the half-rendered shot is pending again
+  // so it is re-rendered rather than skipped.
+  assert.equal(db.claimNext('next-holder', { ttlMs: 1000 })?.movieId, job.id);
+  assert.deepEqual(db.pendingScenes(job.id).includes(1), true);
+  db.close();
+});

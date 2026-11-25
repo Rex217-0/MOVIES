@@ -5,8 +5,9 @@
  * Keys are read from `process.env` at call time, never stored in source, and
  * every error message is scrubbed before it can reach a log or an HTTP body.
  * Provider order is Cloudflare AI Gateway (only when CF_ACCOUNT_ID and
- * CF_API_TOKEN are both set), then Gemini, DeepSeek, Claude, and finally local
- * Ollama; the first one that answers wins. When none can, the caller gets `AiUnavailableError`, which
+ * CF_API_TOKEN are both set), then Gemini, DeepSeek, Claude, then Pollinations
+ * (no key, no GPU, no account — the reason a deployment with no paid key can
+ * still write), and finally local Ollama; the first one that answers wins. When none can, the caller gets `AiUnavailableError`, which
  * the HTTP layer turns into an honest 503 — nothing is ever fabricated.
  */
 
@@ -29,7 +30,13 @@ export interface ChatMessage {
   content: string;
 }
 
-export type TextProvider = 'cloudflare' | 'gemini' | 'deepseek' | 'claude' | 'ollama';
+export type TextProvider =
+  | 'cloudflare'
+  | 'gemini'
+  | 'deepseek'
+  | 'claude'
+  | 'pollinations'
+  | 'ollama';
 
 export interface RouterResult {
   text: string;
@@ -97,6 +104,7 @@ export function configuredTextProviders(): TextProvider[] {
   if (apiKey('GEMINI_API_KEY')) providers.push('gemini');
   if (apiKey('DEEPSEEK_API_KEY')) providers.push('deepseek');
   if (apiKey('ANTHROPIC_API_KEY')) providers.push('claude');
+  if (process.env.POLLINATIONS_TEXT_DISABLE !== '1') providers.push('pollinations');
   if (ollamaEnabled()) providers.push('ollama');
   return providers;
 }
@@ -295,6 +303,75 @@ async function callOllama(messages: ChatMessage[], opts: RouterOptions): Promise
   return { text, provider: 'ollama', model };
 }
 
+/**
+ * Pollinations text: the one provider that needs no key, no GPU and no account.
+ *
+ * It exists here because the paid providers fail in ways a deployment cannot
+ * fix from code — an invalid Gemini key and an exhausted Anthropic balance both
+ * answered HTTP 400, and with nothing behind them the whole factory returned
+ * 503 while /api/health still said text was available. This is the floor: if a
+ * free model can write a mediocre screenplay, the app can still make a film.
+ *
+ * Quality is honestly lower than Gemini's, which is why it sits after every
+ * keyed provider and before local Ollama.
+ */
+async function callPollinations(messages: ChatMessage[], opts: RouterOptions): Promise<RouterResult> {
+  const model = (process.env.POLLINATIONS_TEXT_MODEL || 'openai').trim();
+  const { system, turns } = splitSystem(messages);
+  const payload = {
+    model,
+    // Pollinations takes the system turn as a message, like OpenAI does.
+    messages: system ? [{ role: 'system', content: system }, ...turns] : turns,
+    temperature: opts.temperature ?? 0.7,
+    ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
+    ...(opts.json ? { response_format: { type: 'json_object' } } : {}),
+  };
+
+  // The free tier answers one request per 45 seconds per IP and rejects the
+  // rest with HTTP 402 FREE_LIMIT plus a "Retry after Ns" hint. A film needs
+  // several completions (script, bible, scene breakdown), so treating that as a
+  // hard failure would make the free path unusable. Wait the hint out, then
+  // retry — bounded, so a real outage still surfaces as an error.
+  const maxTries = Number(process.env.POLLINATIONS_TEXT_RETRIES) || 3;
+  let lastDetail = '';
+  for (let attempt = 1; attempt <= maxTries; attempt++) {
+    const res = await fetch(`${pollinationsTextUrl()}/openai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(120000),
+    });
+
+    if (res.ok) {
+      const data = (await res.json()) as any;
+      const text = String(data?.choices?.[0]?.message?.content ?? '').trim();
+      if (!text) throw new Error('Pollinations returned an empty response');
+      return { text, provider: 'pollinations', model: `pollinations/${model}` };
+    }
+
+    const detail = await readErrorBody(res);
+    lastDetail = `Pollinations HTTP ${res.status}${detail}`;
+    const waitMs = rateLimitWaitMs(res.status, detail);
+    if (waitMs === null || attempt === maxTries) break;
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
+  throw new Error(lastDetail);
+}
+
+/** How long a rate-limited answer asks us to wait, or null when it is not a rate limit. */
+function rateLimitWaitMs(status: number, detail: string): number | null {
+  if (status !== 402 && status !== 429) return null;
+  const match = /retry after (\d+)/i.exec(detail) || /"retry_after"\s*:\s*(\d+)/i.exec(detail);
+  const seconds = match ? Number(match[1]) : 45;
+  // A hint far beyond a request budget means the limit will not clear in time.
+  if (!Number.isFinite(seconds) || seconds > 120) return null;
+  return Math.max(1000, seconds * 1000 + 500);
+}
+
+function pollinationsTextUrl(): string {
+  return (process.env.POLLINATIONS_TEXT_URL || 'https://text.pollinations.ai').trim().replace(/\/$/, '');
+}
+
 async function callCloudflare(messages: ChatMessage[], opts: RouterOptions): Promise<RouterResult> {
   const { text, model } = await cloudflareChat(messages, opts);
   return { text, provider: 'cloudflare', model };
@@ -305,6 +382,7 @@ const CALLERS: Record<TextProvider, (m: ChatMessage[], o: RouterOptions) => Prom
   gemini: callGemini,
   deepseek: callDeepSeek,
   claude: callClaude,
+  pollinations: callPollinations,
   ollama: callOllama,
 };
 
@@ -313,6 +391,7 @@ const LABELS: Record<TextProvider, string> = {
   gemini: 'Gemini',
   deepseek: 'DeepSeek',
   claude: 'Claude',
+  pollinations: 'Pollinations',
   ollama: 'Ollama',
 };
 

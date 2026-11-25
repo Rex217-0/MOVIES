@@ -293,6 +293,12 @@ export class FactoryDb {
   constructor(file: string = factoryDbPath()) {
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode = WAL;');
+    // WAL lets readers and one writer coexist, but a second writer still fails
+    // immediately with SQLITE_BUSY. Scene renders finish concurrently, and the
+    // film crashed outright on `database is locked` in `finish()` after
+    // rendering real footage. Wait for the lock instead of dying on it.
+    this.db.exec('PRAGMA busy_timeout = 10000;');
+    this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec(SCHEMA);
     migrate(this.db);
   }
@@ -675,6 +681,46 @@ export class FactoryDb {
         .run(row.movie_id, ORG_ID);
     }
     return stale.map(r => r.movie_id);
+  }
+
+  /**
+   * Give back every film this holder still holds.
+   *
+   * Called when a batch throws: the claim was taken for a run that will not
+   * finish, and keeping it would leave the film unclaimable until it expires.
+   * The film goes back to the queue so START can pick it up immediately.
+   */
+  releaseHeld(holder: string): string[] {
+    if (!holder) return [];
+    const held = this.db
+      .prepare(`SELECT movie_id FROM movie_leases WHERE org_id = ? AND holder = ? AND status = 'running'`)
+      .all(ORG_ID, holder) as { movie_id: string }[];
+    if (held.length === 0) return [];
+    for (const row of held) {
+      this.db
+        .prepare(
+          `UPDATE movie_leases
+              SET status = 'queued', holder = '', started_at = NULL, renewed_at = NULL, expires_at = NULL
+            WHERE movie_id = ? AND org_id = ? AND holder = ?`,
+        )
+        .run(row.movie_id, ORG_ID, holder);
+      // The scene in flight did not finish, so it goes back to pending and its
+      // lease is cleared: otherwise the next claim would skip the one shot that
+      // actually needs re-rendering.
+      this.db
+        .prepare(
+          `UPDATE scene_jobs
+              SET status = 'pending', stage = 'scripting', percent = 0,
+                  lease_holder = NULL, lease_expires_at = NULL, started_at = NULL, ended_at = NULL
+            WHERE movie_id = ? AND org_id = ? AND status = 'rendering' AND lease_holder = ?`,
+        )
+        .run(row.movie_id, ORG_ID, holder);
+      // Not 'running' any more, or the UI shows a bar that never moves.
+      this.db
+        .prepare(`UPDATE movie_jobs SET status = 'paused' WHERE id = ? AND org_id = ? AND status = 'running'`)
+        .run(row.movie_id, ORG_ID);
+    }
+    return held.map(r => r.movie_id);
   }
 
   /**

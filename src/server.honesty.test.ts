@@ -25,8 +25,14 @@ function startServer(env: Record<string, string>) {
       LANSA_FISH_TOKEN: '',
       DIREK_CONFIG: path.join(repoRoot, '.no-such-config.json'),
       // Force the no-backend path: this test is about what happens when no text
-      // model is configured, not about a developer's local Ollama.
+      // model is configured, not about a developer's local Ollama, and not about
+      // the keyless free provider that is on unless explicitly disabled.
       OLLAMA_DISABLE: '1',
+      POLLINATIONS_TEXT_DISABLE: '1',
+      // Wikimedia Commons needs no key, so it is on by default and its search
+      // budget alone is 45s. This test asks what a *keyless* install answers;
+      // a live stock search would make the honest 503 take over a minute.
+      COMMONS_DISABLE: '1',
       // No fal.ai either: this test checks the no-backend 503 path.
       FAL_KEY: '',
       OPENCUT_ENDPOINT: '',

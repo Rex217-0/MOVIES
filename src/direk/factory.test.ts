@@ -735,3 +735,55 @@ test('a job row written before the declaration existed loads as ungrounded', asy
   assert.equal(loaded.originality.groundingUsed, false);
   assert.equal(loaded.originality.referenceCount, 0);
 });
+
+test('the scheduler survives a database error and hands the film back', async () => {
+  // A "database is locked" thrown from the scheduler used to become an
+  // unhandled rejection, and that killed the server mid-render. The film also
+  // stayed `running` with a live lease, and START refuses to re-enter a running
+  // film, so the UI sat at 0% until the lease expired. Both halves are checked
+  // here: nothing escapes, and the film is claimable again straight away.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'schedlock-'));
+  process.env.DIREK_ASSETS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'schedassets-'));
+  process.env.DIREK_RENDERS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'schedrenders-'));
+  const db = new FactoryDb(path.join(dir, 'factory.db'));
+  const factory = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
+    ffmpegAvailable: async () => true,
+    db,
+  });
+  const job = factory.create({ brief: 'Isang horror sa gubat.' });
+
+  const realClaim = db.claimNext.bind(db);
+  let thrown = 0;
+  db.claimNext = (() => {
+    thrown++;
+    // Not a lock error: a locked connection could not release the lease either.
+    throw new Error('disk I/O error');
+  }) as typeof db.claimNext;
+
+  const unhandled: unknown[] = [];
+  const onUnhandled = (e: unknown) => unhandled.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    factory.start(job.id);
+    await new Promise(r => setTimeout(r, 120));
+    assert.equal(thrown, 1, 'the scheduler should have tried to claim');
+    assert.deepEqual(unhandled, [], 'the error must be caught, not left unhandled');
+
+    // The failed run handed the film back instead of holding it.
+    assert.equal(factory.get(job.id)!.status, 'paused');
+    assert.equal(db.queue().filter(q => q.status === 'running').length, 0, 'the failed claim must be released');
+
+    // And the same film can be started again, for real.
+    db.claimNext = realClaim as typeof db.claimNext;
+    factory.start(job.id);
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && factory.get(job.id)!.status === 'running') {
+      await new Promise(r => setTimeout(r, 5));
+    }
+    assert.notEqual(factory.get(job.id)!.status, 'running');
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+    db.close();
+  }
+});

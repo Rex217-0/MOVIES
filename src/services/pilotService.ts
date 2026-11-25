@@ -35,6 +35,7 @@
 
 import { ollamaStatus, ollamaUrl, ollamaModel } from '../direk/llm.ts';
 import { generateTextWithFallback, type TextProvider } from './aiRouter.ts';
+import { screenplayReport } from './tagalogGate.ts';
 
 /** The honest error code every Pilot failure carries. */
 export const PILOT_UNAVAILABLE = 'PILOT_UNAVAILABLE';
@@ -47,7 +48,14 @@ export const PILOT_MODEL = 'kaggle-pilot';
  * the router can reach. `local-ollama` keeps its old name because the UI and the
  * status badge already speak it.
  */
-export type PilotSource = 'kaggle' | 'local-ollama' | 'cloudflare' | 'gemini' | 'deepseek' | 'claude';
+export type PilotSource =
+  | 'kaggle'
+  | 'local-ollama'
+  | 'cloudflare'
+  | 'gemini'
+  | 'deepseek'
+  | 'claude'
+  | 'pollinations';
 
 /** Map a router provider onto the name the Pilot reports. */
 function sourceFor(provider: TextProvider): PilotSource {
@@ -336,26 +344,63 @@ async function kaggleScenes(script: string): Promise<PilotScene[]> {
 
 const DIREK_SYSTEM = [
   'Ikaw si Direk, isang Filipino film director at screenwriter.',
-  'Sumagot sa Filipino/Taglish. Isulat ang buong screenplay nang detalyado:',
-  'pamagat, logline, at bawat eksena (heading, visual, narration/voice-over).',
+  'Sumagot sa Filipino/Taglish.',
+  'Gamitin ang eksaktong anyo na ito, at huwag ibahin ang mga salita:',
+  'PAMAGAT: <pamagat>',
+  'EKSENA 1: <pook> - <oras>',
+  'VISUAL: <isang linya>',
+  'NARRATION: <isang linya>',
+  '(ulitin ang EKSENA/VISUAL/NARRATION hanggang matapos ang kuwento)',
+  'Isulat sa EKSENA, hindi SCENE. Tapusin ang huling pangungusap; huwag putulin.',
   'Huwag mag-imbento ng quote o diyalogo para sa totoong tao.',
-].join(' ');
+].join('\n');
 
 /**
  * A screenplay from whichever text provider the router can reach. Ollama is the
  * free default, but a configured Gemini, DeepSeek, or Claude key is used first.
  */
+const SCRIPT_ATTEMPTS = 3;
+
 async function localScript(brief: string): Promise<PilotAnswer<string>> {
-  const result = await generateTextWithFallback(
-    [
-      { role: 'system', content: DIREK_SYSTEM },
-      { role: 'user', content: `Brief: ${brief}\n\nIsulat ang buong screenplay.` },
-    ],
-    { temperature: 0.7 },
-  );
-  const script = result.text.trim();
-  if (!script) throw new Error('Walang nilabas ang text provider.');
-  return { value: script, source: sourceFor(result.provider), model: result.model };
+  // A free model does not always produce a filmable script: measured runs passed
+  // the gate roughly one time in two or three. One rejected draft is not a
+  // reason to answer 503, so ask again with a warmer temperature and keep the
+  // best-scoring attempt. The gate itself is never relaxed to make this pass.
+  let best: { script: string; report: ReturnType<typeof screenplayReport>; result: any } | null = null;
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < SCRIPT_ATTEMPTS; attempt++) {
+    const result = await generateTextWithFallback(
+      [
+        { role: 'system', content: DIREK_SYSTEM },
+        { role: 'user', content: `Brief: ${brief}\n\nIsulat ang buong screenplay.` },
+      ],
+      // A full screenplay runs to thousands of tokens. Without a generous cap the
+      // free provider stops mid-sentence, and a truncated film is a broken film.
+      { temperature: 0.7 + attempt * 0.1, maxTokens: 4096 },
+    );
+    const script = result.text.trim();
+    if (!script) {
+      lastError = new Error('Walang nilabas ang text provider.');
+      continue;
+    }
+
+    const report = screenplayReport(script);
+    if (report.ok) return { value: script, source: sourceFor(result.provider), model: result.model };
+
+    if (!best || report.score > best.report.score) best = { script, report, result };
+    lastError = new Error(
+      `Bagsak sa tagutol ang screenplay ng ${result.model} (puntos ${report.score}): ${report.issues.join('; ')}`,
+    );
+  }
+
+  // Nothing cleared the gate. Say so plainly, and report the best attempt so the
+  // operator can see how close it came instead of a bare failure.
+  const detail = lastError?.message ?? 'Walang screenplay.';
+  if (best) {
+    throw new Error(`${detail} [pinakamahusay sa ${SCRIPT_ATTEMPTS} subok: puntos ${best.report.score}]`);
+  }
+  throw new Error(detail);
 }
 
 /** A character bible from whichever text provider the router can reach. */
@@ -368,7 +413,7 @@ async function localBible(script: string): Promise<PilotAnswer<string>> {
         content: `Ito ang screenplay:\n\n${script}\n\nIsulat ang character bible: pangalan, itsura, ugali, boses ng bawat karakter.`,
       },
     ],
-    { temperature: 0.6 },
+    { temperature: 0.6, maxTokens: 3072 },
   );
   const bible = result.text.trim();
   if (!bible) throw new Error('Walang nilabas ang text provider.');
@@ -385,7 +430,7 @@ async function localScenes(script: string): Promise<PilotAnswer<PilotScene[]>> {
       },
       { role: 'user', content: `Hatiin sa 18 eksena ang screenplay na ito:\n\n${script}` },
     ],
-    { temperature: 0.3, json: true },
+    { temperature: 0.3, json: true, maxTokens: 4096 },
   );
   let payload: unknown = {};
   try {
@@ -422,11 +467,15 @@ async function dualPilot<T>(
   try {
     return await local();
   } catch (error: any) {
+    // Always report why the local path failed. Replacing it with "walang Ollama"
+    // hid real failures behind a wrong reason: a gate rejection and a rate limit
+    // both surfaced as "no Ollama running", which sent debugging the wrong way.
     const status = await ollamaStatus();
-    const localDetail = status.reachable
-      ? `Nabigo ang text provider (${error?.message || 'error'}).`
-      : `Wala ring local na Ollama sa ${status.url} (${status.error || 'hindi maabot'}).`;
-    throw new PilotUnavailable(`${kaggleDetail} ${localDetail}`);
+    const reason = error?.message || 'error';
+    const ollamaNote = status.reachable
+      ? ''
+      : ` (Walang local na Ollama sa ${status.url}: ${status.error || 'hindi maabot'}.)`;
+    throw new PilotUnavailable(`${kaggleDetail} Nabigo ang text provider: ${reason}${ollamaNote}`);
   }
 }
 

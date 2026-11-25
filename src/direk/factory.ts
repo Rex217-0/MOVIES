@@ -432,9 +432,52 @@ export class FeatureFactory {
   private scheduler(): void {
     if (this.draining) return;
     this.draining = true;
-    this.drainPromise = this.drain().finally(() => {
-      this.draining = false;
-    });
+    // Without this catch, one bad film took the whole server down: a SQLite
+    // "database is locked" thrown from `finish()` became an unhandled rejection
+    // and killed the process mid-render, losing every other queued film.
+    this.drainPromise = this.drain()
+      .catch(error => {
+        console.error('[direk] scheduler stopped:', error);
+        this.abandonAfterFailure(error);
+      })
+      .finally(() => {
+        this.draining = false;
+      });
+  }
+
+  /**
+   * Hand back what a failed drain was holding.
+   *
+   * `drain()` claims a film before it runs it, and the claim is only released
+   * when the batch finishes. If the batch throws instead, the film keeps a live
+   * lease and stays `running`: START refuses to re-enter a running film, so the
+   * UI sat at 0% until the lease expired. Releasing the claim here lets the next
+   * START (or the next process) pick the film up straight away.
+   */
+  private abandonAfterFailure(error: unknown): void {
+    // The in-memory view is what the UI polls, and `start()` refuses to re-enter
+    // a running film. Leaving it `running` after the batch is gone is the bar
+    // that never moves, whether or not a database is wired in.
+    for (const job of this.jobs.values()) {
+      if (job.status === 'running') {
+        job.status = 'paused';
+        job.error = (error as any)?.message || 'Nahinto ang scheduler.';
+        this.persist(job);
+      }
+    }
+    const db = this.deps.db;
+    if (!db) return;
+    const locked = (error as any)?.errcode === 5 || (error as any)?.code === 'ERR_SQLITE_ERROR';
+    if (locked) {
+      // The connection cannot write right now, so the release itself would fail.
+      // The lease still expires, and `recoverAbandoned` clears it on next boot.
+      return;
+    }
+    try {
+      db.releaseHeld(this.holder);
+    } catch (releaseError) {
+      console.error('[direk] could not release the failed film:', releaseError);
+    }
   }
 
   private async drain(): Promise<void> {
@@ -470,14 +513,20 @@ export class FeatureFactory {
         // `runBatch` decides the final status, so it is read back through the
         // declared type rather than the 'running' TypeScript narrowed above.
         const finalStatus = job.status as FeatureStatus;
-        // A cancelled film keeps its progress but stops being "running", and its
-        // queue row is already 'cancelled', so the ledger is left as it is.
-        if (db.isCancelled(job.id)) {
-          job.status = 'paused';
-          this.persist(job);
-          db.finish(job.id, this.holder, 'cancelled');
-        } else {
-          db.finish(job.id, this.holder, finalStatus === 'done' ? 'done' : 'failed');
+        try {
+          // A cancelled film keeps its progress but stops being "running", and
+          // its queue row is already 'cancelled', so the ledger is left as is.
+          if (db.isCancelled(job.id)) {
+            job.status = 'paused';
+            this.persist(job);
+            db.finish(job.id, this.holder, 'cancelled');
+          } else {
+            db.finish(job.id, this.holder, finalStatus === 'done' ? 'done' : 'failed');
+          }
+        } catch (error) {
+          // The lease keeps its old expiry, so boot-time recovery reclaims this
+          // film. Losing the bookkeeping must not lose the rest of the queue.
+          console.error(`[direk] could not close lease for ${job.id}:`, error);
         }
       }
     }
