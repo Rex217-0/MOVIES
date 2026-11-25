@@ -711,7 +711,51 @@ export function assetDownloadUrl(name: string): string {
 // Render Vault (staging review)
 // ---------------------------------------------------------------------------
 
+/** The three states the UI used before dispositions existed. Still derived server-side. */
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
+
+/** The seven review outcomes. Only APPROVED_MASTER ships into a film. */
+export type VaultDisposition =
+  | 'PENDING_REVIEW'
+  | 'APPROVED_MASTER'
+  | 'APPROVED_PREVIEW_ONLY'
+  | 'REFINE'
+  | 'REJECTED_TECHNICAL'
+  | 'REJECTED_CREATIVE'
+  | 'SUPERSEDED';
+
+/** What was drawn from the reference catalog, and what deliberately was not. */
+export interface OriginalityProvenance {
+  groundingUsed: boolean;
+  groundingGenre?: string;
+  referenceCount: number;
+  groundingPurpose: string[];
+  notDerived: string[];
+  humanReviewed: boolean;
+  declaration: string;
+}
+
+/** Everything the vault knows about how an asset came to exist. */
+export interface AssetProvenanceItem {
+  engine?: string;
+  backend?: string;
+  mediaClass?: string;
+  qualityTier?: string;
+  modelOrWorkflowVersion?: string;
+  promptHash?: string;
+  seed?: number;
+  seeds?: number[];
+  resolution?: string;
+  framesDuration?: { frames?: number; seconds?: number; fps?: number };
+  audioState?: 'voiced' | 'silent';
+  checksum?: string;
+  createdAt?: string;
+  parentAssetId?: string;
+  replacementAssetId?: string;
+  reviewer?: string;
+  reviewedAt?: string;
+  reviewReason?: string;
+}
 
 export interface AssetItem {
   id: string;
@@ -725,6 +769,26 @@ export interface AssetItem {
   source: string;
   createdAt: string;
   reviewStatus?: ReviewStatus;
+  disposition?: VaultDisposition;
+  /** Flat copies of the sidecar's render facts, as the API returns them. */
+  backend?: string;
+  mediaClass?: string;
+  qualityTier?: string;
+  modelOrWorkflowVersion?: string;
+  seed?: number;
+  seeds?: number[];
+  resolution?: string;
+  framesDuration?: { frames?: number; seconds?: number; fps?: number };
+  audioState?: 'voiced' | 'silent';
+  provenance?: AssetProvenanceItem;
+  originality?: OriginalityProvenance;
+  checksum?: string;
+  promptHash?: string;
+  reviewer?: string;
+  reviewedAt?: string;
+  reason?: string;
+  parentAssetId?: string;
+  replacementAssetId?: string;
 }
 
 export async function direkAssets(): Promise<AssetItem[]> {
@@ -736,12 +800,13 @@ export async function direkAssets(): Promise<AssetItem[]> {
 
 export async function direkReviewAsset(
   id: string,
-  action: 'approve' | 'reject' | 'pending',
+  disposition: VaultDisposition,
+  opts: { reviewer?: string; reason?: string; replacementAssetId?: string } = {},
 ): Promise<AssetItem> {
   const res = await apiFetch('/api/direk/assets/review', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, action }),
+    body: JSON.stringify({ id, disposition, ...opts }),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `Review failed (${res.status})`);

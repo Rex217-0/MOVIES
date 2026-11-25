@@ -14,7 +14,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { classifyTask, planExecution, route_to_cloud, type TaskRoute } from './taskRouter.ts';
-import { saveAsset, assetPath, listAssets, type ReviewStatus } from './assets.ts';
+import { saveAsset, assetPath, listAssets, supersedeAsset, type ReviewStatus } from './assets.ts';
+import type { ComfyRenderFacts } from './comfyui.ts';
+import {
+  STITCHABLE_DISPOSITIONS,
+  originalityProvenance,
+  type AssetProvenance,
+  type OriginalityProvenance,
+  type VaultDisposition,
+} from './provenance.ts';
 import {
   acceptsMediaClass, parseQualityTier, requiresMasterBackend,
   MASTER_BACKEND_UNAVAILABLE_CODE, masterRefusalReason,
@@ -59,6 +67,8 @@ export interface SceneState {
   blockedReason?: string;
   /** The shots this scene was cut into, so the UI can show the cut. */
   shots?: { index: number; framing: string; seconds: number }[];
+  /** The renderer's own claim that this scene carries narration. */
+  voiced?: boolean;
   assetId?: string;
   assetName?: string;
   /** Public URL of the scene file in the local render store. */
@@ -81,6 +91,11 @@ export interface FeatureJobView {
    * MASTER later, because the scenes already rendered would not qualify.
    */
   qualityTier: QualityTier;
+  /**
+   * The Section 7 declaration for this film, fixed at creation like the tier.
+   * Every asset the job produces copies it, so the claim travels with the bytes.
+   */
+  originality: OriginalityProvenance;
   status: FeatureStatus;
   /** 0-100 across the whole film. */
   percent: number;
@@ -129,6 +144,15 @@ export type SceneRenderer = (input: SceneRenderInput) => Promise<{
   backend?: string;
   /** The shots the renderer cut the scene into, in film order. */
   shots?: { index: number; framing: string; seconds: number }[];
+  /**
+   * The seed, dimensions and graph the picture was rendered with. Absent for
+   * engines that report none, and recorded as absent rather than guessed.
+   */
+  render?: ComfyRenderFacts;
+  /** Which model or workflow version produced the picture. */
+  modelOrWorkflowVersion?: string;
+  /** The seed of every shot that was cut into this scene, in shot order. */
+  seeds?: number[];
 }>;
 
 export interface FactoryDeps {
@@ -143,6 +167,52 @@ export interface FactoryDeps {
 
 /** Which review states count as "done enough to stitch". */
 const STITCHABLE: SceneStatus[] = ['approved'];
+
+/**
+ * Turn what a renderer reported into the sidecar's provenance block.
+ *
+ * Only what the renderer actually said is written. A renderer that reports no
+ * seed leaves `seed` absent, which the vault shows as unknown — the honest
+ * answer, and one a later re-render can read as "not reproducible from record".
+ */
+function sceneProvenance(out: {
+  mediaClass: MediaClass;
+  backend?: string;
+  render?: ComfyRenderFacts;
+  modelOrWorkflowVersion?: string;
+  voiced?: boolean;
+  seconds?: number;
+  seeds?: number[];
+}): AssetProvenance {
+  const facts = out.render;
+  const resolution =
+    facts?.width && facts?.height ? `${facts.width}x${facts.height}` : undefined;
+  // A scene cut from several shots has no single seed, so only a one-shot render
+  // records `seed`; the rest record the list.
+  const seeds = out.seeds?.length ? out.seeds : undefined;
+  return {
+    backend: out.backend,
+    mediaClass: out.mediaClass,
+    // The checkpoint is the closest thing to a model version the graph carries,
+    // so it is recorded alongside the workflow file that shaped it.
+    modelOrWorkflowVersion:
+      out.modelOrWorkflowVersion ??
+      (facts?.checkpoint && facts?.workflow
+        ? `${facts.checkpoint} (${facts.workflow})`
+        : facts?.checkpoint ?? facts?.workflow),
+    seed: seeds ? (seeds.length === 1 ? seeds[0] : undefined) : facts?.seed,
+    seeds: seeds && seeds.length > 1 ? seeds : undefined,
+    resolution,
+    framesDuration:
+      facts?.frames || out.seconds
+        ? { frames: facts?.frames, seconds: out.seconds }
+        : undefined,
+    // `voiced` is the renderer's own claim about its audio, so it is what gets
+    // recorded: a silent scene must not read as narrated.
+    audioState: out.voiced === undefined ? undefined : out.voiced ? 'voiced' : 'silent',
+    sourceLicense: undefined,
+  };
+}
 
 /**
  * How long a running film keeps its claim without a renewal. A single scene can
@@ -177,7 +247,9 @@ export class FeatureFactory {
   }
 
   /** Create a job from one brief; every field is derived when not given. */
-  create(opts: ConceptOptions & { qualityTier?: QualityTier | string }): FeatureJobView {
+  create(
+    opts: ConceptOptions & { qualityTier?: QualityTier | string; originality?: OriginalityProvenance },
+  ): FeatureJobView {
     const concept = buildConcept(opts);
     const scenes = buildScenes(concept, opts.mood);
     const id = `FILM-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -186,6 +258,10 @@ export class FeatureFactory {
       orgId: ORG_ID,
       concept,
       qualityTier: parseQualityTier(opts.qualityTier),
+      // The declaration is fixed at creation with the tier. `create` never
+      // consults the catalog itself, so a job made here records "no grounding"
+      // rather than inheriting a claim made by a different code path.
+      originality: opts.originality ?? originalityProvenance(),
       status: 'idle',
       percent: 0,
       rendered: 0,
@@ -515,6 +591,7 @@ export class FeatureFactory {
         }
         state.mediaClass = out.mediaClass;
         state.shots = out.shots;
+        state.voiced = out.voiced;
         const seconds = out.seconds ?? state.seconds;
         state.percent = 90;
         const asset = saveAsset(out.data, {
@@ -526,6 +603,8 @@ export class FeatureFactory {
           mediaClass: out.mediaClass,
           qualityTier: job.qualityTier,
           backend: out.backend,
+          provenance: sceneProvenance(out),
+          originality: job.originality,
         });
         // The served copy lives in public/renders/ for playback and download.
         const stored: StoredRender = saveRender(out.data, `scene-${state.index}-${job.concept.title}`);
@@ -603,12 +682,28 @@ export class FeatureFactory {
     }
     const joined = await (this.deps.concat ?? concatCopy)(files);
     const seconds = approved.length * FEATURE_SCENE_SECONDS;
+    // The film is an assembly, not a render: it inherits its scenes' tier and
+    // states that it was stitched, rather than claiming a backend or seed of its
+    // own that no engine ever produced.
     const asset = saveAsset(joined.data, {
       title: `${job.concept.title} (buong pelikula)`,
       ext: 'mp4',
       mime: 'video/mp4',
       source: 'feature-film-factory',
       prompt: job.concept.brief,
+      qualityTier: job.qualityTier,
+      provenance: {
+        backend: 'ffmpeg-concat',
+        mediaClass: 'HYBRID',
+        qualityTier: job.qualityTier,
+        modelOrWorkflowVersion: `ffmpeg -c copy, ${approved.length} eksena`,
+        framesDuration: { seconds },
+        // The film is voiced only when every stitched scene said it was; one
+        // silent scene makes the whole cut partly silent, and claiming
+        // otherwise would overstate the asset.
+        audioState: approved.every(s => s.voiced) ? 'voiced' : 'silent',
+      },
+      originality: job.originality,
     });
     const stored = saveRender(joined.data, `feature-${job.concept.title}`);
     job.film = {
@@ -634,20 +729,31 @@ export class FeatureFactory {
     return this.assemble(job);
   }
 
-  /** A scene's review state, from its asset when it has one. */
+  /**
+   * A scene's review state, from its asset when it has one.
+   *
+   * Only `APPROVED_MASTER` makes a scene stitchable. A preview-only approval is
+   * deliberately left as `rendered`: it is good enough to look at and not good
+   * enough to become part of the film, and collapsing it to `approved` would
+   * put it in the master cut. `REFINE` also stays `rendered` because it asks
+   * for another render, not for a rejection.
+   */
   private statusOf(state: SceneState): SceneStatus {
-    if (state.status === 'rendered' || state.status === 'approved' || state.status === 'rejected') {
-      // A rendered scene may have been approved in the vault; reflect that.
-      if (state.assetId) {
-        const asset = listAssets().find(a => a.id === state.assetId);
-        if (asset) {
-          if (asset.reviewStatus === 'approved') return 'approved';
-          if (asset.reviewStatus === 'rejected') return 'rejected';
-        }
-      }
+    if (state.status !== 'rendered' && state.status !== 'approved' && state.status !== 'rejected') {
       return state.status;
     }
-    return state.status;
+    if (!state.assetId) return state.status;
+    const asset = listAssets().find(a => a.id === state.assetId);
+    if (!asset) return state.status;
+    if (STITCHABLE_DISPOSITIONS.includes(asset.disposition)) return 'approved';
+    if (
+      asset.disposition === 'REJECTED_TECHNICAL' ||
+      asset.disposition === 'REJECTED_CREATIVE' ||
+      asset.disposition === 'SUPERSEDED'
+    ) {
+      return 'rejected';
+    }
+    return 'rendered';
   }
 
   /** Sync the vault's review decisions back into the job view. */
@@ -658,9 +764,9 @@ export class FeatureFactory {
       if (!state.assetId) continue;
       const asset = listAssets().find(a => a.id === state.assetId);
       if (!asset) continue;
-      if (asset.reviewStatus === 'approved') state.status = 'approved';
-      else if (asset.reviewStatus === 'rejected') state.status = 'rejected';
-      else if (state.status === 'approved' || state.status === 'rejected') state.status = 'rendered';
+      // Reuse the one mapping so the vault view and the stitcher cannot disagree
+      // about whether a scene is part of the film.
+      state.status = this.statusOf({ ...state, status: 'rendered' });
     }
     this.recompute(job);
     this.persist(job);
@@ -706,6 +812,8 @@ export class FeatureFactory {
       }
       state.mediaClass = out.mediaClass;
       state.shots = out.shots;
+      state.voiced = out.voiced;
+      const previousAssetId = state.assetId;
       const asset = saveAsset(out.data, {
         title: `Scene ${index} — ${job.concept.title}`,
         ext: 'mp4',
@@ -715,7 +823,16 @@ export class FeatureFactory {
         mediaClass: out.mediaClass,
         qualityTier: job.qualityTier,
         backend: out.backend,
+        provenance: { ...sceneProvenance(out), parentAssetId: previousAssetId },
+        originality: job.originality,
       });
+      // The old render is retired, not deleted: the chain from the superseded
+      // asset to this one is the only record of what was replaced and why.
+      if (previousAssetId) {
+        supersedeAsset(previousAssetId, asset.id, {
+          reason: `Re-render ng eksena ${index}.`,
+        });
+      }
       const stored = saveRender(out.data, `scene-${index}-${job.concept.title}`);
       state.assetId = asset.id;
       state.assetName = asset.name;

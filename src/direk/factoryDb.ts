@@ -28,6 +28,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { MovieConcept, SceneStatus } from '../featureFilm.ts';
 import type { TaskRoute } from './taskRouter.ts';
 import type { FeatureJobView, SceneState, FeatureStatus } from './factory.ts';
+import { originalityProvenance, type OriginalityProvenance } from './provenance.ts';
 
 /**
  * The one private vault this build serves. Every row in `movie_jobs` and
@@ -65,6 +66,7 @@ interface MovieRow {
   script: string | null;
   bible: string | null;
   quality_tier: string;
+  originality: string | null;
   blocked: number;
   started_at: number;
   ended_at: number | null;
@@ -154,6 +156,7 @@ CREATE TABLE IF NOT EXISTS movie_jobs (
   script TEXT,
   bible TEXT,
   quality_tier TEXT NOT NULL DEFAULT 'CANARY',
+  originality TEXT,
   blocked INTEGER NOT NULL DEFAULT 0,
   started_at INTEGER NOT NULL,
   ended_at INTEGER
@@ -226,6 +229,7 @@ function migrate(db: DatabaseSync): void {
     ['script', 'TEXT'],
     ['bible', 'TEXT'],
     ['quality_tier', "TEXT NOT NULL DEFAULT 'CANARY'"],
+    ['originality', 'TEXT'],
     ['blocked', 'INTEGER NOT NULL DEFAULT 0'],
   ];
   for (const [name, type] of addMovie) {
@@ -295,8 +299,8 @@ export class FactoryDb {
         `INSERT INTO movie_jobs
            (id, org_id, title, genre, rating, format, created_at, concept, status, percent, rendered,
             failed, approved, rejected, total, total_seconds, current_scene, rendered_seconds,
-            film, error, script, bible, quality_tier, blocked, started_at, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            film, error, script, bible, quality_tier, originality, blocked, started_at, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            org_id=excluded.org_id,
            title=excluded.title, genre=excluded.genre, rating=excluded.rating,
@@ -306,7 +310,8 @@ export class FactoryDb {
            total=excluded.total, total_seconds=excluded.total_seconds,
            current_scene=excluded.current_scene, rendered_seconds=excluded.rendered_seconds,
            film=excluded.film, error=excluded.error, script=excluded.script, bible=excluded.bible,
-           quality_tier=excluded.quality_tier, blocked=excluded.blocked,
+           quality_tier=excluded.quality_tier, originality=excluded.originality,
+           blocked=excluded.blocked,
            started_at=excluded.started_at, ended_at=excluded.ended_at`,
       )
       .run(
@@ -333,6 +338,7 @@ export class FactoryDb {
         job.script ?? null,
         job.bible ?? null,
         job.qualityTier,
+        JSON.stringify(job.originality),
         job.blocked,
         job.startedAt,
         job.endedAt ?? null,
@@ -404,6 +410,11 @@ export class FactoryDb {
       orgId: movie.org_id,
       concept: JSON.parse(movie.concept) as MovieConcept,
       qualityTier: (movie.quality_tier as FeatureJobView['qualityTier']) || 'CANARY',
+      // A row written before the declaration existed gets the honest default:
+      // no grounding was recorded, so none is claimed.
+      originality: movie.originality
+        ? (JSON.parse(movie.originality) as OriginalityProvenance)
+        : originalityProvenance(),
       status: movie.status as FeatureStatus,
       percent: movie.percent,
       rendered: movie.rendered,

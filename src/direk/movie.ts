@@ -907,6 +907,12 @@ export interface SceneRenderResult {
   backend?: string;
   /** The shots the scene was cut into, in film order. */
   shots?: { index: number; framing: ShotFraming; seconds: number }[];
+  /**
+   * The seeds of the shots that were cut together, in shot order. A scene is
+   * several renders, so it records a list rather than pretending one seed
+   * describes the whole cut.
+   */
+  seeds?: number[];
 }
 
 /**
@@ -1071,6 +1077,7 @@ export async function renderFeatureScene(
     const rendered: { file: string; seconds: number; slot: number }[] = [];
     const shotClasses: MediaClass[] = [];
     const shotEngines = new Set<string>();
+    const seeds: number[] = [];
     for (const planned of plan) {
       const picture = await renderVideo({
         prompt: buildVeoStylePrompt(planned.prompt),
@@ -1089,6 +1096,7 @@ export async function renderFeatureScene(
       rendered.push({ file: norm.file, seconds: norm.seconds, slot: planned.seconds });
       shotClasses.push(picture.mediaClass);
       shotEngines.add(picture.engine);
+      if (typeof picture.render?.seed === 'number') seeds.push(picture.render.seed);
     }
     const mediaClass = sceneMediaClass(shotClasses);
     const shot = await assembleShots(rendered, dir);
@@ -1120,6 +1128,7 @@ export async function renderFeatureScene(
       mediaClass,
       backend: [...shotEngines].join('+'),
       shots: plan.map(p => ({ index: p.index, framing: p.framing, seconds: p.seconds })),
+      seeds: seeds.length ? seeds : undefined,
     };
   } finally {
     cleanup(dir);

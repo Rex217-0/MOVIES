@@ -6,6 +6,10 @@ import path from 'node:path';
 import { FeatureFactory, factorySummary } from './factory.ts';
 import { FactoryDb } from './factoryDb.ts';
 import { reviewAsset, listAssets } from './assets.ts';
+import {
+  originalityProvenance,
+  ORIGINALITY_DECLARATION_UNGOUNDED,
+} from './provenance.ts';
 import { listRenders } from './renderStore.ts';
 import { FEATURE_SCENES, FEATURE_SCENE_SECONDS, FEATURE_TOTAL_SECONDS } from '../featureFilm.ts';
 
@@ -527,4 +531,207 @@ test('rerender turns a thrown refusal into blocked too', async () => {
   assert.equal(job.blocked, 1);
   assert.equal(job.failed, 0);
   assert.ok(job.scenes[0].assetName, 'the earlier accepted asset stays on record');
+});
+
+// ---------------------------------------------------------------------------
+// Provenance: what the factory writes down about each render.
+// ---------------------------------------------------------------------------
+
+test('a rendered scene records the facts the renderer reported', async () => {
+  freshStore();
+  const factory = new FeatureFactory({
+    renderScene: async () => ({
+      data: Buffer.from('scene'),
+      seconds: FEATURE_SCENE_SECONDS,
+      voiced: true,
+      mediaClass: 'SYNTHETIC_MOTION' as const,
+      backend: 'comfyui',
+      seeds: [4242, 4343],
+      render: { seed: 4242, width: 832, height: 480, frames: 49, workflow: 'wan.json' },
+    }),
+    ffmpegAvailable: async () => true,
+  });
+  const job = factory.create({ brief: 'Provenance test.' });
+  factory.start(job.id);
+  await settle(factory, job.id);
+
+  const asset = listAssets().find(a => a.id === job.scenes[0].assetId)!;
+  assert.equal(asset.backend, 'comfyui');
+  assert.equal(asset.resolution, '832x480');
+  assert.deepEqual(asset.seeds, [4242, 4343]);
+  assert.equal(asset.seed, undefined, 'a cut has no single seed');
+  assert.equal(asset.audioState, 'voiced');
+  assert.equal(asset.mediaClass, 'SYNTHETIC_MOTION');
+  assert.equal(asset.qualityTier, 'CANARY');
+  assert.ok(asset.checksum && asset.checksum.length === 64);
+  assert.ok(asset.promptHash && asset.promptHash.length === 64);
+});
+
+test('a renderer that reports nothing records no seed and no resolution', async () => {
+  freshStore();
+  const { factory } = makeFactory();
+  const job = factory.create({ brief: 'Walang facts.' });
+  factory.start(job.id);
+  await settle(factory, job.id);
+
+  const asset = listAssets().find(a => a.id === job.scenes[0].assetId)!;
+  assert.equal('seed' in asset, false);
+  assert.equal(asset.resolution, undefined);
+  assert.equal(asset.audioState, 'silent', 'the stand-in renderer said voiced: false');
+});
+
+test('a re-render supersedes the old asset and links the chain', async () => {
+  freshStore();
+  const { factory } = makeFactory();
+  const job = factory.create({ brief: 'Rerender chain.' });
+  factory.start(job.id);
+  await settle(factory, job.id);
+
+  const first = job.scenes[2].assetId!;
+  await factory.rerender(job.id, 3);
+  const second = job.scenes[2].assetId!;
+  assert.notEqual(first, second, 'a fresh asset was written');
+
+  const old = listAssets().find(a => a.id === first)!;
+  const fresh = listAssets().find(a => a.id === second)!;
+  assert.equal(old.disposition, 'SUPERSEDED');
+  assert.equal(old.replacementAssetId, second);
+  assert.equal(fresh.parentAssetId, first);
+});
+
+test('only APPROVED_MASTER puts a scene in the film', async () => {
+  freshStore();
+  const { factory, concatCalls } = makeFactory();
+  const job = factory.create({ brief: 'Disposition gating.' });
+  factory.start(job.id);
+  await settle(factory, job.id);
+
+  const master = (i: number) => reviewAsset(job.scenes[i].assetId!, 'APPROVED_MASTER');
+  master(0); master(1);
+  factory.refresh(job.id);
+  const film = await factory.assemble(job);
+  assert.ok(film, 'two master-approved scenes are enough');
+  assert.equal(concatCalls[0].length, 2);
+});
+
+test('a preview-only approval and a REFINE do not reach the film', async () => {
+  freshStore();
+  const { factory } = makeFactory();
+  const job = factory.create({ brief: 'Preview only.' });
+  factory.start(job.id);
+  await settle(factory, job.id);
+
+  reviewAsset(job.scenes[0].assetId!, 'APPROVED_MASTER');
+  reviewAsset(job.scenes[1].assetId!, 'APPROVED_PREVIEW_ONLY');
+  reviewAsset(job.scenes[2].assetId!, 'REFINE');
+  factory.refresh(job.id);
+
+  assert.equal(job.scenes[0].status, 'approved');
+  assert.equal(job.scenes[1].status, 'rendered', 'good enough to look at, not to ship');
+  assert.equal(job.scenes[2].status, 'rendered', 'a refine asks for another render');
+  assert.equal(job.approved, 1);
+  assert.equal(await factory.assemble(job), undefined);
+});
+
+test('a technical rejection is a rejection, in the film and in the job view', async () => {
+  freshStore();
+  const { factory } = makeFactory();
+  const job = factory.create({ brief: 'Technical reject.' });
+  factory.start(job.id);
+  await settle(factory, job.id);
+
+  reviewAsset(job.scenes[4].assetId!, 'REJECTED_TECHNICAL', { reason: 'Basag ang audio.' });
+  factory.refresh(job.id);
+  assert.equal(job.scenes[4].status, 'rejected');
+  assert.equal(job.rejected, 1);
+});
+
+test('a superseded asset is not stitched even if it was once approved', async () => {
+  freshStore();
+  const { factory } = makeFactory();
+  const job = factory.create({ brief: 'Superseded.' });
+  factory.start(job.id);
+  await settle(factory, job.id);
+
+  reviewAsset(job.scenes[0].assetId!, 'APPROVED_MASTER');
+  reviewAsset(job.scenes[1].assetId!, 'APPROVED_MASTER');
+  factory.refresh(job.id);
+  assert.equal(job.approved, 2);
+
+  await factory.rerender(job.id, 1);
+  factory.refresh(job.id);
+  const old = listAssets().find(a => a.disposition === 'SUPERSEDED')!;
+  assert.ok(old, 'the replaced render was superseded by the rerender');
+});
+
+test('the stitched film records that it is an assembly, not a render', async () => {
+  freshStore();
+  const { factory } = makeFactory({ concatData: Buffer.from('film-bytes') });
+  const job = factory.create({ brief: 'Film provenance.', qualityTier: 'MASTER' });
+  factory.start(job.id);
+  await settle(factory, job.id);
+  reviewAsset(job.scenes[0].assetId!, 'APPROVED_MASTER');
+  reviewAsset(job.scenes[1].assetId!, 'APPROVED_MASTER');
+  factory.refresh(job.id);
+  const film = await factory.assemble(job);
+  assert.ok(film);
+
+  const asset = listAssets().find(a => a.title.includes('buong pelikula'))!;
+  assert.equal(asset.backend, 'ffmpeg-concat');
+  assert.equal(asset.mediaClass, 'HYBRID');
+  assert.equal(asset.qualityTier, 'MASTER');
+  assert.equal('seed' in asset, false, 'an assembly has no seed of its own');
+  assert.match(asset.modelOrWorkflowVersion!, /ffmpeg -c copy, 2 eksena/);
+  assert.equal(asset.audioState, 'silent', 'the stand-in scenes are unvoiced');
+});
+
+test('a job carries its Section 7 declaration into every asset it makes', async () => {
+  freshStore();
+  const { factory } = makeFactory();
+  const originality = originalityProvenance({
+    genre: 'Drama', referenceCount: 6, usedFor: ['genre_benchmark'],
+  });
+  const job = factory.create({ brief: 'Section 7.', originality });
+  assert.equal(job.originality.groundingUsed, true);
+  factory.start(job.id);
+  await settle(factory, job.id);
+
+  const asset = listAssets().find(a => a.id === job.scenes[0].assetId)!;
+  assert.equal(asset.originality?.groundingUsed, true);
+  assert.equal(asset.originality?.groundingGenre, 'Drama');
+  assert.equal(asset.originality?.referenceCount, 6);
+});
+
+test('a job created without a declaration claims no grounding', () => {
+  freshStore();
+  const { factory } = makeFactory();
+  const job = factory.create({ brief: 'Walang declaration.' });
+  assert.equal(job.originality.groundingUsed, false);
+  assert.equal(job.originality.declaration, ORIGINALITY_DECLARATION_UNGOUNDED);
+});
+
+test('the declaration survives a save and load through SQLite', async () => {
+  freshStore();
+  const db = new FactoryDb(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'factdb-')), 'factory.db'));
+  const { factory } = makeFactory();
+  const originality = originalityProvenance({ genre: 'Horror', referenceCount: 4 });
+  const job = factory.create({ brief: 'Persist.', originality });
+  db.save(job);
+  const loaded = db.load(job.id)!;
+  assert.equal(loaded.originality.groundingUsed, true);
+  assert.equal(loaded.originality.groundingGenre, 'Horror');
+  assert.equal(loaded.originality.referenceCount, 4);
+});
+
+test('a job row written before the declaration existed loads as ungrounded', async () => {
+  freshStore();
+  const db = new FactoryDb(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'factdb2-')), 'factory.db'));
+  const { factory } = makeFactory();
+  const job = factory.create({ brief: 'Legacy row.' });
+  db.save(job);
+  // Simulate a pre-migration row: the column exists but is NULL.
+  (db as any).db.prepare('UPDATE movie_jobs SET originality = NULL WHERE id = ?').run(job.id);
+  const loaded = db.load(job.id)!;
+  assert.equal(loaded.originality.groundingUsed, false);
+  assert.equal(loaded.originality.referenceCount, 0);
 });

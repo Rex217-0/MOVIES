@@ -33,7 +33,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { comfyAvailable, comfyVideoConfigured, diagnoseComfyVideo, generateVideoWithComfy } from './comfyui.ts';
+import { comfyAvailable, comfyVideoConfigured, diagnoseComfyVideo, generateVideoWithComfy, type ComfyRenderFacts } from './comfyui.ts';
 import { imagine } from './imagine.ts';
 import { imageToVideo } from './render.ts';
 import {
@@ -153,6 +153,11 @@ export interface VideoRenderResult {
   editor?: 'opencut';
   /** A short human-readable note about the editing pass, for the logs. */
   editNote?: string;
+  /**
+   * The seed, dimensions and graph the clip was actually rendered with. Absent
+   * for engines that expose none, so a stock clip does not claim a seed.
+   */
+  render?: ComfyRenderFacts;
 }
 
 /** True when a real local ComfyUI video backend can render right now. */
@@ -220,7 +225,7 @@ export async function videoRenderDetail(): Promise<string> {
  */
 export async function renderVideo(input: VideoRenderInput): Promise<VideoRenderResult> {
   const qualityTier: QualityTier = input.qualityTier ?? 'CANARY';
-  const { data, engine, credit, sourceUrl, licence } = await generateRaw({ ...input, qualityTier });
+  const { data, engine, credit, sourceUrl, licence, render } = await generateRaw({ ...input, qualityTier });
   const edited = await maybeEdit(data, input.editInstructions);
   // The editing pass re-encodes but does not change what the motion is, so the
   // class stays with the engine that made it.
@@ -242,6 +247,7 @@ export async function renderVideo(input: VideoRenderInput): Promise<VideoRenderR
     licence,
     editor: edited.editor,
     editNote: edited.note,
+    render,
   };
 }
 
@@ -267,6 +273,7 @@ async function generateRaw(
   credit?: string;
   sourceUrl?: string;
   licence?: string;
+  render?: ComfyRenderFacts;
 }> {
   const tier: QualityTier = input.qualityTier ?? 'CANARY';
   const mayUse = (engine: RenderEngine) => engineAllowedForTier(engine, tier);
@@ -357,7 +364,9 @@ async function generateRaw(
   // step only runs when the one before it could not, so a ComfyUI that is off,
   // unreachable or has no video workflow still ends in a real clip.
   const comfyFailure = await comfyAttempt(input);
-  if (comfyFailure.data) return { data: comfyFailure.data, engine: 'comfyui' };
+  if (comfyFailure.data) {
+    return { data: comfyFailure.data, engine: 'comfyui', render: comfyFailure.render };
+  }
 
   // Strict mode: the free engine would produce a still image with a ken-burns
   // pan — a real MP4, but not a real render, and it lands in the vault looking
@@ -434,15 +443,17 @@ async function generateRaw(
 }
 
 /** One ComfyUI attempt. Returns the clip, or the reason it could not render. */
-async function comfyAttempt(input: VideoRenderInput): Promise<{ data?: Buffer; reason: string }> {
+async function comfyAttempt(
+  input: VideoRenderInput,
+): Promise<{ data?: Buffer; reason: string; render?: ComfyRenderFacts }> {
   const diagnosis = await diagnoseComfyVideo();
   if (!diagnosis.ready) {
     console.warn(`[RENDER] ComfyUI video backend hindi handa (${diagnosis.problem}): ${diagnosis.detail}`);
     return { reason: diagnosis.detail };
   }
   try {
-    const { data } = await generateVideoWithComfy(input.prompt, { negative: input.negative });
-    return { data, reason: '' };
+    const { data, render } = await generateVideoWithComfy(input.prompt, { negative: input.negative });
+    return { data, reason: '', render };
   } catch (error: any) {
     const reason = `ComfyUI render failed: ${error?.message || error}`;
     console.error(`[RENDER] ${reason}`);

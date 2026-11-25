@@ -9,7 +9,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { IMAGE_MODEL, IMAGE_MODEL_FREE } from '../config.ts';
 import { buildVeoStylePrompt, buildVeoStyleNegative } from '../tactical/rules.ts';
-import { generateWithComfy, comfyAvailable } from './comfyui.ts';
+import { generateWithComfy, comfyAvailable, type ComfyRenderFacts } from './comfyui.ts';
 import { toPng } from './render.ts';
 
 export type ImageBackend = 'comfyui' | 'gemini' | 'pollinations' | 'none';
@@ -59,6 +59,8 @@ export interface GeneratedImage {
   ext: 'png';
   mime: 'image/png';
   backend: ImageBackend;
+  /** Present only for ComfyUI: the seed and graph the still was made with. */
+  render?: ComfyRenderFacts;
 }
 
 function extractImage(interaction: any): Buffer | null {
@@ -82,8 +84,10 @@ export async function imagine(prompt: string): Promise<GeneratedImage> {
   const backend = await imageBackend();
 
   if (backend === 'comfyui') {
-    const png = await generateWithComfy(enhanced, { negative: buildVeoStyleNegative(), width: 1024, height: 1024 });
-    return { data: png, ext: 'png', mime: 'image/png', backend };
+    const { data: png, render } = await generateWithComfy(enhanced, {
+      negative: buildVeoStyleNegative(), width: 1024, height: 1024,
+    });
+    return { data: png, ext: 'png', mime: 'image/png', backend, render };
   }
 
   if (backend === 'gemini') {
