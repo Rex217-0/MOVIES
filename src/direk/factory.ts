@@ -57,6 +57,8 @@ export interface SceneState {
   mediaClass?: MediaClass;
   /** The block state when the quality tier refused a weaker engine. */
   blockedReason?: string;
+  /** The shots this scene was cut into, so the UI can show the cut. */
+  shots?: { index: number; framing: string; seconds: number }[];
   assetId?: string;
   assetName?: string;
   /** Public URL of the scene file in the local render store. */
@@ -125,6 +127,8 @@ export type SceneRenderer = (input: SceneRenderInput) => Promise<{
   voiced?: boolean;
   mediaClass: MediaClass;
   backend?: string;
+  /** The shots the renderer cut the scene into, in film order. */
+  shots?: { index: number; framing: string; seconds: number }[];
 }>;
 
 export interface FactoryDeps {
@@ -371,6 +375,7 @@ export class FeatureFactory {
           continue;
         }
         state.mediaClass = out.mediaClass;
+        state.shots = out.shots;
         const seconds = out.seconds ?? state.seconds;
         state.percent = 90;
         const asset = saveAsset(out.data, {
@@ -557,6 +562,7 @@ export class FeatureFactory {
         return job;
       }
       state.mediaClass = out.mediaClass;
+      state.shots = out.shots;
       const asset = saveAsset(out.data, {
         title: `Scene ${index} — ${job.concept.title}`,
         ext: 'mp4',

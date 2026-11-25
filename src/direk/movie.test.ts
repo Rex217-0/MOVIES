@@ -395,3 +395,41 @@ test('the Fish model goes in the header, never the body', async () => {
   assert.match(src, /model: fishModel\(\)/, 'the model is not sent as a header');
   assert.doesNotMatch(src, /body\.model\s*=/, 'the model must not be sent in the body');
 });
+
+test('a scene is cut into distinct shots, not one clip looped', async (t) => {
+  const mock = await startMockComfyUI();
+  t.after(mock.close);
+  const workflowDir = fs.mkdtempSync(path.join(os.tmpdir(), 'comfy-wf-'));
+  t.after(() => fs.rmSync(workflowDir, { recursive: true, force: true }));
+  const prev = { url: process.env.COMFYUI_URL, wf: process.env.COMFYUI_VIDEO_WORKFLOW, off: process.env.COMFYUI_DISABLE, tts: process.env.TTS_TAGALOG_DISABLE, ttsG: process.env.TTS_DISABLE, engine: process.env.PREFERRED_RENDER_ENGINE };
+  process.env.PREFERRED_RENDER_ENGINE = 'comfyui';
+  process.env.COMFYUI_URL = mock.url;
+  process.env.COMFYUI_VIDEO_WORKFLOW = writeVideoWorkflow(workflowDir);
+  delete process.env.COMFYUI_DISABLE;
+  process.env.TTS_TAGALOG_DISABLE = '1';
+  process.env.TTS_DISABLE = '1';
+  t.after(() => {
+    for (const [k, v] of Object.entries({ COMFYUI_URL: prev.url, COMFYUI_VIDEO_WORKFLOW: prev.wf, COMFYUI_DISABLE: prev.off, TTS_TAGALOG_DISABLE: prev.tts, TTS_DISABLE: prev.ttsG, PREFERRED_RENDER_ENGINE: prev.engine })) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  });
+
+  const scene = { heading: 'SCENE 3', narration: 'Isang eksena.', visual: 'mangingisda sa dagat', mood: 'warm' as const };
+  const result = await renderFeatureScene(scene, { index: 3, seconds: 12 });
+
+  // 12s spans the wide/close arc, so the scene is two renders, not one looped clip.
+  assert.ok(result.shots, 'the result reports the shots it was cut into');
+  assert.equal(result.shots!.length, 2);
+  assert.deepEqual(result.shots!.map(s => s.framing), ['wide', 'close']);
+  assert.equal(new Set(result.shots!.map(s => s.framing)).size, 2, 'shots must differ');
+  // One /prompt POST per shot: the proof that each shot was rendered on its own.
+  assert.equal(mock.renders(), 2, `expected one render per shot, saw ${mock.renders()}`);
+
+  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'shot-check-')), 'scene.mp4');
+  t.after(() => fs.rmSync(path.dirname(out), { recursive: true, force: true }));
+  fs.writeFileSync(out, result.data);
+  const info = await probe(out);
+  assert.equal(Math.round(info.duration), 12, `scene should be 12s, was ${info.duration}`);
+  assert.equal(info.width, 1280);
+  assert.equal(info.height, 720);
+});

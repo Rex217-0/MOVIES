@@ -80,6 +80,7 @@ export function startMockComfyUI(
   );
   let counter = 0;
   let requests = 0;
+  let renders = 0;
   const server = http.createServer((req, res) => {
     requests += 1;
     const url = req.url || '';
@@ -113,6 +114,7 @@ export function startMockComfyUI(
           return;
         }
         counter += 1;
+        renders += 1;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ prompt_id: `prompt-${counter}` }));
       });
@@ -134,13 +136,15 @@ export function startMockComfyUI(
     res.statusCode = 404;
     res.end('{}');
   });
-  return new Promise<{ url: string; close: () => Promise<void>; requests: () => number }>(resolve => {
+  return new Promise<{ url: string; close: () => Promise<void>; requests: () => number; renders: () => number }>(resolve => {
     server.listen(0, '127.0.0.1', () => {
       const port = (server.address() as { port: number }).port;
       resolve({
         url: `http://127.0.0.1:${port}`,
         close: () => new Promise<void>(r => server.close(() => r())),
         requests: () => requests,
+        // Queued graphs only: the proof that a shot was rendered, not just polled.
+        renders: () => renders,
       });
     });
   });

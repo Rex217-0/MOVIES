@@ -991,6 +991,8 @@ export interface FeatureSceneView {
   /** Public URL of the scene file in the local render store (/renders/...). */
   renderUrl?: string;
   error?: string;
+  /** The shots this scene was cut into, in film order; absent when not yet cut. */
+  shots?: { index: number; framing: string; seconds: number }[];
   route: { task: string; tier: string; placement: string; reason: string };
 }
 

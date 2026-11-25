@@ -91,6 +91,7 @@ interface SceneRow {
   asset_name: string | null;
   media_class: string | null;
   blocked_reason: string | null;
+  shot_plan: string | null;
   error: string | null;
   route: string;
   started_at: number | null;
@@ -178,6 +179,7 @@ CREATE TABLE IF NOT EXISTS scene_jobs (
   asset_name TEXT,
   media_class TEXT,
   blocked_reason TEXT,
+  shot_plan TEXT,
   error TEXT,
   route TEXT NOT NULL,
   started_at INTEGER,
@@ -233,6 +235,7 @@ function migrate(db: DatabaseSync): void {
     ['stage', "TEXT NOT NULL DEFAULT 'scripting'"],
     ['media_class', 'TEXT'],
     ['blocked_reason', 'TEXT'],
+    ['shot_plan', 'TEXT'],
   ];
   for (const [name, type] of addScene) {
     if (!sceneCols.has(name)) db.exec(`ALTER TABLE scene_jobs ADD COLUMN ${name} ${type}`);
@@ -317,8 +320,8 @@ export class FactoryDb {
       `INSERT INTO scene_jobs
          (id, org_id, movie_id, scene_number, video_path, idx, act, heading, beat, narration, visual,
           mood, status, stage, percent, seconds, asset_id, asset_name, media_class, blocked_reason,
-          error, route, started_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          shot_plan, error, route, started_at, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(movie_id, idx) DO UPDATE SET
          org_id=excluded.org_id,
          id=excluded.id, scene_number=excluded.scene_number, video_path=excluded.video_path,
@@ -327,6 +330,7 @@ export class FactoryDb {
          status=excluded.status, stage=excluded.stage, percent=excluded.percent, seconds=excluded.seconds,
          asset_id=excluded.asset_id, asset_name=excluded.asset_name,
          media_class=excluded.media_class, blocked_reason=excluded.blocked_reason,
+         shot_plan=excluded.shot_plan,
          error=excluded.error, route=excluded.route,
          started_at=excluded.started_at, ended_at=excluded.ended_at`,
     );
@@ -335,7 +339,7 @@ export class FactoryDb {
         sceneId(job.id, s.index), ORG_ID, job.id, s.index, s.assetName ?? null, s.index, s.act, s.heading,
         s.beat, s.narration, s.visual, s.mood, s.status, s.stage, s.percent, s.seconds,
         s.assetId ?? null, s.assetName ?? null, s.mediaClass ?? null, s.blockedReason ?? null,
-        s.error ?? null, JSON.stringify(s.route), s.startedAt ?? null, s.endedAt ?? null,
+        s.shots ? JSON.stringify(s.shots) : null, s.error ?? null, JSON.stringify(s.route), s.startedAt ?? null, s.endedAt ?? null,
       );
     }
   }
@@ -366,6 +370,7 @@ export class FactoryDb {
       assetName: row.asset_name ?? undefined,
       mediaClass: (row.media_class as SceneState['mediaClass']) ?? undefined,
       blockedReason: row.blocked_reason ?? undefined,
+      shots: row.shot_plan ? (JSON.parse(row.shot_plan) as SceneState['shots']) : undefined,
       error: row.error ?? undefined,
       route: JSON.parse(row.route) as TaskRoute,
       startedAt: row.started_at ?? undefined,

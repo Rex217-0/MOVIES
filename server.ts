@@ -1743,6 +1743,7 @@ const featureFactory = new FeatureFactory({
       voiced: result.voiced,
       mediaClass: result.mediaClass,
       backend: result.backend,
+      shots: result.shots,
     };
   },
   ffmpegAvailable,

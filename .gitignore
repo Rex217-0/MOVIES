@@ -68,3 +68,7 @@ tools/cloudflared*
 *firebase*adminsdk*.json
 *-firebase-adminsdk-*.json
 serviceAccount*.json
+
+# Harvested datasets are local state, not source. Never commit them: a `git pull`
+# on Server-2 must not overwrite a dataset refreshed on that machine.
+data/imported/

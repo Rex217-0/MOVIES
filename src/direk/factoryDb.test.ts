@@ -256,3 +256,63 @@ test('the factory serves only its own vault through get, latest and list', () =>
   assert.ok(factory.list().every(j => j.id !== foreign.id), 'list() never returns the other org');
   assert.deepEqual(factory.list().map(j => j.id), [ours.id]);
 });
+
+test('the shot plan survives a reload, so the UI can show the cut', () => {
+  tmpStore();
+  const db = tmpDb();
+  const factory = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
+    ffmpegAvailable: async () => true,
+    concat: async files => ({ data: Buffer.from(`joined:${files.length}`) }),
+    db,
+  });
+  const job = factory.create({ brief: 'Shot plan.', qualityTier: 'MASTER' });
+  const shots = [
+    { index: 1, framing: 'establishing', seconds: 100 },
+    { index: 2, framing: 'medium', seconds: 100 },
+    { index: 3, framing: 'close', seconds: 100 },
+  ];
+  // The renderer reports the cut; save() is what writes it to SQLite.
+  job.scenes[0].shots = shots;
+  job.scenes[0].mediaClass = 'SYNTHETIC_MOTION';
+  db.save(job);
+
+  const reloaded = db.load(job.id);
+  assert.ok(reloaded, 'the job came back');
+  assert.deepEqual(reloaded!.scenes[0].shots, shots, 'the cut was not preserved');
+  assert.equal(reloaded!.scenes[1].shots, undefined, 'a scene with no plan stays planless');
+});
+
+test('an older database gains shot_plan without losing its scenes', () => {
+  tmpStore();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oldshot-'));
+  const file = path.join(dir, 'factory.db');
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`
+    CREATE TABLE movie_jobs (
+      id TEXT PRIMARY KEY, concept TEXT NOT NULL, status TEXT NOT NULL, percent INTEGER NOT NULL DEFAULT 0,
+      rendered INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, approved INTEGER NOT NULL DEFAULT 0,
+      rejected INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 18, total_seconds INTEGER NOT NULL DEFAULT 5400,
+      current_scene INTEGER NOT NULL DEFAULT 0, rendered_seconds INTEGER NOT NULL DEFAULT 0, film TEXT, error TEXT,
+      started_at INTEGER NOT NULL, ended_at INTEGER
+    );
+    CREATE TABLE scene_jobs (
+      movie_id TEXT NOT NULL, idx INTEGER NOT NULL, act INTEGER NOT NULL, heading TEXT NOT NULL, beat TEXT NOT NULL,
+      narration TEXT NOT NULL, visual TEXT NOT NULL, mood TEXT NOT NULL, status TEXT NOT NULL,
+      percent INTEGER NOT NULL DEFAULT 0, seconds INTEGER NOT NULL DEFAULT 300, asset_id TEXT, asset_name TEXT,
+      error TEXT, route TEXT NOT NULL, started_at INTEGER, ended_at INTEGER, PRIMARY KEY (movie_id, idx)
+    );
+    INSERT INTO movie_jobs (id, concept, status, started_at)
+      VALUES ('FILM-OLD', '{"title":"Luma","genre":"drama","rating":"PG","format":"Realistic","brief":"x"}', 'idle', 1234);
+    INSERT INTO scene_jobs (movie_id, idx, act, heading, beat, narration, visual, mood, status, route)
+      VALUES ('FILM-OLD', 1, 1, 'SCENE 1', 'beat', 'narration', 'visual', 'warm', 'rendered', '{}');
+  `);
+  legacy.close();
+
+  const db = new FactoryDb(file);
+  const job = db.load('FILM-OLD');
+  assert.ok(job, 'the old job still loads');
+  assert.equal(job!.scenes.length, 1);
+  assert.equal(job!.scenes[0].heading, 'SCENE 1');
+  assert.equal(job!.scenes[0].shots, undefined, 'a legacy scene has no plan, not an empty one');
+});
