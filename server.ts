@@ -94,7 +94,7 @@ import { originalityProvenance } from './src/direk/provenance.ts';
 import { FactoryDb, factoryDbPath } from './src/direk/factoryDb.ts';
 import { rendersDir, renderPath } from './src/direk/renderStore.ts';
 import {
-  FeatureFactory, factorySummary,
+  FeatureFactory, factorySummary, holderAlive,
 } from './src/direk/factory.ts';
 import {
   breakdownPrompt, parseBreakdown, type ConceptOptions,
@@ -508,9 +508,18 @@ app.get('/api/health', async (_req: Request, res: Response) => {
   const ollama = await ollamaStatus();
   const providers = configuredTextProviders();
   const ollamaUsable = providers.includes('ollama') && ollama.reachable && ollama.model_present;
-  const keyedProvider = providers.find(p => p !== 'ollama');
-  const textAvailable = Boolean(keyedProvider) || ollamaUsable;
-  const backend: TextBackendName = keyedProvider ?? (ollamaUsable ? 'ollama' : 'none');
+  // A provider being *configured* is not the same as it being *usable*. A key
+  // that Gemini rejects with API_KEY_INVALID, or an Anthropic account out of
+  // credit, used to be reported here as `available: true` — so the UI showed a
+  // healthy brain while every screenplay request answered 503. `lastTextError`
+  // is written by generateText when every provider failed, so this report is
+  // measured rather than assumed.
+  const keyedProvider = providers.find(p => p !== 'ollama' && p !== 'pollinations');
+  const pollinationsUsable = providers.includes('pollinations') && process.env.POLLINATIONS_TEXT_DISABLE !== '1';
+  const textAvailable = (Boolean(keyedProvider) || pollinationsUsable || ollamaUsable) && !lastTextError;
+  const backend: TextBackendName = textAvailable
+    ? keyedProvider ?? (pollinationsUsable ? 'pollinations' : 'ollama')
+    : 'none';
   const backendModel = backend === 'ollama' ? ollama.model : modelLabelFor(backend);
   res.json({
     ok: textAvailable,
@@ -533,6 +542,7 @@ app.get('/api/health', async (_req: Request, res: Response) => {
       backend,
       available: textAvailable,
       free_tier: true,
+      last_error: lastTextError,
     },
     ollama: {
       url: ollama.url,
@@ -1232,7 +1242,14 @@ const marketIntel = new MarketIntel(path.join(__dirname, 'data'));
 // Text backends: Gemini when a key is set, otherwise a local Ollama model.
 // Both are free; Ollama needs no account at all.
 // ---------------------------------------------------------------------------
-type TextBackendName = 'cloudflare' | 'gemini' | 'deepseek' | 'claude' | 'ollama' | 'none';
+type TextBackendName =
+  | 'cloudflare'
+  | 'gemini'
+  | 'deepseek'
+  | 'claude'
+  | 'pollinations'
+  | 'ollama'
+  | 'none';
 
 let textBackendCache: { backend: TextBackendName; at: number } | null = null;
 
@@ -1249,6 +1266,8 @@ function modelLabelFor(backend: TextBackendName): string {
       return (process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest').trim();
     case 'ollama':
       return ollamaModel();
+    case 'pollinations':
+      return `pollinations/${(process.env.POLLINATIONS_TEXT_MODEL || 'openai').trim()}`;
     default:
       return TEXT_MODEL;
   }
@@ -1279,6 +1298,8 @@ function initialTextBackend(): TextBackendName {
 
 let textBackend: TextBackendName = initialTextBackend();
 let textBackendAvailable = textBackend !== 'none';
+/** The last reason every provider failed, or null after any success. */
+let lastTextError: string | null = null;
 let textModelName = modelLabelFor(textBackend);
 
 async function refreshTextBackend(): Promise<void> {
@@ -1313,11 +1334,13 @@ async function generateText(
     textBackend = result.provider;
     textBackendAvailable = true;
     textModelName = result.model;
+    lastTextError = null;
     return result.text;
   } catch (error) {
     // The router already names every provider that failed, without a key.
     textBackend = 'none';
     textBackendAvailable = false;
+    lastTextError = sanitizeError(error);
     throw error;
   }
 }
@@ -1791,6 +1814,19 @@ const featureFactory = new FeatureFactory({
   // Local SQLite store for MovieJobs and SceneJobs (factory.db).
   db: featureDb,
 });
+
+// The GPU lease outlives a crash too: it is held for 30 minutes because a real
+// render can take that long, so a dead holder blocked every later render until
+// the TTL ran out. A boot proves the old process is gone, so the row is freed
+// here. The PID check keeps a lease held by a live sibling process.
+{
+  const freed = gpuStore().recoverAbandoned({
+    alive: holder => holderAlive(String(holder)),
+  });
+  if (freed) {
+    broadcastThought(`[RECOVERY] Nabuksan ang GPU na hawak ng patay na proseso (${freed}).`);
+  }
+}
 
 // A film that was running when this process died still looks 'running' in the
 // database. Recover it before serving anything, so the UI shows the truth (a

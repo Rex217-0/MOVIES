@@ -59,6 +59,9 @@ const ENV_KEYS = [
   'KAGGLE_PILOT_TOKEN', 'OLLAMA_DISABLE', 'LOCAL_OLLAMA_URL', 'OLLAMA_URL', 'OLLAMA_MODEL',
   'GEMINI_API_BASE', 'DEEPSEEK_API_BASE', 'ANTHROPIC_API_BASE',
   'GEMINI_TEXT_MODELS', 'DEEPSEEK_MODEL', 'ANTHROPIC_MODEL',
+  // The keyless free provider is configured unless explicitly disabled, so these
+  // tests must switch it off to assert anything about "no provider at all".
+  'POLLINATIONS_TEXT_DISABLE', 'POLLINATIONS_TEXT_URL',
 ];
 
 /** Run `fn` with exactly this environment, then put the old one back. */
@@ -68,6 +71,7 @@ async function withEnv<T>(env: Record<string, string | undefined>, fn: () => Pro
     saved[k] = process.env[k];
     delete process.env[k];
   }
+  process.env.POLLINATIONS_TEXT_DISABLE = '1';
   for (const [k, v] of Object.entries(env)) {
     if (v !== undefined) process.env[k] = v;
   }

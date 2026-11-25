@@ -138,9 +138,9 @@ export function FeatureFilmFactory() {
     return () => { alive.current = false; };
   }, [load, job?.id]);
 
-  // Poll while the batch is working; stop once it settles.
+  // Poll while the batch is working or waiting its turn; stop once it settles.
   useEffect(() => {
-    if (!job || job.status !== 'running') return;
+    if (!job || (job.status !== 'running' && job.status !== 'queued')) return;
     const id = setInterval(() => load(job.id), 2000);
     return () => clearInterval(id);
   }, [job, load]);
@@ -229,6 +229,16 @@ export function FeatureFilmFactory() {
   };
 
   const running = job?.status === 'running';
+  // A queued film has a live lease but no renderer yet: it is waiting its turn
+  // behind another film, which is not the same thing as running.
+  const statusLabel: Record<string, string> = {
+    idle: 'hindi pa nasimulan',
+    queued: 'naka-pila (naghihintay ng GPU)',
+    running: 'nire-render',
+    paused: 'pahinga (pindutin ang START)',
+    done: 'tapos',
+    error: 'may error',
+  };
   const totalScenes = job?.total ?? status?.scenes ?? 18;
 
   return (
@@ -428,7 +438,7 @@ export function FeatureFilmFactory() {
               </p>
             </div>
             <span className="rounded-pill border border-subtle bg-raised px-2.5 py-1 text-[11px] text-muted">
-              {job.status}
+              {statusLabel[job.status] ?? job.status}
             </span>
           </div>
 

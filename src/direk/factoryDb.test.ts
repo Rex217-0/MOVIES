@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { FactoryDb } from './factoryDb.ts';
-import { FeatureFactory } from './factory.ts';
+import { FeatureFactory, holderAlive } from './factory.ts';
 import { FEATURE_SCENE_SECONDS } from '../featureFilm.ts';
 
 function tmpDb(): FactoryDb {
@@ -372,4 +372,85 @@ test('an old row without accounting loads with none claimed', () => {
   const loaded = db.load(job.id)!;
   assert.equal(loaded.scenes[0].accounting, undefined, 'a pending scene has not spent anything yet');
   db.close();
+});
+
+test('the connection is configured to wait for a competing writer', () => {
+  // Scene renders finish from more than one process against one file, and a bare
+  // WAL connection throws SQLITE_BUSY instantly. `busy_timeout` is what turns
+  // that into a wait, so it must be set on every connection this class opens.
+  tmpStore();
+  const db = tmpDb();
+  const row = (db as any).db.prepare('PRAGMA busy_timeout').get() as { timeout: number };
+  assert.ok(row.timeout >= 1000, `busy_timeout was ${row.timeout}`);
+  const journal = (db as any).db.prepare('PRAGMA journal_mode').get() as { journal_mode: string };
+  assert.equal(String(journal.journal_mode).toLowerCase(), 'wal');
+  db.close();
+});
+
+test('releasing a failed holder makes the film claimable again at once', () => {
+  // A batch that throws keeps its claim unless it is handed back, and START
+  // refuses to re-enter a running film. Waiting for the lease to expire is the
+  // "stuck at 0%" the operator sees; this is the release that avoids it.
+  tmpStore();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-'));
+  const db = new FactoryDb(path.join(dir, 'factory.db'));
+  const factory = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
+    ffmpegAvailable: async () => true,
+    db,
+  });
+  const job = factory.create({ brief: 'Isang horror sa gubat.' });
+  db.enqueue(job.id);
+
+  assert.equal(db.claimNext('dead-holder', { ttlMs: 60 * 60 * 1000 })?.movieId, job.id);
+  assert.equal(db.claimScene(job.id, 1, 'dead-holder'), true);
+  // The claim is live, so nobody else can have it yet.
+  assert.equal(db.claimNext('next-holder', { ttlMs: 1000 }), undefined);
+
+  assert.deepEqual(db.releaseHeld('dead-holder'), [job.id]);
+
+  // The film is back in the queue, and the half-rendered shot is pending again
+  // so it is re-rendered rather than skipped.
+  assert.equal(db.claimNext('next-holder', { ttlMs: 1000 })?.movieId, job.id);
+  assert.deepEqual(db.pendingScenes(job.id).includes(1), true);
+  db.close();
+});
+
+test('a lease held by a dead process is recovered without waiting for the TTL', () => {
+  // The TTL is 30 minutes because a real render can take that long, so a crash
+  // left the film looking 'running' for half an hour with nothing rendering.
+  // The holder carries its PID, so a dead one is recovered at once.
+  tmpStore();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pidrecover-'));
+  const db = new FactoryDb(path.join(dir, 'factory.db'));
+  const factory = new FeatureFactory({
+    renderScene: async () => ({ data: Buffer.from('x'), seconds: FEATURE_SCENE_SECONDS, mediaClass: 'SYNTHETIC_MOTION' as const }),
+    ffmpegAvailable: async () => true,
+    db,
+  });
+  const job = factory.create({ brief: 'Isang horror sa gubat.' });
+  db.enqueue(job.id);
+  // A lease that is still inside its TTL, held by a process that is gone.
+  assert.equal(db.claimNext('999999-deadbeef', { ttlMs: 60 * 60 * 1000 })?.movieId, job.id);
+
+  const none = db.recoverAbandoned({ alive: () => true });
+  assert.deepEqual(none, [], 'a live holder must keep its film');
+
+  const recovered = db.recoverAbandoned({ alive: () => false });
+  assert.deepEqual(recovered, [job.id], 'a dead holder must hand the film back at once');
+  assert.equal(db.claimNext('next-holder', { ttlMs: 1000 })?.movieId, job.id);
+  db.close();
+});
+
+test('holderAlive reads the PID out of both lease formats and rejects a zombie', () => {
+  // A film lease is `pid-token`; a GPU lease is `label#pid-token`. Reading the
+  // label as a PID reported every GPU holder as alive, which is what let a dead
+  // render keep the device for the whole 30-minute TTL.
+  assert.equal(holderAlive(`${process.pid}-abc123`), true);
+  assert.equal(holderAlive(`film scene 5: "EKSENA 5"#${process.pid}-abc123`), true);
+  assert.equal(holderAlive('999999-abc123'), false);
+  assert.equal(holderAlive('film scene 5: "EKSENA 5"#999999-abc123'), false);
+  // An unparseable holder is treated as alive: better to wait than to steal a
+  // lease from a process we cannot identify.
+  assert.equal(holderAlive('weird'), true);
 });

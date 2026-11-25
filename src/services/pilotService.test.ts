@@ -63,12 +63,21 @@ async function withPilot<T>(env: Record<string, string | undefined>, fn: () => P
     // depend on the network, or silently change which worker answers.
     'GEMINI_API_KEY', 'DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY',
     'GEMINI_API_BASE', 'DEEPSEEK_API_BASE', 'ANTHROPIC_API_BASE', 'GEMINI_TEXT_MODELS',
+    // Pollinations is keyless and always configured, so without this a test that
+    // expects "every worker is down" would reach the real internet and pass or
+    // fail depending on the weather.
+    'POLLINATIONS_TEXT_DISABLE',
   ];
   const saved: Record<string, string | undefined> = {};
   for (const k of keys) {
     saved[k] = process.env[k];
-    if (env[k] === undefined) delete process.env[k];
-    else process.env[k] = env[k];
+    // Absent means "off" for every paid provider, but the free keyless one must
+    // be explicitly disabled: leaving the flag unset would let it reach the real
+    // internet during a test that expects every worker to be down.
+    const fallback = k === 'POLLINATIONS_TEXT_DISABLE' ? '1' : undefined;
+    const value = env[k] === undefined ? fallback : env[k];
+    if (value === undefined) delete process.env[k];
+    else process.env[k] = value;
   }
   try {
     return await fn();
@@ -96,7 +105,7 @@ function startOllama(opts: { reply?: string } = {}) {
       };
       if (req.url === '/api/tags') return json({ models: [{ name: 'qwen2.5:7b' }] });
       if (req.url === '/api/chat') {
-        return json({ message: { content: opts.reply ?? 'LOCAL SCRIPT: ang huling tala.' } });
+        return json({ message: { content: opts.reply ?? GATE_PASSING_SCRIPT } });
       }
       res.statusCode = 404;
       res.end('{}');
@@ -259,12 +268,12 @@ test('an HTTP error from the worker becomes PilotUnavailable, not a crash', asyn
 
 test('a dead Kaggle tunnel falls back to the local Ollama (T1)', async () => {
   const kaggle = await deadUrl();
-  const ollama = await startOllama({ reply: 'LOCAL SCRIPT: ang huling tala.' });
+  const ollama = await startOllama({ reply: GATE_PASSING_SCRIPT });
   try {
     await withPilot({ KAGGLE_PILOT_URL: kaggle, LOCAL_OLLAMA_URL: ollama.url, OLLAMA_DISABLE: '' }, async () => {
       const answer = await generateScriptAnswer('Isang mangingisda sa probinsya.');
       assert.equal(answer.source, 'local-ollama');
-      assert.equal(answer.value, 'LOCAL SCRIPT: ang huling tala.');
+      assert.equal(answer.value, GATE_PASSING_SCRIPT);
       // The local model really received the brief.
       assert.match(String(ollama.lastBody().messages.at(-1).content), /mangingisda/);
     });
@@ -287,12 +296,12 @@ test('an unset KAGGLE_PILOT_URL also uses the local Ollama', async () => {
 
 test('writeScreenplay reports the source and stores the local script', async () => {
   const kaggle = await deadUrl();
-  const ollama = await startOllama({ reply: '{"scenes":[{"heading":"S1","narration":"N.","visual":"V.","mood":"warm"}]}' });
+  const ollama = await startOllama({ reply: GATE_PASSING_SCRIPT });
   try {
     await withPilot({ KAGGLE_PILOT_URL: kaggle, LOCAL_OLLAMA_URL: ollama.url, OLLAMA_DISABLE: '' }, async () => {
       const result = await writeScreenplay('brief');
       assert.equal(result.source, 'local-ollama');
-      assert.match(result.script, /LOCAL|scenes/);
+      assert.equal(result.script, GATE_PASSING_SCRIPT);
       assert.equal(result.model, 'qwen2.5:7b');
     });
   } finally {
@@ -328,7 +337,7 @@ test('pilotStatus reports the local Ollama and the preferred worker', async () =
 
 test('a live Kaggle worker wins over the local Ollama', async () => {
   const pilot = await startPilot({ script: 'KAGGLE SCRIPT' });
-  const ollama = await startOllama({ reply: 'LOCAL SCRIPT' });
+  const ollama = await startOllama({ reply: GATE_PASSING_SCRIPT });
   try {
     await withPilot({ KAGGLE_PILOT_URL: pilot.url, LOCAL_OLLAMA_URL: ollama.url, OLLAMA_DISABLE: '' }, async () => {
       const answer = await generateScriptAnswer('brief');
@@ -342,6 +351,28 @@ test('a live Kaggle worker wins over the local Ollama', async () => {
     await ollama.close();
   }
 });
+
+/**
+ * A minimal script that satisfies the gate: three scenes, each with a VISUAL and
+ * a NARRATION, plus a title. The gate now runs on the local path, so a fixture
+ * that is not screenplay-shaped would be rejected before it could prove anything
+ * about routing.
+ */
+const GATE_PASSING_SCRIPT = [
+  'PAMAGAT: Ang Bagong Tala',
+  '',
+  'EKSENA 1: Dalampasigan - Umaga',
+  'VISUAL: Ang dagat ay kalmado at ang bangka ay nakahimpil sa buhangin.',
+  'NARRATION: Si Mang Nestor ay naghahanda ng kanyang lambat para sa araw.',
+  '',
+  'EKSENA 2: Dalampasigan - Hapon',
+  'VISUAL: Ang mga lambat ay puno ng isda at ang araw ay unti-unting lumulubog.',
+  'NARRATION: Masaya siyang umuwi dahil sagana ang kanyang huli ngayon.',
+  '',
+  'EKSENA 3: Bahay ni Mang Nestor - Gabi',
+  'VISUAL: Ang maliit na bahay ay may ilaw at amoy ng sinaing sa kusina.',
+  'NARRATION: Ikinuwento niya sa kanyang pamilya ang magandang araw sa dagat.',
+].join('\n');
 
 /** A stand-in Gemini endpoint, so the router path is exercised for real. */
 function startGemini(opts: { text?: string } = {}) {
@@ -367,7 +398,7 @@ function startGemini(opts: { text?: string } = {}) {
 }
 
 test('a configured Gemini key writes the screenplay through the router', async () => {
-  const gemini = await startGemini();
+  const gemini = await startGemini({ text: GATE_PASSING_SCRIPT });
   try {
     await withPilot(
       {
@@ -379,7 +410,7 @@ test('a configured Gemini key writes the screenplay through the router', async (
       async () => {
         const answer = await generateScriptAnswer('Isang mangingisda sa probinsya.');
         assert.equal(answer.source, 'gemini');
-        assert.equal(answer.value, 'GEMINI SCRIPT: ang bagong tala.');
+        assert.equal(answer.value, GATE_PASSING_SCRIPT);
         assert.match(String(answer.model), /^gemini-/);
       },
     );

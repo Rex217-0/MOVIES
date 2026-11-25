@@ -73,6 +73,10 @@ async function startServer(env: Record<string, string>) {
       DIREK_FACTORY_DB: path.join(assetsDir, 'factory.db'),
       DIREK_CONFIG: path.join(repoRoot, '.no-such-config.json'),
       KAGGLE_PILOT_URL: '',
+      // The keyless free text provider is configured unless disabled, and dotenv
+      // would leave it on. Tests that assert "no provider -> 503" must not reach
+      // the real internet, so switch it off here and let a test re-enable it.
+      POLLINATIONS_TEXT_DISABLE: '1',
       // Blank beats a developer's .env: this test checks the no-fal path.
       FAL_KEY: '',
       OPENCUT_ENDPOINT: '',
